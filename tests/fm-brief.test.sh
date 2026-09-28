@@ -1325,6 +1325,131 @@ test_crewmate_scaffolds_forbid_pool_administration() {
   pass "fm-brief.sh: every crewmate scaffold forbids administering the shared worktree pool"
 }
 
+# Remove the caretaker sections a --caretaker charter inserts after its
+# Operating model, keeping the blank line that separates the remaining
+# sections, so the rest of the charter can be compared with a plain one.
+strip_caretaker_sections() {
+  awk '
+    $0 == "# Caretaker practice" { skip = 1; next }
+    skip && $0 == "# The captain and the parent channel" { skip = 0 }
+    skip { next }
+    { print }
+  ' "$1"
+}
+
+test_secondmate_caretaker_charter() {
+  local root home state brief plain caretaker sweep stripped changed status data_dir flag
+  root="$TMP_ROOT/caretaker-charter"
+  home="$root/home"
+  state="$home/state"
+  mkdir -p "$home/data" "$state" "$root/plain" "$root/caretaker" "$root/sweep"
+
+  # The same id, home, and state for all three, so every rendered path matches
+  # and only the caretaker opt-in can explain a difference.
+  for flag in plain caretaker sweep; do
+    case "$flag" in
+      plain) set -- ;;
+      caretaker) set -- --caretaker ;;
+      sweep) set -- --caretaker --sweep-every 7d ;;
+    esac
+    FM_HOME="$home" FM_DATA_OVERRIDE="$root/$flag" \
+      FM_SECONDMATE_CHARTER='Persistent owner of the alpha domain.' FM_SECONDMATE_SCOPE='alpha work' \
+      "$ROOT/bin/fm-brief.sh" keeper --secondmate "$@" alpha beta >/dev/null 2>&1; status=$?
+    expect_code 0 "$status" "$flag charter scaffold should exit 0"
+  done
+  plain="$root/plain/keeper/brief.md"
+  caretaker="$root/caretaker/keeper/brief.md"
+  sweep="$root/sweep/keeper/brief.md"
+
+  # A plain charter carries none of the caretaker surface.
+  for heading in '# Caretaker practice' '# Recurrence ledger' '# Scheduled health sweep' 'Health sweep cadence:'; do
+    assert_no_grep "$heading" "$plain" "plain secondmate charter gained caretaker text: $heading"
+  done
+
+  # Without a sweep, the caretaker charter is the plain charter plus its
+  # inserted sections, byte for byte, including the unchanged idle lines.
+  stripped="$root/caretaker-stripped.md"
+  strip_caretaker_sections "$caretaker" > "$stripped"
+  cmp -s "$plain" "$stripped" \
+    || fail "a caretaker charter without a sweep changed plain charter bytes outside its own sections"
+  assert_grep 'first ask whether it is one instance of a broader class of problems' "$caretaker" \
+    "caretaker charter lost the class question"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep '`diagnostic-reasoning`' "$caretaker" "caretaker charter lost the diagnostic-reasoning brief rule"
+  assert_grep 'require its report to give a class-level answer' "$caretaker" \
+    "caretaker charter lost the class-level answer requirement"
+  assert_grep 'file a class-level remedy that does not fit as its own backlog item rather than widening the task' "$caretaker" \
+    "caretaker charter lost the fit-the-ask remedy rule"
+  assert_grep 'outside its task scope as its own backlog item' "$caretaker" \
+    "caretaker charter lost out-of-scope filing"
+  assert_grep '--kind parked' "$caretaker" "caretaker charter does not park self-filed items"
+  assert_grep "Respect each project's own \`AGENTS.md\` invariants" "$caretaker" \
+    "caretaker charter lost the project AGENTS.md invariants rule"
+  assert_grep "Workers never add knowledge to a project's \`AGENTS.md\`" "$caretaker" \
+    "caretaker charter lost the project-memory boundary"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep '`## Recurrence ledger`' "$caretaker" "caretaker charter lost the ledger heading"
+  assert_grep "On a class's second occurrence, the next step is a root-cause investigation" "$caretaker" \
+    "caretaker charter lost the recurrence rule"
+  assert_no_grep '# Scheduled health sweep' "$caretaker" "a caretaker without --sweep-every declared a sweep"
+  assert_grep 'never spawn a survey, audit, or any self-directed "find work" task on your own initiative.' "$caretaker" \
+    "a caretaker without a sweep lost the plain idle rule"
+
+  # With a sweep, the only change outside the inserted sections is the narrowed
+  # pair of idle rules: two Operating model lines and one Definition of done line.
+  strip_caretaker_sections "$sweep" > "$stripped"
+  changed=$(diff "$plain" "$stripped" | grep -c '^[<>]' || true)
+  [ "$changed" = 6 ] || fail "a sweep charter changed $changed plain lines; expected exactly three narrowed idle lines"
+  assert_grep 'Health sweep cadence: every 7d' "$sweep" "sweep charter lost its cadence declaration"
+  assert_grep 'apart from the scheduled health sweep declared below' "$sweep" \
+    "sweep charter did not narrow its operating-model idle line"
+  assert_grep 'on your own initiative outside that declared sweep' "$sweep" \
+    "sweep charter did not narrow its survey prohibition to the declared sweep"
+  assert_grep 'only the declared health sweep runs unrouted, and only when your watcher reports it due' "$sweep" \
+    "sweep charter did not narrow its definition-of-done idle line"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'load `caretaker-sweep`' "$sweep" "sweep charter does not point at the sweep procedure"
+  assert_grep 'A sweep never ships a change and spawns no worker' "$sweep" "sweep charter lost the ship-nothing boundary"
+  assert_grep 'exactly one digest line to the parent channel' "$sweep" "sweep charter lost the single-digest rule"
+
+  # The registry summary still comes from the domain charter text alone.
+  # shellcheck source=bin/fm-secondmate-charter-lib.sh
+  . "$ROOT/bin/fm-secondmate-charter-lib.sh"
+  [ "$(registry_summary_for_brief "$sweep")" = 'Persistent owner of the alpha domain.' ] \
+    || fail "caretaker sections leaked into the registry summary"
+
+  # A project-less domain can take the caretaker charter too.
+  FM_HOME="$home" FM_DATA_OVERRIDE="$root/plain" FM_SECONDMATE_CHARTER='Firstmate caretaker.' \
+    "$ROOT/bin/fm-brief.sh" fm-keeper --secondmate --caretaker --sweep-every 12h --no-projects >/dev/null 2>&1 \
+    || fail "--caretaker --no-projects scaffold failed"
+  assert_grep 'Health sweep cadence: every 12h' "$root/plain/fm-keeper/brief.md" \
+    "project-less caretaker lost its cadence"
+
+  # Misuse and malformed cadences are refused before anything is written.
+  data_dir="$root/refused"
+  mkdir -p "$data_dir"
+  for args in \
+    'ship-ct alpha --mode no-mistakes --caretaker' \
+    'scout-ct alpha --scout --caretaker' \
+    'sm-sweep --secondmate --sweep-every 7d alpha' \
+    'ship-sweep alpha --mode direct-PR --sweep-every 7d' \
+    'bad0 --secondmate --caretaker --sweep-every 0d alpha' \
+    'bad-unit --secondmate --caretaker --sweep-every 7x alpha' \
+    'bad-lead --secondmate --caretaker --sweep-every 07d alpha' \
+    'bad-long --secondmate --caretaker --sweep-every 400d alpha' \
+    'bad-empty --secondmate --caretaker --sweep-every= alpha' \
+    'bad-missing --secondmate --caretaker alpha --sweep-every'; do
+    # shellcheck disable=SC2086 # Each case is a deliberate word list.
+    set -- $args
+    FM_HOME="$home" FM_DATA_OVERRIDE="$data_dir" FM_SECONDMATE_CHARTER=x \
+      "$ROOT/bin/fm-brief.sh" "$@" >/dev/null 2>&1; status=$?
+    expect_code 1 "$status" "fm-brief.sh $args should be refused"
+    assert_absent "$data_dir/$1/brief.md" "refused scaffold still wrote a brief: $args"
+  done
+
+  pass "fm-brief.sh: --caretaker adds the caretaker sections without touching plain charter bytes, and --sweep-every narrows only the idle lines"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
@@ -1359,3 +1484,4 @@ test_branch_prefix_is_refused_where_it_does_not_apply
 test_branch_prefix_value_is_validated
 test_branch_prefix_command_is_shell_safe
 test_crewmate_scaffolds_forbid_pool_administration
+test_secondmate_caretaker_charter

@@ -3,7 +3,7 @@ name: secondmate-provisioning
 description: >-
   Agent-only reference for persistent secondmate setup and retirement.
   Use when creating, seeding, validating, launching, recovering, handing backlog to, pushing inherited local material into, or retiring a secondmate home, or when editing data/secondmates.md.
-  Covers local leases, whole-home remote routes, transactional seeding, record intake for an existing or inherited domain, project clone restrictions, secondmate harness pins, inherited local-material push, idle charter, handoff helper, and teardown safety.
+  Covers local leases, whole-home remote routes, transactional seeding, record intake for an existing or inherited domain, project clone restrictions, secondmate harness pins, inherited local-material push, idle charter and the caretaker charter, handoff helper, and teardown safety.
 user-invocable: false
 metadata:
   internal: true
@@ -13,7 +13,7 @@ metadata:
 
 Use this reference before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a persistent secondmate, and before editing `data/secondmates.md`.
 
-Keep the always-inline routing rules in `AGENTS.md` authoritative: route by natural-language `scope:`, local-only projects stay with the main firstmate, and secondmates are idle by default.
+Keep the always-inline routing rules in `AGENTS.md` authoritative: route by natural-language `scope:`, local-only projects stay with the main firstmate, and secondmates are idle by default apart from a caretaker charter's declared scheduled health sweep.
 
 ## Routing table
 
@@ -57,8 +57,17 @@ Pass `--no-projects` instead of a project list to scaffold a project-less charte
 Re-seeding a populated home as project-less is refused non-destructively when the home contains project clones or `data/projects.md` entries.
 Retire or clean that home first, and re-scaffold a stale project-bearing charter with `--no-projects` before seeding.
 Keep custom charter text focused on the persistent responsibility, available project clones, and genuinely domain-specific hard rules.
+
 The scaffolded charter, later copied to `data/charter.md`, owns the standard lifecycle and escalation wording.
 Preserve the generated charter sections unless the domain genuinely needs a hard rule.
+
+A caretaker is a persistent second mate that holds the architectural view across its domain's tasks, because disposable workers tend to patch symptoms rather than seek root-cause remedies.
+Scaffold one with `bin/fm-brief.sh <id> --secondmate --caretaker [--sweep-every <cadence>] {<project>...|--no-projects}` before seeding, because a direct seed without a brief scaffolds a plain charter.
+`--caretaker` adds the generic caretaker practice and recurrence-ledger sections, while `FM_SECONDMATE_CHARTER` still carries only the domain's own responsibility and standing rules.
+`--sweep-every` also declares the scheduled health sweep and narrows the charter's idle lines to name exactly that carve-out; omit it for a caretaker that stays idle by default.
+Seeding a caretaker charter initializes the recurrence-ledger section in the new home's `data/learnings.md` when absent, and the home's own session start arms the sweep's watcher check.
+The generated sections, `bin/fm-caretaker-lib.sh` (headings, cadence grammar, and ledger format), `bin/fm-caretaker-sweep.sh` (schedule, record, check, and snapshot), and the `caretaker-sweep` skill (the sweep procedure) own the details.
+Changing a live charter's caretaker sections or cadence takes effect at that mate's next session start, such as its restart after the charter edit.
 
 Provision a local persistent home and registry entry after the charter is filled:
 
@@ -236,7 +245,7 @@ Do not reconstruct a secondmate's whole tree from the main home.
 The main firstmate reconciles only direct reports.
 Each secondmate is a firstmate in its own home, so it runs recovery on startup and reconciles its own crewmates.
 A secondmate's recovery reconciles only work that is already its own and then idles.
-It never initiates a survey or audit during recovery.
+It never initiates a survey or audit during recovery; a caretaker's declared health sweep runs only when its scheduled check reports it due, never because recovery ran.
 
 ## Retirement and teardown
 

@@ -18,6 +18,9 @@
 #       is copied to data/charter.md, newly cloned no-mistakes projects are
 #       initialized, an ignored .fm-secondmate-parent binding is published before
 #       the .fm-secondmate-home identity marker, and data/secondmates.md is updated.
+#       A caretaker charter (bin/fm-brief.sh --secondmate --caretaker) also gets
+#       its recurrence ledger section in the home's data/learnings.md when that
+#       file has none; bin/fm-caretaker-lib.sh owns the section and its format.
 #       Seeding is transactional: on validation, clone, init, or registry failure,
 #       generated briefs, new homes, new project clones, and registry edits are
 #       rolled back. Treehouse-acquired homes are returned only when the rollback
@@ -47,6 +50,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
 # shellcheck source=bin/fm-secondmate-charter-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-charter-lib.sh"
+# shellcheck source=bin/fm-caretaker-lib.sh
+. "$SCRIPT_DIR/fm-caretaker-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 
@@ -543,6 +548,8 @@ SEED_PARENT_BRIEF_CREATED=0
 SEED_PARENT_BRIEF_DIR_CREATED=0
 SEED_SUB_REG_EXISTED=0
 SEED_CHARTER_EXISTED=0
+SEED_LEARNINGS_EXISTED=0
+SEED_LEARNINGS_TOUCHED=0
 SEED_MARKER_EXISTED=0
 SEED_PARENT_MARKER_EXISTED=0
 
@@ -666,6 +673,9 @@ seed_rollback() {
         restore_seed_file "$SEED_MARKER_EXISTED" "$SEED_BACKUP_DIR/marker" "$SEED_HOME/$SUB_HOME_MARKER"
         restore_seed_file "$SEED_PARENT_MARKER_EXISTED" "$SEED_BACKUP_DIR/parent-marker" "$SEED_HOME/$SUB_HOME_PARENT_MARKER"
         restore_seed_file "$SEED_CHARTER_EXISTED" "$SEED_BACKUP_DIR/charter.md" "$SEED_HOME/data/charter.md"
+        if [ "$SEED_LEARNINGS_TOUCHED" = 1 ]; then
+          restore_seed_file "$SEED_LEARNINGS_EXISTED" "$SEED_BACKUP_DIR/learnings.md" "$SEED_HOME/data/learnings.md"
+        fi
         restore_seed_file "$SEED_SUB_REG_EXISTED" "$SEED_BACKUP_DIR/sub-projects.md" "$SEED_HOME/data/projects.md"
       fi
     fi
@@ -869,6 +879,8 @@ seed_home() {
   SEED_PARENT_BRIEF_DIR_CREATED=0
   SEED_SUB_REG_EXISTED=0
   SEED_CHARTER_EXISTED=0
+  SEED_LEARNINGS_EXISTED=0
+  SEED_LEARNINGS_TOUCHED=0
   SEED_MARKER_EXISTED=0
   if [ -f "$REG" ]; then
     SEED_PARENT_REG_EXISTED=1
@@ -908,6 +920,10 @@ seed_home() {
   if [ -f "$home/data/charter.md" ]; then
     SEED_CHARTER_EXISTED=1
     cp "$home/data/charter.md" "$SEED_BACKUP_DIR/charter.md"
+  fi
+  if [ -f "$home/data/learnings.md" ] && [ ! -L "$home/data/learnings.md" ]; then
+    SEED_LEARNINGS_EXISTED=1
+    cp "$home/data/learnings.md" "$SEED_BACKUP_DIR/learnings.md"
   fi
   if [ -f "$home/$SUB_HOME_MARKER" ]; then
     SEED_MARKER_EXISTED=1
@@ -963,6 +979,16 @@ seed_home() {
   done
 
   cp "$SEED_PARENT_BRIEF" "$home/data/charter.md"
+  # A caretaker home starts with its recurrence ledger. The init is atomic, so
+  # rollback owes a restore only once it has actually rewritten the file.
+  if fm_caretaker_charter_is_caretaker "$home/data/charter.md" \
+    && ! fm_caretaker_ledger_present "$home/data/learnings.md"; then
+    fm_caretaker_ledger_init "$home/data/learnings.md" || {
+      echo "error: could not initialize the recurrence ledger in $home/data/learnings.md" >&2
+      return 1
+    }
+    SEED_LEARNINGS_TOUCHED=1
+  fi
 
   projects_csv=$(join_projects "$@")
   # Durable record of this home's route to its parent, written once here next

@@ -140,6 +140,7 @@ Keep `local-only` work in the main home.
 
 A secondmate is idle by default and acts only on work routed by the main firstmate.
 It reconciles its own work under way after restart, then waits silently; an empty queue never authorizes a survey, audit, or self-directed improvement sweep.
+The one exception is a caretaker charter's declared scheduled health sweep, which runs only when that home's own check reports it due, files its findings, and ships nothing (`caretaker-sweep` skill).
 Do not reconstruct or supervise a secondmate's child tree from the main home.
 
 Route durable knowledge to its most specific owner:

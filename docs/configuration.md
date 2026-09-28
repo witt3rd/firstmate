@@ -78,6 +78,7 @@ Each effective `FM_HOME` contains private operational directories.
 - Project and secondmate registries.
 - Captain preferences and optional shared captain preferences.
 - Learnings, backlog, briefs, and scout reports.
+- A caretaker home's health-sweep schedule record and sweep reports.
 - Explicitly installed content-addressed extension packages under `data/extensions/packages/`.
 
 `state/` holds runtime records:
@@ -620,7 +621,7 @@ Shared captain preferences that apply across secondmate domains live only in the
 ## Operational learnings (data/learnings.md)
 
 Fleet-local operational facts and gotchas live locally in `data/learnings.md`; it is gitignored and printed after the captain-preference files in the session-start context digest.
-The file is created lazily on first learning and follows the internal [`stow` skill's](../.agents/skills/stow/SKILL.md) aging-tier and cold-archive contract: inspect the current file first and curate it instead of appending forever.
+The file is created lazily on first learning, or with its recurrence ledger section when a caretaker charter is seeded, and follows the internal [`stow` skill's](../.agents/skills/stow/SKILL.md) aging-tier and cold-archive contract: inspect the current file first and curate it instead of appending forever.
 
 There is no shared learnings file by captain decision.
 
@@ -696,6 +697,22 @@ After creating a secondmate, move existing main-backlog queued items that you ha
 Set `FM_SECONDMATE_CHARTER` to seed from inline charter text when no filled charter brief exists; set `FM_SECONDMATE_SCOPE` when the routing scope should differ from the charter text.
 
 The seeded home's `data/charter.md` owns the standard secondmate lifecycle and escalation contract; the route file points to it through the existing `home:` field instead of adding another pointer.
+
+### Caretaker charters and scheduled health sweeps
+
+A caretaker charter is a secondmate charter scaffolded with `fm-brief.sh <id> --secondmate --caretaker [--sweep-every <cadence>] {<project>...|--no-projects}` before seeding.
+It adds a `# Caretaker practice` and a `# Recurrence ledger` section to the domain text from `FM_SECONDMATE_CHARTER`, and seeding initializes a `## Recurrence ledger` section in the new home's `data/learnings.md` when that file has none.
+`--sweep-every` adds a `# Scheduled health sweep` section whose one declaration line is the cadence field:
+
+```text
+Health sweep cadence: every <N><h|d|w>
+```
+
+The cadence is a positive whole number of hours, days, or weeks from `1h` through `366d`, such as `12h`, `7d`, or `2w`.
+A caretaker charter without that section declares no sweep and stays idle by default.
+The home's own locked session start arms `state/caretaker-sweep.check.sh`, a registered watcher check that reports the sweep due, and retires it when the declaration is removed, so edit the cadence in that home's `data/charter.md` and let the next session start apply it.
+`data/caretaker-sweep.record` is the durable schedule record, so a restart neither repeats a completed sweep nor skips one that came due while the home was down.
+[`bin/fm-caretaker-lib.sh`](../bin/fm-caretaker-lib.sh) owns the headings, cadence grammar, and ledger format, and [`bin/fm-caretaker-sweep.sh`](../bin/fm-caretaker-sweep.sh) owns the schedule, record, check, and read-only snapshot.
 
 ### Identity markers and upgrades
 
@@ -2278,6 +2295,9 @@ FM_CHECK_INTERVAL=300   # seconds between slow checks (authenticated merge polls
 FM_TASK_INBOX_GRACE_SECS=90   # seconds an unhandled steering-inbox message may sit before the watcher attempts doorbell delivery on an idle pane; also the minimum spacing between attempts
 FM_TASK_INBOX_RING_MAX=3      # watcher delivery attempts without an acknowledgement before the task surfaces as a stale wake for recovery
 FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
+FM_CARETAKER_SWEEP_STALL_SECS=86400   # cap on how long a started caretaker health sweep may stay unrecorded before it comes due again; the bound is the smaller of this and the cadence
+FM_CARETAKER_SWEEP_REMOTE_SECS=15     # seconds allowed for each clone's read-only `git ls-remote` in the caretaker sweep snapshot
+FM_CARETAKER_SWEEP_NOW=               # test override for the caretaker sweep schedule clock, in epoch seconds
 FM_MAIL_CHECK_BUDGET=15   # seconds allowed for one standing mail poll; valid 5..25, cut to fit FM_CHECK_TIMEOUT
 FM_MAIL_POLL_MAX_WAKES=20   # per-poll wake cap for a mail poll; valid 1..200, keeps a flood from flooding firstmate
 FM_MAIL_TIMEOUT=20   # mail-plane IMAP/SMTP socket timeout in seconds; invalid or non-positive values become 20
