@@ -282,10 +282,12 @@ test_snapshot_reports_a_hand_written_ledger_outside_the_canonical_section() {
   out=$(FM_HOME="$home" FM_CARETAKER_SWEEP_NOW="$T0" "$SWEEP" snapshot) || fail "snapshot failed"
   assert_contains "$out" 'hand-written recurrence ledger exists' "a hand-written ledger was not reported"
   assert_contains "$out" 'migrate it to the canonical heading' "the migration step was not stated"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
   printf '%s\n' "$out" | grep -F 'No `## Recurrence ledger` section' >/dev/null \
     && fail "a hand-written ledger was reported as absent"
   printf '# Learnings\n\nnothing here\n' > "$home/data/learnings.md"
   out=$(FM_HOME="$home" FM_CARETAKER_SWEEP_NOW="$T0" "$SWEEP" snapshot) || fail "snapshot failed"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
   assert_contains "$out" 'No `## Recurrence ledger` section' "a home with no ledger was not reported as having none"
   pass "fm-caretaker-sweep.sh: the snapshot names a hand-written ledger it cannot count"
 }
