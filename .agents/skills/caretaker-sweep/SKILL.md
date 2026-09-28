@@ -33,6 +33,7 @@ Nothing here authorizes any other self-directed work: a home without a declared 
    - Drift: each clone's default branch against origin, its checkout, local changes, stashes, linked worktrees, and local branches missing from origin.
      A clone that is merely behind origin is expected between session-start refreshes and is not a finding by itself; a clone off its default branch, carrying local changes, diverged, or holding branches or worktrees no live task of this home owns is.
    - The recurrence ledger: every class the snapshot marks recurring whose remedy status names no root-cause investigation or remedy under way.
+     When the snapshot reports a hand-written ledger outside the canonical section, review that ledger directly and migrate it to the canonical heading and row format.
    - Contract and document consistency, and broken invariants: only the documents and invariants named by the charter's domain rules and each project's `AGENTS.md`, read at the clone's local default branch.
      Record what you did not check because it needs a deeper investigation.
    - Stale or dangling artifacts this home already knows about: open, parked, or held backlog items whose premise the snapshot or origin now contradicts, work already shipped but still open, task records with no live worker (`bin/fm-crew-state.sh`), and unresolved decisions still open since the previous sweep.
