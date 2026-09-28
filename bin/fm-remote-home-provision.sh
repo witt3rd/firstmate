@@ -17,6 +17,8 @@
 # reply promise, which the subsystem can only carry on the parent's own
 # filesystem, is never mistaken for one this child could hold - and the
 # .fm-secondmate-home marker commits the complete seed last.
+# A caretaker charter also gets its recurrence ledger section in the home's
+# data/learnings.md when that file has none (bin/fm-caretaker-lib.sh owns it).
 # A newly created home is removed on failure. An existing matching seeded home
 # is converged only through guarded ordinary-file updates and new project clones.
 set -eu
@@ -28,6 +30,8 @@ MAX_MANIFEST_BYTES=1048576
 
 # shellcheck source=bin/fm-project-origin-lib.sh
 . "$SCRIPT_DIR/fm-project-origin-lib.sh"
+# shellcheck source=bin/fm-caretaker-lib.sh
+. "$SCRIPT_DIR/fm-caretaker-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 
@@ -49,6 +53,7 @@ safe_id() { case "$1" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac; }
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-remote-provision.XXXXXX") || die "cannot create provisioning state"
 CREATED_HOME=0
 CREATED_BACKLOG=0
+LEARNINGS_TOUCHED=0
 EXISTING_HOME=0
 PUBLISHED=0
 PROVISION_LOCK=
@@ -86,6 +91,7 @@ rollback() {
       restore_owned_file data/projects.md || true
       restore_owned_file .fm-secondmate-home || true
       restore_owned_file .fm-secondmate-parent || true
+      [ "$LEARNINGS_TOUCHED" -eq 0 ] || restore_owned_file data/learnings.md || true
       [ "$CREATED_BACKLOG" -eq 0 ] || rm -f -- "$FM_HOME/data/backlog.md"
     fi
   fi
@@ -262,6 +268,19 @@ done < <(grep '^project=' "$TMP/manifest")
 cp "$TMP/charter" "$FM_HOME/data/charter.md.tmp.$$"
 chmod 600 "$FM_HOME/data/charter.md.tmp.$$"
 mv -f -- "$FM_HOME/data/charter.md.tmp.$$" "$FM_HOME/data/charter.md"
+# The init is atomic, so rollback owes a restore only once it rewrote the file.
+if fm_caretaker_charter_is_caretaker "$FM_HOME/data/charter.md" \
+  && ! fm_caretaker_ledger_present "$FM_HOME/data/learnings.md"; then
+  if [ -f "$FM_HOME/data/learnings.md" ] && [ ! -L "$FM_HOME/data/learnings.md" ]; then
+    mkdir -p "$TMP/before/data" || die "cannot snapshot existing remote home file: data/learnings.md"
+    cp -p -- "$FM_HOME/data/learnings.md" "$TMP/before/data/learnings.md" \
+      || die "cannot snapshot existing remote home file: data/learnings.md"
+    : > "$TMP/before/data/learnings.md.present"
+  fi
+  fm_caretaker_ledger_init "$FM_HOME/data/learnings.md" \
+    || die "could not initialize the recurrence ledger in data/learnings.md"
+  LEARNINGS_TOUCHED=1
+fi
 cp "$PROJECT_REG" "$FM_HOME/data/projects.md.tmp.$$"
 mv -f -- "$FM_HOME/data/projects.md.tmp.$$" "$FM_HOME/data/projects.md"
 {

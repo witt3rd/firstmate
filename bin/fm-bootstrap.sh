@@ -74,6 +74,11 @@
 #          guesses at malformed or unsafe existing files, and secondmate homes
 #          await the primary-authoritative inherited value instead of creating
 #          their own.
+#          In a caretaker secondmate home, the locked local pass arms the
+#          charter's declared health-sweep check through
+#          `bin/fm-caretaker-sweep.sh arm --if-declared`, or retires a stale one;
+#          a failed arm prints "MISSING: caretaker health sweep could not be
+#          armed; scheduled sweeps are unconfirmed".
 #          X mode is OPTIONAL and inert unless FM_HOME/.env has a non-empty
 #          FMX_PAIRING_TOKEN. When opted in, bootstrap requires curl+jq, writes
 #          the relay poll shim and 30s cadence config, and prints an FMX line.
@@ -1582,6 +1587,14 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
     && [ -d "$DATA" ] && [ -x "$SCRIPT_DIR/fm-contributions.sh" ]; then
     "$SCRIPT_DIR/fm-contributions.sh" arm --if-owned >/dev/null \
       || echo "MISSING: contribution observation could not be armed; coverage is unconfirmed"
+  fi
+  # A caretaker charter's declared health sweep is scheduled by this home's own
+  # watcher check; arm it here, or retire a stale one the charter no longer
+  # declares, so a charter edit takes effect at the next locked session start.
+  if local_phase && { [ -f "$DATA/charter.md" ] || [ -e "$STATE/caretaker-sweep.check.sh" ]; } \
+    && [ -x "$SCRIPT_DIR/fm-caretaker-sweep.sh" ]; then
+    "$SCRIPT_DIR/fm-caretaker-sweep.sh" arm --if-declared >/dev/null \
+      || echo "MISSING: caretaker health sweep could not be armed; scheduled sweeps are unconfirmed"
   fi
   if [ -n "$fleet_sync_pid" ]; then
     wait "$fleet_sync_pid" || true

@@ -16,7 +16,7 @@
 # PR instead of shipping a new one).
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch-prefix <prefix>] [--forge <none|gerrit> [--shape squash]] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
-#        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
+#        fm-brief.sh <task-id> --secondmate [--caretaker [--sweep-every <cadence>]] {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
 #   It offers the Lavish review loop only when `fm-bootstrap.sh lavish-compatible`
@@ -32,6 +32,16 @@
 #   omitting both still fails loudly so an accidental omission is never silent.
 #   Set FM_SECONDMATE_CHARTER='<charter>' to fill the charter text.
 #   Set FM_SECONDMATE_SCOPE='<scope>' to write a routing scope distinct from the charter text.
+#   --caretaker (secondmate only) adds the reusable caretaker practice after the
+#   Operating model: the class question, diagnostic-reasoning briefs with a
+#   class-level answer, class-level remedies within the routed ask, parked
+#   out-of-scope filings, project AGENTS.md invariants, and the recurrence
+#   ledger rule. The domain's own rules still come from FM_SECONDMATE_CHARTER.
+#   --sweep-every <cadence> (caretaker only) also declares the scheduled health
+#   sweep, the one carve-out from idle-by-default, and narrows the charter's
+#   idle lines to name it. bin/fm-caretaker-lib.sh owns the machine-read
+#   headings, cadence grammar, and ledger format; bin/fm-caretaker-sweep.sh owns
+#   the schedule. Without --caretaker the charter bytes are unchanged.
 #   --herdr-lab is mandatory when the task will issue Herdr lifecycle commands.
 #   It adds the hard isolation contract backed by bin/fm-herdr-lab.sh.
 #   The flag must be explicit because {TASK} and {FIRSTMATE_SPEC} are filled
@@ -142,6 +152,8 @@ esac
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-dod-lib.sh
 . "$SCRIPT_DIR/fm-dod-lib.sh"
+# shellcheck source=bin/fm-caretaker-lib.sh
+. "$SCRIPT_DIR/fm-caretaker-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 IFS= read -r -d '' CREWMATE_PAUSE_INSTRUCTIONS <<EOF || true
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - when deliberately waiting for work or an external condition expected to clear on its own, including your own validation round.
@@ -183,6 +195,9 @@ case "$CONFIG" in /*) ;; *) CONFIG="$PWD/$CONFIG" ;; esac
 KIND=ship
 HERDR_LAB=0
 NO_PROJECTS=0
+CARETAKER=0
+SWEEP_EVERY=
+SWEEP_EVERY_SET=0
 MODE=
 MODE_SET=0
 BRANCH_PREFIX=fm/
@@ -203,6 +218,7 @@ for a in "$@"; do
       branch-prefix) BRANCH_PREFIX=$a; BRANCH_PREFIX_SET=1 ;;
       forge) FORGE=$a; FORGE_SET=1 ;;
       shape) SHAPE=$a; SHAPE_SET=1 ;;
+      sweep-every) SWEEP_EVERY=$a; SWEEP_EVERY_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -213,6 +229,9 @@ for a in "$@"; do
     --secondmate) KIND=secondmate ;;
     --herdr-lab) HERDR_LAB=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
+    --caretaker) CARETAKER=1 ;;
+    --sweep-every) want_value=sweep-every ;;
+    --sweep-every=*) SWEEP_EVERY=${a#--sweep-every=}; SWEEP_EVERY_SET=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --branch-prefix) want_value="branch-prefix" ;;
@@ -298,6 +317,24 @@ if [ "$NO_PROJECTS" -eq 1 ] && [ "$KIND" != secondmate ]; then
   exit 1
 fi
 
+# The caretaker practice and its scheduled sweep are charter shapes, so they
+# are refused anywhere a charter is not being written, and the cadence is
+# validated here so a malformed declaration never reaches a seeded home.
+if [ "$CARETAKER" -eq 1 ] && [ "$KIND" != secondmate ]; then
+  echo "error: --caretaker applies only to --secondmate charters" >&2
+  exit 1
+fi
+if [ "$SWEEP_EVERY_SET" -eq 1 ]; then
+  [ "$CARETAKER" -eq 1 ] || {
+    echo "error: --sweep-every applies only to --secondmate --caretaker charters; a scheduled health sweep is a caretaker carve-out" >&2
+    exit 1
+  }
+  fm_caretaker_cadence_parse "$SWEEP_EVERY" || {
+    echo "error: --sweep-every: $FM_CARETAKER_CADENCE_ERROR" >&2
+    exit 1
+  }
+fi
+
 # The optional home-local include is read before anything is written, so an
 # unusable file never leaves a partial scaffold behind.
 BRIEF_INCLUDE_FILE="$CONFIG/brief-include.md"
@@ -380,6 +417,50 @@ else
   PROJECT_CLONES_BODY=$(printf '%s\n' "$SECONDMATE_PROJECTS" | tr ' ' '\n' | sed 's/^/- /')
   PROJECT_CLONES_NOTE="The projects above are local clones for work you supervise; they are not an exclusive ownership claim."
 fi
+# The idle-by-default lines every plain charter carries. Only a caretaker
+# charter that declares a scheduled sweep narrows them, to name exactly that
+# one carve-out; every other charter keeps these bytes.
+IDLE_OPERATING='You do not generate your own work.
+Act only on tasks the main firstmate routes to you.
+Never start a survey, audit, or "find improvements" sweep on your own initiative; that is not your job and it is unwanted.'
+IDLE_DOD='An empty queue is a healthy resting state, not a cue to invent work: never spawn a survey, audit, or any self-directed "find work" task on your own initiative.'
+CARETAKER_SECTIONS=
+if [ "$CARETAKER" -eq 1 ]; then
+  IFS= read -r -d '' CARETAKER_BODY <<EOF || true
+$FM_CARETAKER_PRACTICE_HEADING
+You are a caretaker: you hold the architectural view across this domain's tasks, because disposable workers tend to patch symptoms rather than seek systemic, root-cause remedies.
+For every routed problem, first ask whether it is one instance of a broader class of problems.
+When you brief a worker to investigate or fix a problem, apply the \`diagnostic-reasoning\` skill from this home's \`.agents/skills/\` to that brief, and require its report to give a class-level answer: the class, the other instances it found or ruled out, and the class-level remedy.
+Prefer the class-level remedy when it fits the routed ask; file a class-level remedy that does not fit as its own backlog item rather than widening the task.
+File anything a worker notices outside its task scope as its own backlog item in this home, never leaving it only in PR prose or a report.
+Park every item you file on your own initiative with \`bin/fm-tasks-axi.sh hold <id> --kind parked --reason "<why it waits>"\`, so it waits for work the main firstmate routes or the captain authorizes instead of being dispatched as routed work.
+Respect each project's own \`AGENTS.md\` invariants in every brief you write and every result you accept, and follow the domain rules in the charter above.
+Workers never add knowledge to a project's \`AGENTS.md\` or \`CLAUDE.md\`; they only correct text that is factually wrong.
+
+$FM_CARETAKER_LEDGER_SECTION_HEADING
+Keep a recurrence ledger under the \`$FM_CARETAKER_LEDGER_HEADING\` heading of this home's \`data/learnings.md\`, one row per problem class:
+\`$FM_CARETAKER_LEDGER_ROW\`
+Add a dated occurrence to a class's row each time you handle or find an instance of it, and keep its remedy status current; the trailing \`<!--P-->\` pins the row so memory curation never ages a class out before it can recur.
+On a class's second occurrence, the next step is a root-cause investigation of the class, not another fix; when that second occurrence surfaces outside routed work, file the investigation as a parked backlog item.
+EOF
+  CARETAKER_BODY=${CARETAKER_BODY%$'\n'}
+  if [ "$SWEEP_EVERY_SET" -eq 1 ]; then
+    IDLE_OPERATING='You do not generate your own work, apart from the scheduled health sweep declared below.
+Act only on tasks the main firstmate routes to you.
+Never start a survey, audit, or "find improvements" sweep on your own initiative outside that declared sweep; that is not your job and it is unwanted.'
+    IDLE_DOD='An empty queue is a healthy resting state, not a cue to invent work: never spawn a survey, audit, or any self-directed "find work" task on your own initiative; only the declared health sweep runs unrouted, and only when your watcher reports it due.'
+    IFS= read -r -d '' SWEEP_BODY <<EOF || true
+$FM_CARETAKER_SWEEP_HEADING
+$FM_CARETAKER_CADENCE_PREFIX$SWEEP_EVERY
+This declared sweep is the one exception to acting only on routed work: at this cadence you run one bounded, read-only health sweep of this home's own projects and records.
+Your own watcher reports it due through \`bin/fm-caretaker-sweep.sh\`; on that notification, load \`caretaker-sweep\` from this home's \`.agents/skills/\` and follow it.
+A sweep files each finding as its own parked backlog item in this home and appends exactly one digest line to the parent channel.
+A sweep never ships a change and spawns no worker: acting on any finding still requires work routed by the main firstmate or the captain's authorization, and every merge, destructive-action, and live-host boundary in this charter and the local \`AGENTS.md\` still applies.
+EOF
+    CARETAKER_BODY="$CARETAKER_BODY"$'\n\n'"${SWEEP_BODY%$'\n'}"
+  fi
+  CARETAKER_SECTIONS=$'\n\n'"$CARETAKER_BODY"
+fi
 cat > "$BRIEF" <<EOF
 You are a persistent second mate managed by the main firstmate. Work on your own; do not wait for a human.
 
@@ -397,9 +478,7 @@ You are in an isolated firstmate home. The local \`AGENTS.md\` is your job descr
 $PROJECT_CLONES_NOTE
 Delegate project work to your own crewmates with the normal firstmate lifecycle: brief, spawn, status, watcher, steer, teardown, and recovery.
 Do not invent a second delegation system.
-You do not generate your own work.
-Act only on tasks the main firstmate routes to you.
-Never start a survey, audit, or "find improvements" sweep on your own initiative; that is not your job and it is unwanted.
+$IDLE_OPERATING$CARETAKER_SECTIONS
 
 # The captain and the parent channel
 Nobody reads this chat: the captain and the main firstmate see only what is appended to $STATUS_FILE, and a captain-facing sentence that is not appended there has not been sent.
@@ -446,7 +525,7 @@ Routine internal supervision, heartbeats, retries, and crewmate churn stay insid
 You are persistent by default. Do not exit just because your queue is empty.
 On startup and restart, run normal firstmate bootstrap and recovery through \`bin/fm-session-start.sh\` for your own home, but only to RECONCILE work that is already yours: in-flight crewmates, tracked backlog items, and durable watches recorded in this home.
 When you have no assigned or in-flight work after that reconciliation, go idle and wait silently for the main firstmate to route you a task.
-An empty queue is a healthy resting state, not a cue to invent work: never spawn a survey, audit, or any self-directed "find work" task on your own initiative.
+$IDLE_DOD
 If this charter cannot be carried out, append \`blocked [at=<epoch>]: {why}\` or \`failed [at=<epoch>]: {why}\` to the main status file and stop.
 EOF
 if [ "$SECONDMATE_CHARTER" = "{TASK}" ]; then
