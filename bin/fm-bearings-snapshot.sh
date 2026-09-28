@@ -245,7 +245,15 @@ HOME_LABEL=$(printf '%s' "$SNAP" | jq -er '.fm_home | strings | split("/") | (.[
 
 # --- optional live GitHub PR enrichment -------------------------------------
 PR_STATUS='not_requested (run: /bearings include PRs)'
-CANDIDATE_PRS='[]'
+# Forge-derived JSON rides private temp files rather than argv elements: Linux
+# caps one exec argument at 128 KiB, and live PR rows (titles included) grow
+# with the repo count and FM_BEARINGS_PR_LIMIT.
+JSON_TRANSPORT_DIR=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/fm-bearings.XXXXXX") \
+  || { echo "fm-bearings-snapshot: cannot create a temporary transport directory" >&2; exit 1; }
+trap 'rm -rf -- "$JSON_TRANSPORT_DIR"' EXIT
+CANDIDATE_PRS_FILE="$JSON_TRANSPORT_DIR/candidate-prs.json"
+printf '[]\n' > "$CANDIDATE_PRS_FILE" \
+  || { echo "fm-bearings-snapshot: cannot write a temporary PR file" >&2; exit 1; }
 PR_REPOS_TOTAL=0
 PR_REPOS_SHOWN=0
 PR_ROWS_CAPPED=0
@@ -287,14 +295,17 @@ $(printf '%s' "$SNAP" | jq -r '.tasks[] | select(.kind != "secondmate") | .paths
 EOF
 
     for repo in $repos; do PR_REPOS_TOTAL=$((PR_REPOS_TOTAL + 1)); done
-    nrepos=0; npr=0; nwarn=0; ncapped=0; rows='[]'
+    nrepos=0; npr=0; nwarn=0; ncapped=0
+    rows_file="$JSON_TRANSPORT_DIR/pr-rows.jsonl"
+    : > "$rows_file" \
+      || { echo "fm-bearings-snapshot: cannot create a temporary PR rows file" >&2; exit 1; }
     pr_fetch_limit=$((FM_BEARINGS_PR_LIMIT + 1))
     # The task side of the mapping rides a temp file, not an argv element: a
     # fleet snapshot exceeds the ~128KB per-argument exec cap on large fleets,
     # and an E2BIG there would drop the repo's PR rows into the warning count.
-    tasks_file=$(mktemp "${TMPDIR:-/tmp}/fm-bearings-tasks.XXXXXX") \
-      || { echo "fm-bearings-snapshot: cannot create a temporary tasks file" >&2; exit 1; }
-    printf '%s' "$SNAP" | jq '.tasks // []' > "$tasks_file"
+    tasks_file="$JSON_TRANSPORT_DIR/tasks.json"
+    printf '%s' "$SNAP" | jq '.tasks // []' > "$tasks_file" \
+      || { echo "fm-bearings-snapshot: cannot write a temporary tasks file" >&2; exit 1; }
     for repo in $repos; do
       if [ "$ALL_PR_REPOS" != 1 ] && [ "$nrepos" -ge "$FM_BEARINGS_PR_REPOS" ]; then break; fi
       nrepos=$((nrepos + 1))
@@ -326,13 +337,14 @@ EOF
       cnt=$(printf '%s' "$repo_rows" | jq 'length')
       [ "$returned" -gt "$FM_BEARINGS_PR_LIMIT" ] && ncapped=$((ncapped + 1))
       npr=$((npr + cnt))
-      rows=$(jq -n --argjson a "$rows" --argjson b "$repo_rows" '$a + $b')
+      printf '%s\n' "$repo_rows" >> "$rows_file" \
+        || { echo "fm-bearings-snapshot: cannot write a temporary PR rows file" >&2; exit 1; }
     done
-    rm -f "$tasks_file"
+    jq -s 'add // []' "$rows_file" > "$CANDIDATE_PRS_FILE" \
+      || { echo "fm-bearings-snapshot: cannot assemble the PR rows" >&2; exit 1; }
     PR_REPOS_SHOWN=$nrepos
     PR_ROWS_CAPPED=$ncapped
     PR_ROWS_MIN_TOTAL=$((npr + ncapped))
-    CANDIDATE_PRS=$rows
     warnnote=""
     [ "$nwarn" -gt 0 ] && warnnote="; ${nwarn} repo(s) unavailable"
     cappednote=""
@@ -380,7 +392,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   --argjson pr_rows_capped "$PR_ROWS_CAPPED" \
   --argjson pr_rows_min_total "$PR_ROWS_MIN_TOTAL" \
   --argjson return_catchup "$RETURN_CATCHUP" \
-  --argjson candidate_prs "$CANDIDATE_PRS" "$FM_LANDED_JQ_DEFS"'
+  --slurpfile candidate_prs_doc "$CANDIDATE_PRS_FILE" "$FM_LANDED_JQ_DEFS"'
+  $candidate_prs_doc[0] as $candidate_prs |
   def trunc($n): if . == null then null else
     (tostring | gsub("\\s+"; " ") | if (length > $n) then (.[:$n] + "…") else . end) end;
   def fit($n):

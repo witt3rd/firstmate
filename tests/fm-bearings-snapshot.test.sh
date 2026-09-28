@@ -56,6 +56,19 @@ SH
 echo "gh $*" >> "$NET_LOG"
 if [ "${FAKE_GH_FAIL:-0}" = 1 ]; then exit 1; fi
 if [ "${FAKE_GH_SLEEP:-0}" = 1 ]; then sleep 30; fi
+if [ "${FAKE_GH_LARGE:-0}" -gt 0 ]; then
+  pad=$(printf '%*s' 200 '' | tr ' ' p)
+  printf '['
+  i=1
+  while [ "$i" -le "$FAKE_GH_LARGE" ]; do
+    [ "$i" -eq 1 ] || printf ','
+    printf '{"number":%s,"title":"Large %s","url":"https://github.com/acme/repo/pull/%s?%s","headRefName":"fm/large-%s","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]}' \
+      "$i" "$i" "$i" "$pad" "$i"
+    i=$((i + 1))
+  done
+  printf ']\n'
+  exit 0
+fi
 if [ "${FAKE_GH_MANY:-0}" = 1 ]; then
   cat <<'JSON'
 [{"number":1,"title":"One","url":"https://github.com/acme/repo/pull/1","headRefName":"fm/one","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":2,"title":"Two","url":"https://github.com/acme/repo/pull/2","headRefName":"fm/two","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":3,"title":"Three","url":"https://github.com/acme/repo/pull/3","headRefName":"fm/three","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]}]
@@ -1574,6 +1587,24 @@ test_per_repository_pr_cap_is_disclosed() {
   ' >/dev/null || fail "per-repository PR truncation was not disclosed: $json"
   assert_contains "$toon" 'candidate_prs showing 2 of at least 3' "TOON did not preserve PR truncation disclosure"
   pass "per-repository open-PR caps are disclosed with an expansion knob"
+}
+
+# Live PR rows grow with the repository count and FM_BEARINGS_PR_LIMIT, so
+# their combined JSON can exceed Linux's 128 KiB limit on one exec argument.
+test_pr_rows_over_the_argument_limit_are_kept() {
+  local home fakebin json
+  home=$(make_home pr-rows-large); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  json=$(FM_BEARINGS_PR_LIMIT=800 FAKE_GH_LARGE=700 run "$home" "$fakebin" --include-prs --json) \
+    || fail "large PR rows did not project: $json"
+  [ "$(printf '%s' "$json" | jq -c '.candidate_prs' | wc -c)" -gt 131072 ] \
+    || fail "the PR rows fixture is not over the 128 KiB argument limit"
+  printf '%s' "$json" | jq -e '
+    (.candidate_prs | length) == 700
+    and (.prs | test("700 open"))
+    and (.candidate_prs[699].num == "700")
+  ' >/dev/null || fail "large PR rows were dropped or miscounted: $(printf '%s' "$json" | jq -c '{prs, n: (.candidate_prs | length)}')"
+  pass "live PR rows over the per-argument limit reach the projection intact"
 }
 
 install_failing_jq() {  # <fakebin> <model|toon>
@@ -3413,4 +3444,5 @@ test_blocked_deferred_hold_has_concrete_disclosure
 test_revealed_deferred_holds_show_their_deferral_reason
 test_pr_repository_cap_and_expansion
 test_per_repository_pr_cap_is_disclosed
+test_pr_rows_over_the_argument_limit_are_kept
 test_projection_and_toon_fail_closed
