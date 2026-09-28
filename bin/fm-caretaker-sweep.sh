@@ -353,6 +353,12 @@ snapshot_project() {  # <name>
 snapshot_ledger() {
   local learnings="$DATA/learnings.md"
   printf '\n## Recurrence ledger\n'
+  if [ -f "$learnings" ] && ! grep -Fxq -- "$FM_CARETAKER_LEDGER_HEADING" "$learnings" \
+    && fm_caretaker_ledger_present "$learnings"; then
+    # shellcheck disable=SC2016 # The backticks are literal Markdown code quotes.
+    printf 'A hand-written recurrence ledger exists in data/learnings.md outside the canonical `%s` section, so its rows are not counted here. Review it directly and migrate it to the canonical heading and row format.\n' "$FM_CARETAKER_LEDGER_HEADING"
+    return 0
+  fi
   if [ ! -f "$learnings" ] || ! grep -Fxq -- "$FM_CARETAKER_LEDGER_HEADING" "$learnings"; then
     # shellcheck disable=SC2016 # The backticks are literal Markdown code quotes.
     printf 'No `%s` section in data/learnings.md.\n' "$FM_CARETAKER_LEDGER_HEADING"

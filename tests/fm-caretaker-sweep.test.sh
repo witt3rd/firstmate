@@ -273,6 +273,23 @@ EOF
   pass "fm-caretaker-sweep.sh: the snapshot and schedule leave every project clone, worktree, and origin byte-identical"
 }
 
+test_snapshot_reports_a_hand_written_ledger_outside_the_canonical_section() {
+  local home out
+  home="$TMP_ROOT/snapshot-legacy-home"
+  scaffold_charter "$home" keeper --caretaker --sweep-every 7d
+  printf '# Learnings\n\n- Recurrence ledger (problem class | occurrences | remedy status):\n  - a class | 2026-09-26; 2026-09-27 | open\n' \
+    > "$home/data/learnings.md"
+  out=$(FM_HOME="$home" FM_CARETAKER_SWEEP_NOW="$T0" "$SWEEP" snapshot) || fail "snapshot failed"
+  assert_contains "$out" 'hand-written recurrence ledger exists' "a hand-written ledger was not reported"
+  assert_contains "$out" 'migrate it to the canonical heading' "the migration step was not stated"
+  printf '%s\n' "$out" | grep -F 'No `## Recurrence ledger` section' >/dev/null \
+    && fail "a hand-written ledger was reported as absent"
+  printf '# Learnings\n\nnothing here\n' > "$home/data/learnings.md"
+  out=$(FM_HOME="$home" FM_CARETAKER_SWEEP_NOW="$T0" "$SWEEP" snapshot) || fail "snapshot failed"
+  assert_contains "$out" 'No `## Recurrence ledger` section' "a home with no ledger was not reported as having none"
+  pass "fm-caretaker-sweep.sh: the snapshot names a hand-written ledger it cannot count"
+}
+
 test_seed_initializes_the_ledger_for_caretaker_charters_only() {
   local main sub legacy plain_sub before
   main="$TMP_ROOT/seed-main"
@@ -384,5 +401,6 @@ test_remote_provision_initializes_the_ledger_for_caretaker_charters_only() {
 test_due_follows_the_declared_cadence_and_durable_record
 test_arm_registers_the_check_only_for_a_declared_caretaker
 test_snapshot_never_mutates_project_clones
+test_snapshot_reports_a_hand_written_ledger_outside_the_canonical_section
 test_seed_initializes_the_ledger_for_caretaker_charters_only
 test_remote_provision_initializes_the_ledger_for_caretaker_charters_only
