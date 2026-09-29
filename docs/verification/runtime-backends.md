@@ -1734,6 +1734,48 @@ poll 8: {"agent_status":"working","session":".../2026-09-21T14-10-08-776Z_01a0c4
 
 The read that supplies the reference is `bin/backends/herdr.sh`'s `fm_backend_herdr_pane_agent_session_ref`, the per-harness rule is `bin/fm-control-lib.sh`'s `fm_control_relaunch_resume_flag`, and the launch argument is composed by `relaunch_resume_args` in `bin/fm-spawn.sh`; `docs/herdr-backend.md` "Agent status authority and relaunch" owns the contract. Nothing here changes `resume` as a control verb, and only a relaunch asks for it.
 
+### Agent registration at launch
+
+Measured 2026-09-29 on Linux x86_64 against Herdr 0.9.2 and Pi 0.87.1, in an isolated `fm-lab-` session (`bin/fm-herdr-lab.sh`), with the Herdr Pi integration version 9 installed.
+
+A freshly launched Pi stays unregistered when the pane shell sources the launch without job control and the Pi keeps redrawing.
+The staged launch keeps the screen busy for 10 seconds (past Herdr's acquisition window), then starts Pi with no prompt and an extension that sets a status line every 150 ms, which stands in for a Pi working on its brief:
+
+```sh
+# /tmp/fm-hpaf/launch-bug.sh
+export COMPACT_ADVISER_DISABLE=1; sh -c 'i=0; while [ $i -lt 50 ]; do printf .; sleep 0.2; i=$((i+1)); done; echo'; env -u CURSOR_AGENT FM_PI_HARNESS=pi "$PI" --no-session --no-context-files -e /tmp/fm-hpaf/churn.ts
+```
+
+Each pane below first ran a nested shell (`fish`, or `bash --norc --noprofile` followed by `set +m`), then the typed line, then was read every second with `herdr pane get <pane> --session "$LAB" | jq -c '.result.pane | {agent, agent_status}'` and `herdr pane process-info --pane <pane> --session "$LAB"`:
+
+| Nested shell | Typed line | Registration | Foreground group |
+| --- | --- | --- | --- |
+| fish | `. /tmp/fm-hpaf/launch-bug.sh` | `{"agent":null,"agent_status":"unknown"}` for 35 s | `fish`, `pi` |
+| bash, `set +m` | `. /tmp/fm-hpaf/launch-bug.sh` | `{"agent":null,"agent_status":"unknown"}` for 20 s | `bash`, `pi` |
+| bash, job control on | `. /tmp/fm-hpaf/launch-bug.sh` | `{"agent":"pi","agent_status":"idle"}` from 12 s | `pi` |
+| fish | `/bin/sh -c 'set -m; . "$0"' '/tmp/fm-hpaf/launch-bug.sh'` | `{"agent":"pi","agent_status":"idle"}` from 12 s | `pi` |
+| bash, `set +m` | `/bin/sh -c 'set -m; . "$0"' '/tmp/fm-hpaf/launch-bug.sh'` | `{"agent":"pi","agent_status":"idle"}` from 12 s | `pi` |
+
+After `/quit` in a fixed pane, the foreground returned to the nested shell and a typed `echo alive-$?` printed `alive-0`.
+Typing `sh /tmp/fm-hpaf/launch-bug.sh` from fish did not register Pi either: that gives the whole launch one new group when it starts, and the busy preamble spends Herdr's window before Pi appears inside the same group.
+
+The live guard that refreshes this record runs by default wherever Herdr and Pi are installed, spends no model token, and fails naming both versions:
+
+```sh
+tests/fm-herdr-pi-launch-registration-live-e2e.test.sh
+```
+
+Observed 2026-09-29:
+
+```text
+# pi 0.87.1 under herdr 0.9.2: launch-line pane registered pi, foreground [{"name":"pi","argv0":null}]
+ok - real herdr 0.9.2 + pi 0.87.1: a Pi started through the Herdr launch line registers as an agent even when the pane shell has no job control
+# herdr 0.9.2 still leaves a sourced, continuously redrawing Pi unregistered under a shell without job control (foreground [{"name":"bash","argv0":null},{"name":"pi","argv0":null}]): the launch line is what registers it
+```
+
+`tests/fm-backend-herdr-launch-line.test.sh` pins the portable half in a real pseudo-terminal without Herdr: from a bash with job control off, the typed line gives a stand-in agent its own process group holding the terminal foreground, returns the terminal and the agent's exit status to the shell, and the plain source line from the same shell keeps the agent in the shell's group.
+`docs/herdr-backend.md` "Agent registration at launch" owns the contract.
+
 ### Away-mode transport
 
 The away daemon is no longer launched on Pi; the away posture there is the record `bin/fm-afk-contract.sh` owns.

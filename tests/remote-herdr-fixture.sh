@@ -121,6 +121,14 @@ SH
   reset_remote_herdr_fixture "$state"
 }
 
+# remote_herdr_staged_launch <log-file>: the staged launch file named by the
+# last launch line the remote pane received as a `pane send-text` in <log-file>,
+# or nothing. The line's shape belongs to bin/backends/herdr.sh
+# (fm_backend_herdr_launch_line); only the quoted launch-file path is read here.
+remote_herdr_staged_launch() { # <log-file>
+  sed -n "s/^pane send-text [^ ]* .*'\\(\\/[^']*\\/launch\\.[^']*\\.sh\\)' --session [^ ]*\$/\\1/p" "$1" | tail -1
+}
+
 # reset_remote_herdr_fixture <state>: return the fake host to "no workspaces,
 # tabs, or panes", which is what a test means by "the previous endpoint is gone".
 reset_remote_herdr_fixture() { # <state>

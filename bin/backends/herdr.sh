@@ -3082,6 +3082,27 @@ fm_backend_herdr_send_literal() {  # <target> <text>
   return "$rc"
 }
 
+# fm_backend_herdr_launch_line: the short line fm-spawn.sh types to start a
+# staged launch file in a Herdr pane. Other backends type `. '<file>'`; Herdr
+# instead sources the file inside a /bin/sh that has job control on (set -m),
+# so the agent command becomes its own process group and takes the terminal
+# foreground the moment it starts, whatever the pane shell is.
+# Herdr registers an agent only by probing the pane's foreground process group,
+# and it re-probes an agent-free pane only when that group changes or in a
+# short window after the screen has been still for a moment. A pane shell
+# without job control for sourced commands (fish, or a shell with monitor mode
+# off) runs the agent inside its own group, so no group change happens, and an
+# agent that keeps redrawing never leaves the screen still: the pane stays
+# agent-free and every hook report is held back
+# (docs/herdr-backend.md "Agent registration at launch").
+# The file path is the single positional operand, quoted for any pane shell.
+fm_backend_herdr_launch_line() {  # <launch-file>
+  local quoted
+  quoted=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
+  # shellcheck disable=SC2016  # $0 is expanded by the job-control sh, not here
+  printf '%s' "/bin/sh -c 'set -m; . \"\$0\"' '$quoted'"
+}
+
 # fm_backend_herdr_normalize_key: map firstmate's key vocabulary (Enter,
 # Escape, C-c, as used by fm-send.sh --key and stuck-crewmate-recovery) onto
 # herdr's `pane send-keys` names. Verified empirically: enter, escape/esc, and
