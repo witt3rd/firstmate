@@ -684,10 +684,14 @@ github_read_required_contexts() {
   [ -z "$FM_PR_GITHUB_REQUIRED_ERROR" ]
 }
 
+# The live view, required set, and producers all arrive on stdin: a busy head's
+# check-run data exceeds Linux's 128 KiB limit on one exec argument.
 github_required_checks_missing() {
   local json=$1 required=$2 producers=$3
-  printf '%s' "$json" | jq -r --argjson required "$required" --argjson producers "$producers" '
-    if (.statusCheckRollup | type) != "array" then error("no check rollup") else . end
+  printf '%s\n%s\n%s\n' "$json" "$required" "$producers" | jq -rn '
+    input as $pr | input as $required | input as $producers
+    | $pr
+    | if (.statusCheckRollup | type) != "array" then error("no check rollup") else . end
     | .statusCheckRollup as $reported
     | $required
     | map(. as $requirement

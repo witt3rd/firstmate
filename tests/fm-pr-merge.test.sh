@@ -3383,6 +3383,47 @@ test_app_bound_required_status_context_matches_by_name() {
   pass "fm-pr-merge matches an app-bound required commit status by name"
 }
 
+# GitHub returns every check run with its full output, so a busy head's
+# check-run payload easily exceeds Linux's 128 KiB limit on one exec argument.
+# The merge-readiness verdict must still be reached, and be the same verdict a
+# small payload gets, instead of refusing because jq could not start.
+test_large_check_run_data_keeps_the_merge_verdict() {
+  local case_dir head variant app padding runs expected
+  head=a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8
+  padding=$(printf '%*s' 2048 '' | tr ' ' x)
+  for variant in correct wrong; do
+    case_dir=$(make_case "required-producer-large-$variant")
+    add_gh_mocks "$case_dir" "$head"
+    write_github_required "$case_dir" ruleset:ci
+    jq '.[1].parameters.required_status_checks[0].integration_id = 15368' \
+      "$case_dir/github-required-rules.json" > "$case_dir/updated.json"
+    mv "$case_dir/updated.json" "$case_dir/github-required-rules.json"
+    app=42
+    [ "$variant" != correct ] || app=15368
+    runs=$(jq -nc --arg head "$head" --arg text "$padding" --argjson app "$app" '
+      {check_runs: ([range(0; 150) | {name: ("lint-" + tostring), app: {id: 42},
+          head_sha: $head, output: {text: $text}}]
+        + [{name: "ci", app: {id: $app}, head_sha: $head, output: {text: $text}}])}')
+    printf '%s\n' "$runs" > "$case_dir/github-runs.json"
+    [ "$(wc -c < "$case_dir/github-runs.json")" -gt 131072 ] \
+      || fail "large-$variant: the check-run fixture is not over the 128 KiB argument limit"
+    run_required_case "$case_dir" 112
+    expected=1
+    [ "$variant" != correct ] || expected=0
+    expect_code "$expected" "$RC" "large-$variant: $(cat "$case_dir/stderr")"
+    assert_no_grep 'could not be read' "$case_dir/stderr" \
+      "large-$variant: large check-run data was reported unreadable"
+    if [ "$variant" = correct ]; then
+      assert_logged_gh_merge "$case_dir" 112 example/repo --squash
+    else
+      assert_grep "required check 'ci' has not reported" "$case_dir/stderr" \
+        "large-wrong: the wrong producer was not reported"
+      assert_no_grep 'pr merge' "$case_dir/gh.log" "large-wrong: the wrong producer reached merge"
+    fi
+  done
+  pass "fm-pr-merge reaches the same verdict with check-run data over the argument limit"
+}
+
 test_required_partial_reads_report_all_failures() {
   local case_dir head variant
   head=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
@@ -3717,4 +3758,5 @@ test_allow_missing_follows_the_allow_red_rules
 
 test_required_producer_identity
 test_app_bound_required_status_context_matches_by_name
+test_large_check_run_data_keeps_the_merge_verdict
 test_required_partial_reads_report_all_failures
