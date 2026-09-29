@@ -22,6 +22,7 @@ Herdr provides the terminal session while Treehouse continues to provide task wo
 | Why a seeded default tab is or is not closed | [Default-tab prune safety](#default-tab-prune-safety) |
 | What task metadata records for a Herdr endpoint | [Endpoint metadata](#endpoint-metadata) |
 | How text and keys reach a worker and how delivery is confirmed | [Current transport behavior](#current-transport-behavior) and [Composer and injection safety](#composer-and-injection-safety) |
+| Why a new worker registers as an agent, or reads as no agent | [Agent registration at launch](#agent-registration-at-launch) |
 | What happens after a Herdr server restart and how liveness is judged | [Restart and liveness behavior](#restart-and-liveness-behavior) |
 | How blocked transitions arrive and what happens without protocol 16 | [Push events and polling fallback](#push-events-and-polling-fallback) |
 | Where the away daemon runs and how it stops | [Away-mode supervisor support](#away-mode-supervisor-support) |
@@ -657,6 +658,27 @@ Claude Code itself then removes it from the submitted prompt, so a Claude Code p
 `bin/fm-operational-input.sh` owns current operational construction and parsing, and the AFK skill owns legacy away-input compatibility.
 No Herdr-specific copy of that protocol exists.
 
+## Agent registration at launch
+
+Herdr registers an agent in a pane only by probing that pane's foreground process group.
+It probes an agent-free pane again only when that group changes, or during a short window that opens when the screen changes after being still (8 seconds after 2 still seconds in the Herdr 0.9.2 source).
+Until a probe finds the agent, Herdr also holds back the Pi integration's lifecycle reports, so the pane reads no agent and `agent_status` `unknown`.
+
+A pane shell that runs sourced commands inside its own process group therefore hides a new agent from that probe.
+fish does this for every sourced command, and so does any shell with monitor mode off.
+When the launch runs past the probe window and the agent then keeps redrawing, as a Pi working on its brief does, the pane stays agent-free for as long as the agent works.
+Steering then treats the live worker as exited and rings no doorbell, and liveness reads misjudge the pane.
+
+So on Herdr, `bin/fm-spawn.sh` does not type `. '<launch file>'`.
+It types the line that `fm_backend_herdr_launch_line` in `bin/backends/herdr.sh` builds, which sources the same staged file inside a `/bin/sh` with job control on.
+Each command in the file, the agent included, then runs as its own process group and takes the terminal foreground as it starts, so Herdr probes it at once whatever the pane shell is.
+The terminal returns to the pane shell when the agent exits, and the line returns the agent's exit status.
+This covers every fresh spawn and relaunch of every harness on Herdr.
+The launch command therefore runs under POSIX `sh` on Herdr rather than the pane shell, so a raw launch command must use POSIX `sh` syntax there.
+
+`tests/fm-backend-herdr-launch-line.test.sh` pins the process-group guarantee in a real pseudo-terminal without Herdr.
+`tests/fm-herdr-pi-launch-registration-live-e2e.test.sh` proves the registration against the real Herdr and Pi, and [verification](verification/runtime-backends.md#agent-registration-at-launch) records the measurement.
+
 ## Restart and liveness behavior
 
 ### Husks after a server restart
@@ -845,7 +867,9 @@ tests/fm-backend-herdr-workspace-per-home-e2e.test.sh
 tests/fm-backend-herdr-launcher-workspace-e2e.test.sh
 tests/fm-backend-herdr-presentation-e2e.test.sh
 tests/fm-backend-herdr-agent-exit-shell-e2e.test.sh
+tests/fm-backend-herdr-launch-line.test.sh
 tests/fm-herdr-pi-stale-registration-live-e2e.test.sh
+tests/fm-herdr-pi-launch-registration-live-e2e.test.sh
 tests/fm-backend-herdr-eventwait-smoke.test.sh
 tests/fm-control-herdr-smoke.test.sh
 tests/fm-herdr-session-cleanup.test.sh

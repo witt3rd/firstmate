@@ -272,7 +272,11 @@
 # Launch delivery:
 #   Every harness and backend receives its complete launch command from a
 #   never-reused 0600 file in a 0700 home-scoped task namespace under /tmp, while
-#   the pane receives only a short source line.
+#   the pane receives only a short line that sources it. On Herdr that line
+#   sources the file inside a job-controlled /bin/sh so the agent takes the
+#   terminal foreground as its own process group, which is what Herdr's agent
+#   registration waits for (bin/backends/herdr.sh fm_backend_herdr_launch_line);
+#   the launch command therefore runs under /bin/sh there, not the pane shell.
 #   This keeps commands beyond the terminal's roughly 1,024-byte input boundary
 #   intact, prevents a delayed source line from being rebound by a relaunch, and
 #   prevents equal task ids in different Firstmate homes from sharing a file.
@@ -300,7 +304,8 @@
 #   even on a host that never had it set.
 #   An enabled task trace also retains TRACEPARENT. Explicit Firstmate launch
 #   assignments still apply inside the filtered environment. Raw commands must
-#   be POSIX sh compatible under this opt-in; the absent-file path is unchanged.
+#   be POSIX sh compatible under this opt-in, and on Herdr always; elsewhere the
+#   absent-file path is unchanged.
 #   This is an exec environment boundary, not a sandbox for the pane's startup
 #   shell, credential files, same-user processes, or later shell initialization.
 #   See docs/configuration.md for provider/Git setup and supported limits.
@@ -5325,7 +5330,11 @@ if ! (umask 077 && printf '%s\n' "$LAUNCH" >"$LAUNCH_STAGE" &&
 fi
 sleep 0.3
 SPAWN_LAUNCH_SENT=1
-spawn_send_literal "$T" ". $(shell_quote "$LAUNCH_FILE")"
+if [ "$BACKEND" = herdr ]; then
+  spawn_send_literal "$T" "$(fm_backend_herdr_launch_line "$LAUNCH_FILE")"
+else
+  spawn_send_literal "$T" ". $(shell_quote "$LAUNCH_FILE")"
+fi
 sleep 0.3
 if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
   HERDR_PROJECTION_ABORT_CLEANUP=0

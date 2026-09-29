@@ -2004,14 +2004,17 @@ case "${1:-} ${2:-}" in
   'pane send-text')
     # Mirrors the tmux fake's `becomes`: delivering the launch brief is what
     # makes an agent exist on this pane, so the control plane's alive-wait can
-    # observe the replacement come up. A launch arrives as a short line sourcing
-    # the staged launch file rather than the literal command, so read that file
-    # back before deciding what was delivered - exactly as the tmux fake above
-    # and tests/fixtures.sh do.
+    # observe the replacement come up. A launch arrives as a short line that
+    # sources the staged launch file (on Herdr inside a job-controlled /bin/sh,
+    # bin/backends/herdr.sh fm_backend_herdr_launch_line) rather than the
+    # literal command, so read that file back before deciding what was
+    # delivered - exactly as the tmux fake above and tests/fixtures.sh do.
     payload=${4:-}
-    case "$payload" in
-      ". '"*"'") staged=${payload#". '"}; staged=${staged%"'"}; [ ! -f "$staged" ] || payload=$(cat "$staged") ;;
-    esac
+    staged=$(printf '%s' "$payload" | sed -n "s/.*'\(\/[^']*\/launch\.[^']*\.sh\)'\$/\1/p")
+    [ -z "$staged" ] || [ ! -f "$staged" ] || {
+      printf '%s\n' "$payload" > "$D/launch-line"
+      payload=$(cat "$staged")
+    }
     case "$payload" in
       *'encode launch-brief'* | *'Firstmate operational input waiting: read'*)
         printf '%s\n' "$payload" > "$D/launched-command"
@@ -2117,7 +2120,7 @@ herdr_case_or_skip() {  # <name> <id> [session] [surviving-pane]
 }
 
 test_herdr_relaunch_resumes_only_the_registered_pi_session() {
-  local dir out rc=0 command registered
+  local dir out rc=0 command registered launch_line staged
   for registered in pi claude; do
     herdr_case_or_skip "resume-$registered" "resume-$registered" || {
       echo "skip - herdr relaunch needs jq (the herdr adapter parses JSON with it)"
@@ -2133,6 +2136,10 @@ test_herdr_relaunch_resumes_only_the_registered_pi_session() {
     out=$(run_spawn "$dir" "resume-$registered" --relaunch --harness pi) || rc=$?
     expect_code 0 "$rc" "Herdr Pi relaunch should complete ($registered registration)"$'\n'"$out"
     command=$(cat "$dir/fake/launched-command")
+    launch_line=$(cat "$dir/fake/launch-line")
+    staged=$(printf '%s' "$launch_line" | sed -n "s/.*'\(\/[^']*\/launch\.[^']*\.sh\)'\$/\1/p")
+    assert_equals "$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_launch_line "$1"' "$ROOT" "$staged")" "$launch_line" \
+      "a Herdr relaunch must start its staged launch through the Herdr launch line, so the agent takes its own foreground group"
     if [ "$registered" = pi ]; then
       assert_contains "$command" "--session '/tmp/pi-bound-session.jsonl'" \
         "the replacement Pi must resume the session that owns Herdr status authority"

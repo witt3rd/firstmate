@@ -971,6 +971,7 @@ Choose the minimum additions for the authentication method actually in use:
 
 Verify the selected provider login and Git transport after opting in; Firstmate does not infer credentials from model names or install a secret manager.
 Raw launch commands run under noninteractive POSIX `sh` with this option and must use compatible syntax.
+On the Herdr backend they always run under POSIX `sh` ([Herdr backend](herdr-backend.md#agent-registration-at-launch)).
 
 The filter runs at the worker command boundary, after the terminal daemon and pane shell have started; it does not scrub either of those processes.
 This is not a sandbox: it cannot revoke same-user access to credential files, prevent tools or later shells from loading credentials again, or isolate processes from the same user's other processes.
