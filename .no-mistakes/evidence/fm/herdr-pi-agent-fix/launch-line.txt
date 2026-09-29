@@ -1,0 +1,2 @@
+ok - herdr launch line: from a shell without job control, the agent runs as its own foreground process group and the terminal returns to the shell
+ok - herdr launch line counterfactual: a plain '. <file>' agent shares the pane shell's group, the shape Herdr never registers
