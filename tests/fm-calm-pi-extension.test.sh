@@ -4383,18 +4383,20 @@ JS
   chrome_report=$(render_export_dom "$chrome" "$export_file" "$export_dom" "$version") \
     || fail "could not render calm-mode HTML export DOM: $chrome_report"
   node - "$export_dom" <<'JS' || fail "rendered export DOM violated the Calm conversation boundary"
+// Name the failed assertion so a drift in Pi's export shape is diagnosable from a CI log.
+const bail = (what) => { console.error(`export DOM assertion failed: ${what}`); process.exit(1); };
 const dom = require("node:fs").readFileSync(process.argv[2], "utf8");
 const messages = dom.match(/<div id="messages">([\s\S]*?)<\/main>/)?.[1];
 const tree = dom.match(/<div[^>]*id="tree-container"[^>]*>([\s\S]*?)<div[^>]*id="tree-status"/)?.[1];
-if (!messages || !tree) process.exit(1);
-if (!/<div class="user-message"[^>]*>[\s\S]*Show a deterministic tool example\./.test(messages)) process.exit(1);
-if (!/<div class="assistant-message"[^>]*>[\s\S]*The deterministic tool example is complete\./.test(messages)) process.exit(1);
-if (messages.includes('<div class="hook-message"')) process.exit(1);
-if (messages.includes("[firstmate-synthetic-input]")) process.exit(1);
+if (!messages || !tree) bail("check 1");
+if (!/<div class="user-message"[^>]*>[\s\S]*Show a deterministic tool example\./.test(messages)) bail("check 2");
+if (!/<div class="assistant-message"[^>]*>[\s\S]*The deterministic tool example is complete\./.test(messages)) bail("check 3");
+if (messages.includes('<div class="hook-message"')) bail("check 4");
+if (messages.includes("[firstmate-synthetic-input]")) bail("check 5");
 for (const current of ["CURRENT_WATCHER_E2E", "CURRENT_TURN_END_E2E", "CURRENT_AWAY_E2E", "CURRENT_FROM_FIRSTMATE_E2E", "CURRENT_LAUNCH_BRIEF_E2E"]) {
-  if (!messages.includes(current)) process.exit(1);
+  if (!messages.includes(current)) bail(`missing ${current}`);
 }
-if (!tree.includes("firstmate-synthetic-input") || !tree.includes("/tmp/probe.status")) process.exit(1);
+if (!tree.includes("firstmate-synthetic-input") || !tree.includes("/tmp/probe.status")) bail("check 6");
 JS
   # Calm returns the transcript to its own presentation once the export has been
   # rendered. That repaint runs on the macrotask right after Pi prints the export
