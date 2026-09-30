@@ -154,6 +154,8 @@ esac
 . "$SCRIPT_DIR/fm-dod-lib.sh"
 # shellcheck source=bin/fm-caretaker-lib.sh
 . "$SCRIPT_DIR/fm-caretaker-lib.sh"
+# shellcheck source=bin/fm-sibling-lib.sh
+. "$SCRIPT_DIR/fm-sibling-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 IFS= read -r -d '' CREWMATE_PAUSE_INSTRUCTIONS <<EOF || true
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - when deliberately waiting for work or an external condition expected to clear on its own, including your own validation round.
@@ -395,6 +397,11 @@ When a terminal message says an instruction is waiting there - and at any natura
 The move IS the acknowledgement: without it firstmate rings again and eventually treats you as stuck. An empty or absent inbox needs no action.
 EOF
 INBOX_SECTION=${INBOX_SECTION%$'\n'}
+# FORK-ONLY EXPERIMENT (docs/sibling-notes.md): with config/sibling-notes on, every
+# scaffold kind also describes the sibling-note command. Off adds no byte.
+if fm_sibling_notes_enabled "$CONFIG"; then
+  INBOX_SECTION="$INBOX_SECTION"$'\n\n'"$(fm_sibling_brief_section "$KIND" "$FM_ROOT/bin/fm-sibling.sh")"
+fi
 
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""

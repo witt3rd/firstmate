@@ -385,6 +385,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/sibling-notes.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/herdr-backend.md",
       "audience": "operator-current"
     },
