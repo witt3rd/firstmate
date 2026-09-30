@@ -1,0 +1,40 @@
+name: Pi latest compatibility
+
+# Early warning, not a gate: the required CI pins the Pi release the fleet runs
+# (see ci.yml). This workflow runs the Pi extension tests against the latest
+# public Pi so stock-rendering drift is seen here, daily, instead of turning
+# every PR red. It never runs on pull requests, so it cannot block a merge.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pi-latest:
+    name: Pi extension tests on latest Pi
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Require tmux
+        run: |
+          set -eu
+          command -v tmux >/dev/null || { echo "::error::tmux is required"; exit 1; }
+      - name: Install latest Pi and TypeScript
+        run: |
+          set -eu
+          npm install -g @earendil-works/pi-coding-agent@latest typescript
+          npm ls -g --depth 0 @earendil-works/pi-coding-agent
+      - name: Run Pi extension tests against latest Pi
+        run: |
+          set -u
+          rc=0
+          for t in fm-pi-primary-types fm-pi-branch-extension fm-calm-pi-extension; do
+            echo "::group::$t"
+            bash "tests/$t.test.sh" || { echo "::error::$t failed against latest Pi"; rc=1; }
+            echo "::endgroup::"
+          done
+          exit "$rc"
