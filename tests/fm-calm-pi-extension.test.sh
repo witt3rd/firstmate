@@ -4392,7 +4392,12 @@ if (!messages || !tree) bail("check 1");
 if (!/<div class="user-message"[^>]*>[\s\S]*Show a deterministic tool example\./.test(messages)) bail("check 2");
 if (!/<div class="assistant-message"[^>]*>[\s\S]*The deterministic tool example is complete\./.test(messages)) bail("check 3");
 if (messages.includes('<div class="hook-message"')) bail("check 4");
-if (messages.includes("[firstmate-synthetic-input]")) bail("check 5");
+// Pi >= 0.99 keeps hidden custom messages in the export DOM, hidden by CSS; older Pi omits them.
+const marker = "[firstmate-synthetic-input]";
+for (let at = messages.indexOf(marker); at !== -1; at = messages.indexOf(marker, at + 1)) {
+  const start = messages.lastIndexOf('<div class="hook-message', at);
+  if (start === -1 || !messages.startsWith('<div class="hook-message hook-message-hidden"', start)) bail("check 5");
+}
 for (const current of ["CURRENT_WATCHER_E2E", "CURRENT_TURN_END_E2E", "CURRENT_AWAY_E2E", "CURRENT_FROM_FIRSTMATE_E2E", "CURRENT_LAUNCH_BRIEF_E2E"]) {
   if (!messages.includes(current)) bail(`missing ${current}`);
 }
