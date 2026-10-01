@@ -44,7 +44,7 @@
       }
     },
     "personal": {
-      "doppler": "fleet/dev_personal",
+      "doppler": "fleet/dev",
       "pi_account": {
         "root": "/home/dt/.pi/personal/agent",
         "providers": [

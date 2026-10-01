@@ -71,7 +71,7 @@ write_dispatch() {
       "default": { "harness": "pi", "model": "$SONNET", "effort": "medium" }
     },
     "personal": {
-      "doppler": "fleet/dev_personal",
+      "doppler": "fleet/dev",
       "pi_account": { "root": "$personal", "providers": ["openrouter"] },
       "rules": [
         { "when": "Hard or ambiguous work.", "use": { "harness": "pi", "model": "$CHEAP", "effort": "high" } }
@@ -351,6 +351,10 @@ test_the_day_one_example_reproduces_todays_routing() {
     fm_spend_profile_select "$cfg" not-registered "" "" "" "" pi "$CHEAP" "" >/dev/null 2>&1 && exit 10
     exit 0
   ); out=$?
+  [ "$(jq -r '.spend_profiles.work.doppler' "$ROOT/docs/examples/crew-dispatch.spend-profiles.json")" = fleet/dev_work ] \
+    || fail "the work profile's Doppler provenance should be fleet/dev_work"
+  [ "$(jq -r '.spend_profiles.personal.doppler' "$ROOT/docs/examples/crew-dispatch.spend-profiles.json")" = fleet/dev ] \
+    || fail "the personal profile's Doppler provenance should be fleet/dev"
   expect_code 0 "$out" "the day-one example must map every registered project plus firstmate and keep the personal profile cheap (stage $out)"
   pass "the day-one example maps work, personal, and unmapped projects as today's routing requires"
 }
