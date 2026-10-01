@@ -1,0 +1,60 @@
+== fm-spend-profile
+ok - a dispatch file without spend_profiles launches and records exactly as before
+ok - a CAPPZ project resolves to the personal store and a Spire project to the work store
+ok - a CAPPZ task asking for Opus or Sonnet on the personal profile is refused before launch
+ok - a pi-account that disagrees with the project's profile is refused in both directions
+ok - a project that is not in the profile map refuses to launch, ship or scout, until it is mapped
+ok - a profile other than the project's own needs the captain's words, and the record keeps them
+ok - a harness that cannot pin the profile's account, and a raw Pi command, are refused
+ok - malformed spend profiles, a shared store, and an unreadable spend-profile file refuse before launch
+ok - a secondmate spawn is exempt from project profiles and refuses --profile
+ok - the day-one example maps work, personal, and unmapped projects as today's routing requires
+# all fm-spend-profile tests passed
+== fm-dispatch-resolve
+ok - declared provider and profile floor evidence are applied in code
+ok - nonnumeric spendPriority evidence is never ranked
+ok - partial and missing quota evidence remain eligible but unranked
+ok - provider-wide and exact quota rows combine into one limiting candidate
+ok - default: no rule matched resolves among the default profiles
+ok - tie: equal spendPriority never breaks by array order
+ok - no rankable candidate: the tool escalates instead of guessing
+ok - native Codex binds to codex-home before default, independently of Pi accounts and row order
+ok - Pi native adapters bind to codex-home with existing fallbacks and schema 5 compatibility
+ok - schema 6: each candidate binds to its account row; schema 5 is unchanged
+ok - quota evidence comes from one quota-axi --json read, and its failure is an error outcome
+ok - API, transport, and response failures are error outcomes with exit 0
+ok - configuration errors exit 2 before any network call
+ok - under spend profiles the resolver request carries only the project's profile rules, built offline
+# all fm-dispatch-resolve tests passed
+== fm-control-relaunch
+rm: cannot remove '/tmp/fm-control-relaunch.RTyR3A/same-1532/home/state/rl1.git-hooks/sendemail-validate': Permission denied
+rm: cannot remove '/tmp/fm-control-relaunch.RTyR3A/same-1532/home/state/rl1.git-hooks/pre-auto-gc': Permission denied
+rm: cannot remove '/tmp/fm-control-relaunch.RTyR3A/same-1532/home/state/rl1.git-hooks/post-rewrite': Permission denied
+rm: cannot remove '/tmp/fm-control-relaunch.RTyR3A/same-1532/home/state/rl1.git-hooks/pre-push': Permission denied
+rm: cannot remove '/tmp/fm-control-relaunch.RTyR3A/same-1532/home/state/rl1.git-hooks/post-merge': Permission denied
+rm: cannot remove '/tmp/fm-control-relaunch.RTyR3A/same-1532/home/state/rl1.git-hooks/post-checkout': Permission denied
+rm: cannot remove '/tmp/fm-control-relaunch.RTyR3A/same-1532/home/state/rl1.git-hooks/pre-rebase': Permission denied
+rm: cannot remove '/tmp/fm-control-relaunch.RTyR3A/same-1532/home/state/rl1.git-hooks/post-commit': Permission denied
+rm: cannot remove '/tmp/fm-control-relaunch.RTyR3A/same-1532/home/state/rl1.git-hooks/prepare-commit-msg': Permission denied
+rm: cannot remove '/tmp/fm-control-relaunch.RTyR3A/same-1532/home/state/rl1.git-hooks/pre-merge-commit': Permission denied
+rm: cannot remove '/tmp/fm-control-relaunch.RTyR3A/same-1532/home/state/rl1.git-hooks/pre-commit': Permission denied
+rm: cannot remove '/tmp/fm-control-relaunch.RTyR3A/same-1532/home/state/rl1.git-hooks/post-applypatch': Permission denied
+rm: cannot remove '/tmp/fm-control-relaunch.RTyR3A/same-1532/home/state/rl1.git-hooks/pre-applypatch': Permission denied
+rm: cannot remove '/tmp/fm-control-relaunch.RTyR3A/same-1532/home/state/rl1.git-hooks/applypatch-msg': Permission denied
+rm: cannot remove '/tmp/fm-control-relaunch.RTyR3A/same-1532/home/state/rl1.git-hooks/commit-msg': Permission denied
+== fm-bootstrap
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+ok - bootstrap gates resolver fields and additive harnesses on the typed key
