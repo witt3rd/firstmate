@@ -1,0 +1,143 @@
+{
+  "spend_profiles": {
+    "work": {
+      "doppler": "fleet/dev_work",
+      "pi_account": {
+        "root": "ordinary",
+        "providers": [
+          "openrouter"
+        ]
+      },
+      "rules": [
+        {
+          "when": "The task is a trivial mechanical edit: a rote rename, formatting sweep, typo fix, file gathering, or a one-line config change with no judgment involved.",
+          "use": {
+            "harness": "pi",
+            "model": "openrouter/deepseek/deepseek-v4.1-flash",
+            "effort": "low"
+          },
+          "why": "Cheapest capable model for narrow, unambiguous work."
+        },
+        {
+          "when": "The task is hard or ambiguous: a design or architecture decision, root-cause diagnosis of a subtle bug, a security-sensitive change, a risky refactor, an investigation whose conclusion could change what gets built, or work that has to hold many moving parts in mind.",
+          "use": {
+            "harness": "pi",
+            "model": "openrouter/anthropic/claude-opus-5.5",
+            "effort": "high"
+          },
+          "why": "Strongest reasoning for work where a wrong call is expensive; pay for it only here."
+        },
+        {
+          "when": "The task is a scout that reads, compares or summarises existing material into a report without changing code or needing deep reasoning: a literature or repo survey, an inventory, a reading of logs, a status scan.",
+          "use": {
+            "harness": "pi",
+            "model": "openrouter/z-ai/glm-5.3-flashx",
+            "effort": "low"
+          },
+          "why": "Reading and summarising does not need deep reasoning; a fast, cheap long-context model fits."
+        }
+      ],
+      "default": {
+        "harness": "pi",
+        "model": "openrouter/anthropic/claude-sonnet-5.5",
+        "effort": "medium"
+      }
+    },
+    "personal": {
+      "doppler": "fleet/dev_personal",
+      "pi_account": {
+        "root": "/home/dt/.pi/personal/agent",
+        "providers": [
+          "openrouter"
+        ]
+      },
+      "rules": [
+        {
+          "when": "The task is a trivial mechanical edit: a rote rename, formatting sweep, typo fix, file gathering, or a one-line config change with no judgment involved.",
+          "use": {
+            "harness": "pi",
+            "model": "openrouter/deepseek/deepseek-v4.1-flash",
+            "effort": "low"
+          },
+          "why": "Cheapest capable model for narrow, unambiguous work."
+        },
+        {
+          "when": "The task is hard or ambiguous: a design or architecture decision, root-cause diagnosis of a subtle bug, a security-sensitive change, a risky refactor, an investigation whose conclusion could change what gets built, or work that has to hold many moving parts in mind.",
+          "use": {
+            "harness": "pi",
+            "model": "openrouter/deepseek/deepseek-v4.1-flash",
+            "effort": "high"
+          },
+          "why": "The personal key never pays for Opus or Sonnet: hard work stays on the cheap model at high effort."
+        },
+        {
+          "when": "The task is a scout that reads, compares or summarises existing material into a report without changing code or needing deep reasoning: a literature or repo survey, an inventory, a reading of logs, a status scan.",
+          "use": {
+            "harness": "pi",
+            "model": "openrouter/deepseek/deepseek-v4.1-flash",
+            "effort": "low"
+          },
+          "why": "Reading and summarising does not need deep reasoning."
+        }
+      ],
+      "default": {
+        "harness": "pi",
+        "model": "openrouter/deepseek/deepseek-v4.1-flash",
+        "effort": "medium"
+      }
+    }
+  },
+  "project_profiles": {
+    "fleet-ops": "work",
+    "auteur": "work",
+    "spire-project": "work",
+    "spire-venue": "work",
+    "agent-binding-host": "work",
+    "agent-binding-catalog": "work",
+    "quota-axi": "work",
+    "continuum": "work",
+    "Qwen3.8-Flash-Next-Single-DGX-Spark": "work",
+    "rung": "work",
+    "firstmate": "work",
+    "graph-ledger-notary": "work",
+    "quanty-helper-pal": "work",
+    "mltradingsignal": "work",
+    "cappz-core": "personal",
+    "cappz-dt": "personal",
+    "animus": "personal"
+  },
+  "rules": [
+    {
+      "when": "The task is a trivial mechanical edit: a rote rename, formatting sweep, typo fix, file gathering, or a one-line config change with no judgment involved.",
+      "use": {
+        "harness": "pi",
+        "model": "openrouter/deepseek/deepseek-v4.1-flash",
+        "effort": "low"
+      },
+      "why": "Cheapest capable model for narrow, unambiguous work."
+    },
+    {
+      "when": "The task is hard or ambiguous: a design or architecture decision, root-cause diagnosis of a subtle bug, a security-sensitive change, a risky refactor, an investigation whose conclusion could change what gets built, or work that has to hold many moving parts in mind.",
+      "use": {
+        "harness": "pi",
+        "model": "openrouter/anthropic/claude-opus-5.5",
+        "effort": "high"
+      },
+      "why": "Strongest reasoning for work where a wrong call is expensive; pay for it only here."
+    },
+    {
+      "when": "The task is a scout that reads, compares or summarises existing material into a report without changing code or needing deep reasoning: a literature or repo survey, an inventory, a reading of logs, a status scan.",
+      "use": {
+        "harness": "pi",
+        "model": "openrouter/z-ai/glm-5.3-flashx",
+        "effort": "low"
+      },
+      "why": "Reading and summarising does not need deep reasoning; a fast, cheap long-context model fits."
+    }
+  ],
+  "default": {
+    "harness": "pi",
+    "model": "openrouter/anthropic/claude-sonnet-5.5",
+    "effort": "medium"
+  }
+}

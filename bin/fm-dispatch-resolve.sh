@@ -3,7 +3,7 @@
 # profile from a task brief with typesafe.ai's System One model (Jev), opt-in.
 #
 # Usage:
-#   fm-dispatch-resolve.sh <brief-file> [--project <name>]
+#   fm-dispatch-resolve.sh <brief-file> [--project <name>] [--profile <spend-profile>]
 #
 # Opt-in gate: TYPESAFE_API_KEY non-empty in this process environment, else a
 #   TYPESAFE_API_KEY= line in $FM_HOME/.env read with fmx_env_get, the same
@@ -44,6 +44,13 @@
 #   "dispatch-resolve: off (...; nothing sent)" line on stderr naming at most
 #   the list line number, never its value, prints nothing on stdout, and exits
 #   0 with no network or quota call, exactly like the absent-key off path.
+#
+# Spend profiles: when config/crew-dispatch.json declares spend_profiles
+#   (bin/fm-spend-profile-lib.sh), the request is built from the rules and
+#   default of the project's own profile only, so the model never sees another
+#   profile's rules. --project must name a mapped project, or --profile a
+#   declared profile (the captain's override); anything else is a usage error
+#   (exit 2), never a guess. A legacy file is read exactly as before.
 #
 # Output (stdout, TOON-style block):
 #   dispatch-resolve:
@@ -89,6 +96,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 . "$SCRIPT_DIR/fm-timing-lib.sh"
 # shellcheck source=bin/fm-brief-heading-lib.sh
 . "$SCRIPT_DIR/fm-brief-heading-lib.sh"
+# shellcheck source=bin/fm-spend-profile-lib.sh
+. "$SCRIPT_DIR/fm-spend-profile-lib.sh"
 
 CONFIDENCE_FLOOR=0.6
 TS_MODEL=jev-latest
@@ -109,11 +118,12 @@ usage() {
   ' "$0"
 }
 
-BRIEF='' PROJECT='' RULES_PATH="$CONFIG/crew-dispatch.json" RULES=''
+BRIEF='' PROJECT='' PROFILE_ARG='' SPEND_PROFILE='' RULES_PATH="$CONFIG/crew-dispatch.json" RULES=''
 NEVER_SEND_PATH="$CONFIG/dispatch-never-send"
 while [ $# -gt 0 ]; do
   case "$1" in
     --project) [ $# -ge 2 ] || die "--project needs a value"; PROJECT=$2; shift 2 ;;
+    --profile) [ $# -ge 2 ] || die "--profile needs a value"; PROFILE_ARG=$2; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     -*) die "unknown flag $1" ;;
     *) [ -z "$BRIEF" ] || die "one brief file only"; BRIEF=$1; shift ;;
@@ -138,6 +148,26 @@ command -v jq >/dev/null 2>&1 || die "jq required"
 RULES=$(mktemp) || die "mktemp failed"
 trap 'rm -f "$RULES"' EXIT
 cp "$RULES_PATH" "$RULES" || die "could not snapshot rules file: $RULES_PATH"
+# A home with spend profiles offers a task only its own profile's rules.
+# An unreadable file is not a spend-profile file; the schema check below names it.
+fm_spend_profile_active "$CONFIG" 2>/dev/null
+case $? in
+  0)
+    fm_spend_profile_validate "$CONFIG" || exit 2
+    if [ -n "$PROFILE_ARG" ]; then
+      SPEND_PROFILE=$PROFILE_ARG
+    else
+      [ -n "$PROJECT" ] || die "config/crew-dispatch.json declares spend_profiles, so --project (or --profile) is required"
+      SPEND_PROFILE=$(fm_spend_profile_mapped "$CONFIG" "$(basename "$PROJECT")")
+      [ -n "$SPEND_PROFILE" ] || die "project '$(basename "$PROJECT")' is not in project_profiles of config/crew-dispatch.json; map it before dispatching"
+    fi
+    fm_spend_profile_exists "$CONFIG" "$SPEND_PROFILE" || die "spend profile '$SPEND_PROFILE' is not declared in config/crew-dispatch.json"
+    chmod 600 "$RULES" || die "could not prepare rules snapshot"
+    fm_spend_profile_rules_doc "$CONFIG" "$SPEND_PROFILE" > "$RULES" || die "could not read the spend profile's rules"
+    ;;
+  1) [ -z "$PROFILE_ARG" ] || die "--profile given, but config/crew-dispatch.json declares no spend_profiles" ;;
+  *) ;;
+esac
 chmod 400 "$RULES" || die "could not protect rules snapshot"
 VERIFIED_HARNESSES=$(fm_control_harnesses | jq -Rsc 'split("\n") | map(select(length > 0))')
 
@@ -514,5 +544,8 @@ TEXT=$(jq -r '
   (if .chosen then "  profile: --harness \(.chosen.profile.harness | shell_arg)"
       + (if .chosen.profile.model then " --model \(.chosen.profile.model | shell_arg)" else "" end)
       + (if .chosen.profile.effort then " --effort \(.chosen.profile.effort | shell_arg)" else "" end) else empty end)' <<<"$RESULT") || emit_error "output rendering failed"
+if [ -n "$SPEND_PROFILE" ]; then
+  TEXT=$(awk -v p="$SPEND_PROFILE" 'NR == 2 { print "  spend-profile: " p } { print }' <<<"$TEXT")
+fi
 printf '%s\n' "$TEXT"
 exit 0
