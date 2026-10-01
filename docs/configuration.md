@@ -875,6 +875,8 @@ A pinned Pi launch therefore needs `--model <provider>/<id>` naming a declared p
 
 An unqualified model, an undeclared provider, or a raw Pi launch command, which cannot receive that flag, refuses; Firstmate never guesses a provider.
 
+When the dispatch file declares [spend profiles](#spend-profiles-spend_profiles-in-configcrew-dispatchjson), the project's profile account replaces this file for that launch.
+
 ### Launch scope and sign-in checks
 
 When a file is present, every launch of that runner from this home uses it: ships, scouts, local secondmate agents, raw Claude launch commands, and relaunches.
