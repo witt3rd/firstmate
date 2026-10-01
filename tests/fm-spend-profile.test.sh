@@ -336,13 +336,13 @@ test_the_day_one_example_reproduces_todays_routing() {
     . "$ROOT/bin/fm-spend-profile-lib.sh"
     fm_spend_profile_validate "$cfg" || exit 1
     for project in fleet-ops auteur spire-project spire-venue agent-binding-host agent-binding-catalog quota-axi \
-      continuum Qwen3.8-Flash-Next-Single-DGX-Spark rung firstmate graph-ledger-notary quanty-helper-pal mltradingsignal; do
+      continuum Qwen3.8-Flash-Next-Single-DGX-Spark rung firstmate; do
       sel=$(fm_spend_profile_select "$cfg" "$project" "" "" "" "" pi "$OPUS" "") || exit 2
       [ "${sel%%$'\t'*}" = work ] || exit 3
       fm_spend_profile_select "$cfg" "$project" "" "" "" "" pi "$SONNET" "" >/dev/null || exit 4
       fm_spend_profile_select "$cfg" "$project" "" "" "" "" pi openrouter/z-ai/glm-5.3-flashx "" >/dev/null || exit 5
     done
-    for project in cappz-core cappz-dt animus; do
+    for project in cappz-core cappz-dt animus graph-ledger-notary quanty-helper-pal mltradingsignal; do
       sel=$(fm_spend_profile_select "$cfg" "$project" "" "" "" "" pi "$CHEAP" "") || exit 6
       [ "${sel%%$'\t'*}" = personal ] || exit 7
       fm_spend_profile_select "$cfg" "$project" "" "" "" "" pi "$OPUS" "" >/dev/null 2>&1 && exit 8

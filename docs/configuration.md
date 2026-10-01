@@ -1184,7 +1184,7 @@ A secondmate spawn resolves no project profile in this version and keeps using t
 **Validation and day-one file**
 
 Bootstrap reports `CREW_DISPATCH: invalid config/crew-dispatch.json - ...` for a malformed profile table, an undeclared profile in `project_profiles`, a store root shared by two profiles, a `default_profile` key, or an invalid rule or default inside a profile.
-[`docs/examples/crew-dispatch.spend-profiles.json`](examples/crew-dispatch.spend-profiles.json) is the house day-one file: the `work` profile carries the current rules and models on the ordinary store, the `personal` profile allows only the cheap model on its own store, and every registered project plus `firstmate` is mapped.
+[`docs/examples/crew-dispatch.spend-profiles.json`](examples/crew-dispatch.spend-profiles.json) is the house day-one file: the `work` profile carries the current rules and models on the ordinary store, the `personal` profile allows only the cheap model on its own store and carries every CAPPZ project (cappz-core, cappz-dt, graph-ledger-notary, quanty-helper-pal, mltradingsignal) and animus, and every registered project plus `firstmate` is mapped.
 Copy it into `config/crew-dispatch.json` only after the code is updated in every home, since a home on older code ignores the new keys.
 
 ## Typed dispatch resolution (.env TYPESAFE_API_KEY)
