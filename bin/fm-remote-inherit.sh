@@ -8,6 +8,7 @@
 # Only the inherited-material allowlist is writable or removable. Writes are
 # atomic ordinary-file replacements. data/captain-shared.md is read-only and is
 # quarantined before removal or before replacing bytes not last published here.
+# A config item listed in the home's config/local-owned marker is skipped untouched.
 set -eu
 
 FM_HOME=${FM_HOME:?FM_HOME is required}
@@ -59,6 +60,18 @@ EXPECTED_HASH=$(printf '%s' "$EXPECTED_HASH" | tr 'A-F' 'a-f')
 case "$GENERATION" in ''|*[!0-9]*) die "generation must be a positive integer" ;; esac
 [ "${#GENERATION}" -le 18 ] && [ "$GENERATION" -ge 1 ] || die "generation is outside the supported range"
 HOME_REAL=$(CDPATH='' cd -- "$FM_HOME" 2>/dev/null && pwd -P) || die "FM_HOME is unavailable"
+# A config item the remote home lists in its own config/local-owned is skipped
+# before any lock, generation record, write, or removal, exactly like the local
+# propagation path; the sender cannot see this marker, so the receiver owns it.
+case "$REL" in
+  config/*)
+    if fm_config_local_owned "$HOME_REAL/config" "${REL#config/}"; then
+      [ "$COMMAND" != put ] || cat > /dev/null
+      printf 'skipped: %s (local-owned)\n' "$REL"
+      exit 0
+    fi
+    ;;
+esac
 PARENT="$HOME_REAL/$(dirname "$REL")"
 # The captain accepts this config/data parent TOCTOU within Firstmate's single-user trust boundary.
 [ ! -L "$PARENT" ] || die "inherited destination parent is a symlink"

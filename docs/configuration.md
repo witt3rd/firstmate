@@ -1114,6 +1114,7 @@ See [`docs/examples/crew-dispatch.json`](examples/crew-dispatch.json) for a star
 **Inheritance**
 
 Secondmate homes inherit this file from the primary, so a secondmate's own crewmates apply the same dispatch profile behavior.
+A home that needs its own file lists `crew-dispatch.json` in its `config/local-owned`; the opt-out contract is owned by "Keep an inherited config file local to one secondmate home" under [Toolchain](#toolchain).
 
 ## Typed dispatch resolution (.env TYPESAFE_API_KEY)
 
@@ -1329,6 +1330,19 @@ It uses the same live secondmate discovery and propagation helper as bootstrap; 
 - The locked bootstrap inheritance pass uses the same placement-specific behavior; see `secondmate-provisioning` for the single contract owner.
 - That live discovery starts from `state/*.meta` records with `kind=secondmate`; `data/secondmates.md` only backfills `home=` for older or incomplete meta records.
 - Skipped items, such as a destination checkout that does not yet gitignore the item, are visible warnings but not hard failures.
+
+**Keep an inherited config file local to one secondmate home (config/local-owned)**
+
+A secondmate home that needs its own value for an inherited config file, such as a `config/crew-dispatch.json` that must only ever dispatch one cheap model, lists that file in its own gitignored `config/local-owned`.
+The file holds one config-relative item name per line, such as `crew-dispatch.json`, and is read from the destination home before every inheritance push.
+This covers spawn, relaunch, the bootstrap sweep, `bin/fm-config-push.sh`, and the remote receiver `bin/fm-remote-inherit.sh`, which reads the marker inside the remote home because the sender cannot see it.
+
+- A listed item is skipped entirely: it is neither pushed nor deleted when the primary has no value, no generation receipt is recorded, and no re-read instruction is sent for it.
+- A skipped item is reported with the status `skipped` and the reason `local-owned`; it is not a failure.
+- Only items declared in `FM_INHERITABLE_CONFIG` are meaningful; blank lines, comments, and any other text, including path-traversal spellings, match nothing and are ignored.
+- `config/local-owned` is not itself inheritable, so no push ever overwrites or removes it, and it has no effect on `data/captain-shared.md`.
+- A marker that is a symlink or not a regular file is ignored, so the item inherits as usual.
+- Removing a line returns that item to primary-authoritative inheritance at the next push, which overwrites the home's local file.
 
 ## Watched tool updates (config/watched-tools.json)
 

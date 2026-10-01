@@ -88,6 +88,26 @@ FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json dispatch-neve
 # already frozen for its current session (bin/fm-trace-context-lib.sh).
 FM_SESSION_SCOPED_INHERITABLE_CONFIG="trace-context"
 
+# Per-home opt-out: the DESTINATION home's config/local-owned lists, one
+# config-relative file name per line, inheritable items that home owns locally.
+# Inheritance skips a listed item entirely - never pushed, never absence-mirrored,
+# no generation receipt - so a home that needs its own config/crew-dispatch.json
+# keeps it across every convergence. The marker is not in FM_INHERITABLE_CONFIG,
+# so it is itself never inherited, overwritten, or removed. A line only matters
+# when it exactly names a declared item, so comments, blanks, and traversal
+# spellings are inert. The marker must be a regular file; anything else is ignored.
+FM_LOCAL_OWNED_FILE="local-owned"
+
+# True when <item> is listed in the local-owned marker of <dest-config-dir>.
+fm_config_local_owned() {  # <dest-config-dir> <item>
+  local marker="$1/$FM_LOCAL_OWNED_FILE" item=$2 line
+  [ -n "$item" ] && [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ "$line" = "$item" ] && return 0
+  done < "$marker"
+  return 1
+}
+
 # True when <item> is session-scoped in the sense above.
 fm_config_inherit_item_session_scoped() {  # <item>
   local item=$1 candidate
@@ -212,7 +232,9 @@ destination_allows_inherited_item() {
 # file, one tab-separated line per item is appended there:
 #   <item> <status> <reason>
 # Status is pushed, unchanged, skipped, or error. Skipped items are warnings and
-# do not affect the exit code. Returns non-zero only when a real propagation
+# do not affect the exit code. An item the destination lists in its
+# config/local-owned marker is skipped silently with reason "local-owned".
+# Returns non-zero only when a real propagation
 # error, such as copy or remove failure, occurs.
 record_inheritable_config_result() {
   local item=$1 status=$2 reason=${3:-}
@@ -560,6 +582,10 @@ propagate_inheritable_config() {
     esac
     if [ "${FM_CONFIG_INHERIT_LIVE:-0}" = 1 ] && fm_config_inherit_item_session_scoped "$item"; then
       record_inheritable_config_result "$item" unchanged "session-scoped"
+      continue
+    fi
+    if fm_config_local_owned "$dest_config" "$item"; then
+      record_inheritable_config_result "$item" skipped "local-owned"
       continue
     fi
     src="$src_config/$item"
