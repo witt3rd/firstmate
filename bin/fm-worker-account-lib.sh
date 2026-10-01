@@ -12,6 +12,11 @@
 #   claude          CLAUDE_CONFIG_DIR     config/claude-account
 #   pi, pi-signed   PI_CODING_AGENT_DIR   config/pi-account
 #
+# A spend profile (bin/fm-spend-profile-lib.sh) can declare the Pi store for one
+# task instead: the caller exports FM_WORKER_ACCOUNT_PROFILE_PIN as
+# "root<TAB>providers", it replaces config/pi-account for that launch, and the
+# same model guard and sign-in check run against it.
+#
 # The pin is opt-in: an absent file is no pin, and the launch keeps today's
 # ambient behavior byte for byte. A present file must resolve, or the launch
 # refuses; nothing falls back to an ambient or vendor-default login once a
@@ -74,6 +79,17 @@ fm_worker_account_file() {
   esac
 }
 
+# fm_worker_account_pi_source
+# Prints what pins the Pi store for error text: the file, or the spend profile
+# account that replaces it.
+fm_worker_account_pi_source() {
+  if [ -n "${FM_WORKER_ACCOUNT_PROFILE_PIN:-}" ]; then
+    printf '%s\n' 'the spend profile account'
+  else
+    printf '%s\n' config/pi-account
+  fi
+}
+
 # fm_worker_account_read <harness> <file>
 # Prints "declared<TAB>providers" for a valid pin, where declared is
 # `ordinary` or the absolute path and providers is empty for Claude. The final
@@ -113,8 +129,16 @@ fm_worker_account_resolve() {
   local harness=$1 config=$2 file cfg token rc declared root fallback
   file=$(fm_worker_account_file "$harness") || return 0
   cfg="$config/$file"
-  token=$(fm_worker_account_read "$harness" "$cfg")
-  rc=$?
+  # A spend profile (bin/fm-spend-profile-lib.sh) declares the Pi store for the
+  # task; it replaces config/pi-account, which the profile guard has already
+  # proved agrees with it. Claude has no profile account in this version.
+  if [ -n "${FM_WORKER_ACCOUNT_PROFILE_PIN:-}" ] && [ "$file" = pi-account ]; then
+    token=$FM_WORKER_ACCOUNT_PROFILE_PIN
+    rc=0
+  else
+    token=$(fm_worker_account_read "$harness" "$cfg")
+    rc=$?
+  fi
   case "$rc" in
   0) ;;
   3) return 0 ;;
@@ -146,7 +170,11 @@ fm_worker_account_resolve() {
     esac
   fi
   if [ -n "$root" ] && { [ ! -d "$root" ] || [ ! -r "$root" ] || [ ! -x "$root" ]; }; then
-    echo "error: config/$file must name a readable, searchable existing directory (ordinary means $fallback): $cfg -> $root" >&2
+    if [ "$file" = pi-account ] && [ -n "${FM_WORKER_ACCOUNT_PROFILE_PIN:-}" ]; then
+      echo "error: the spend profile account must name a readable, searchable existing directory (ordinary means $fallback): $declared -> $root" >&2
+    else
+      echo "error: config/$file must name a readable, searchable existing directory (ordinary means $fallback): $cfg -> $root" >&2
+    fi
     return 1
   fi
   printf '%s\t%s\t%s\n' "$declared" "$root" "${token#*$'\t'}"
@@ -210,7 +238,7 @@ fm_worker_account_check() {
       verdict="no model listed for provider $provider"
       ;;
     esac
-    echo "error: config/pi-account pins Pi workers to $declared, which is not signed in for provider '$provider' ($verdict); sign in with PI_CODING_AGENT_DIR=$root $harness, then /login, or change the pin" >&2
+    echo "error: $(fm_worker_account_pi_source) pins Pi workers to $declared, which is not signed in for provider '$provider' ($verdict); sign in with PI_CODING_AGENT_DIR=$root $harness, then /login, or change the pin" >&2
     return 1
     ;;
   esac
@@ -253,13 +281,13 @@ fm_worker_account_select() {
       return 1
     fi
     provider=$(fm_worker_account_pi_provider "$model") || {
-      echo "error: config/pi-account pins Pi workers to providers ($providers), so a Pi launch needs --model <provider>/<id> naming one of them; '${model:-none}' names no provider, and Firstmate does not guess one" >&2
+      echo "error: $(fm_worker_account_pi_source) pins Pi workers to providers ($providers), so a Pi launch needs --model <provider>/<id> naming one of them; '${model:-none}' names no provider, and Firstmate does not guess one" >&2
       return 1
     }
     case " $providers " in
     *" $provider "*) ;;
     *)
-      echo "error: config/pi-account pins Pi workers to providers ($providers), but --model '$model' names provider '$provider'" >&2
+      echo "error: $(fm_worker_account_pi_source) pins Pi workers to providers ($providers), but --model '$model' names provider '$provider'" >&2
       return 1
       ;;
     esac

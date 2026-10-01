@@ -9,6 +9,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | --- | --- |
 | Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
+| Which models and account a project may spend | [Spend profiles](#spend-profiles-spend_profiles-in-configcrew-dispatchjson) |
 | Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), and [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
@@ -874,6 +875,8 @@ A pinned Pi launch therefore needs `--model <provider>/<id>` naming a declared p
 
 An unqualified model, an undeclared provider, or a raw Pi launch command, which cannot receive that flag, refuses; Firstmate never guesses a provider.
 
+When the dispatch file declares [spend profiles](#spend-profiles-spend_profiles-in-configcrew-dispatchjson), the project's profile account replaces this file for that launch.
+
 ### Launch scope and sign-in checks
 
 When a file is present, every launch of that runner from this home uses it: ships, scouts, local secondmate agents, raw Claude launch commands, and relaunches.
@@ -1114,6 +1117,77 @@ See [`docs/examples/crew-dispatch.json`](examples/crew-dispatch.json) for a star
 **Inheritance**
 
 Secondmate homes inherit this file from the primary, so a secondmate's own crewmates apply the same dispatch profile behavior.
+A file may also declare [spend profiles](#spend-profiles-spend_profiles-in-configcrew-dispatchjson), which key the models and the account by project.
+
+## Spend profiles (spend_profiles in config/crew-dispatch.json)
+
+A spend profile declares which models a project may spend and which account pays for them, in one place, so the two cannot be inherited differently.
+It exists because `config/crew-dispatch.json` (models by task kind) and `config/pi-account` (key) are per home while the real axis is the project: a primary's hard-work rule that sends work to Opus was copied into a home whose workers pay with the personal key.
+The feature is opt-in and additive.
+A dispatch file with no top-level `spend_profiles` key is a legacy file, and every spawn, relaunch, resolver run, and bootstrap check behaves exactly as described in [Crew dispatch profiles](#crew-dispatch-profiles-configcrew-dispatchjson).
+Because `crew-dispatch.json` is already inherited, every home, local or remote, receives the same profile table and each task looks up its own project.
+This section is the single owner of the schema and guards; [`bin/fm-spend-profile-lib.sh`](../bin/fm-spend-profile-lib.sh) implements them.
+The word profile in "Crew dispatch profiles" still means one harness, model, and effort entry; a spend profile is the named bundle around them.
+
+```json
+{
+  "spend_profiles": {
+    "work": {
+      "doppler": "<provenance for people and fleet-ops, optional>",
+      "pi_account": { "root": "ordinary", "providers": ["openrouter"] },
+      "rules": [ { "when": "<condition>", "use": { "harness": "pi", "model": "<provider>/<id>", "effort": "high" } } ],
+      "default": { "harness": "pi", "model": "<provider>/<id>", "effort": "medium" }
+    },
+    "personal": { "pi_account": { "root": "/path/to/personal/pi/agent", "providers": ["openrouter"] }, "default": { "harness": "pi", "model": "<provider>/<id>" } }
+  },
+  "project_profiles": { "<project clone directory name>": "work", "<another>": "personal" }
+}
+```
+
+- A key is never in the file.
+  `pi_account.root` is `ordinary` or one absolute path, and `providers` lists the providers that store may spend, exactly as `config/pi-account` lines 1 and 2 do.
+  The optional `doppler` field is provenance only; Firstmate never calls Doppler.
+- A profile's `rules` and `default` have the schema of the top-level ones, and bootstrap validates them with the same check.
+  `default` is required: a profile never falls back to `config/crew-harness`.
+- A project's identity is its clone directory name.
+  Keep the top-level `rules` and `default` equal to one profile during a migration as a safety net for code that predates this feature.
+- In this version a profile's candidates must use harness `pi` or `pi-signed` with an explicit `<provider>/<id>` model whose provider the profile's account lists, because only a Pi store can be pinned per launch.
+  Per-profile Claude accounts, a home pin, the Doppler marker check, and per-profile quota are later work.
+
+**Resolution order**
+
+1.
+A captain override for that task: `fm-spawn.sh --profile <name> --captain-override "<the captain's words>"`.
+Both flags are required together, apply to ship and scout spawns, and are recorded as `profile=` and `captain_override=`.
+An override may choose a model outside the profile's candidates and may name the profile of an unmapped project; it never skips the account guards below.
+2.
+The project's entry in `project_profiles`.
+3.
+Otherwise the spawn refuses: a project that is not mapped never launches until it is mapped, and there is no default profile, so no project reaches a key by accident.
+
+Firstmate matches rules inside the chosen profile as it does for a legacy file, then falls back to that profile's `default`.
+`bin/fm-dispatch-resolve.sh` builds its request from the project's profile rules only (`--project`, or `--profile` for an override), so the model never sees another profile's rules; an unmapped project or undeclared profile is a usage error with exit 2.
+
+**Spawn and relaunch guards**
+
+`bin/fm-spawn.sh` derives the profile from the project itself, before any endpoint, worktree, or record exists, and refuses when:
+
+- the spend profiles are malformed, or the dispatch file names `spend_profiles` but cannot be read as JSON (a legacy file that is not JSON keeps launching as before and is reported by bootstrap);
+- the project is unmapped and no override was given;
+- the harness and model are not one of the profile's candidates (its `rules[].use` entries and `default`) and no override was given;
+- the harness has no per-launch account pin, or the launch is a raw Pi command, which cannot carry the pinned provider;
+- `config/pi-account` exists and names a different root or provider set than the profile, so one launch never has two answers about which key pays; a file that repeats the profile's account is accepted.
+
+The profile's account replaces `config/pi-account` for that launch, and the existing model guard and sign-in check run against it.
+The spawn prints and records `profile=` beside `account=`.
+A secondmate spawn resolves no project profile in this version and keeps using the launching home's pin.
+`bin/fm-control.sh relaunch` repeats the same check before the old agent stops and keeps the profile the task was recorded under; it refuses when the project now maps to a different profile or the new model is outside the profile.
+
+**Validation and day-one file**
+
+Bootstrap reports `CREW_DISPATCH: invalid config/crew-dispatch.json - ...` for a malformed profile table, an undeclared profile in `project_profiles`, a store root shared by two profiles, a `default_profile` key, or an invalid rule or default inside a profile.
+[`docs/examples/crew-dispatch.spend-profiles.json`](examples/crew-dispatch.spend-profiles.json) is the house day-one file: the `work` profile carries the current rules and models on the ordinary store, the `personal` profile allows only the cheap model on its own store and carries every CAPPZ project (cappz-core, cappz-dt, graph-ledger-notary, quanty-helper-pal, mltradingsignal) and animus, and every registered project plus `firstmate` is mapped.
+Copy it into `config/crew-dispatch.json` only after the code is updated in every home, since a home on older code ignores the new keys.
 
 ## Typed dispatch resolution (.env TYPESAFE_API_KEY)
 

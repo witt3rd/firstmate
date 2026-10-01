@@ -335,6 +335,16 @@
 #   account_provider=) in the task record and on the spawned line. A local
 #   secondmate reads this launching home's file; pins are never inherited.
 #   bin/fm-worker-account-lib.sh owns parsing, the check, and the shed list.
+#   --profile <name> --captain-override "<words>" (ship and scout only, never
+#   with --relaunch) names a spend profile other than the project's own, as the
+#   captain's explicit per-task decision. When config/crew-dispatch.json
+#   declares spend_profiles, every ship and scout spawn and relaunch resolves
+#   its profile from the project (or that override), refuses a project that is
+#   not mapped, a harness and model outside the profile's candidates (unless
+#   overridden), and a config/pi-account that disagrees with the profile's
+#   account, then launches on the profile's account. The profile is recorded as
+#   profile= (and captain_override=) in the task record. A legacy file with no
+#   spend_profiles changes nothing. bin/fm-spend-profile-lib.sh owns the guards.
 #   Launch templates live in launch_template() below; placeholders replaced before launch:
 #     __BRIEF__    absolute path to data/<task-id>/brief.md
 #     __CLAUDEPERMFLAG__ the claude permission flag selected by config/claude-permission-mode
@@ -633,6 +643,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-worker-account-lib.sh
 . "$SCRIPT_DIR/fm-worker-account-lib.sh"
+# shellcheck source=bin/fm-spend-profile-lib.sh
+. "$SCRIPT_DIR/fm-spend-profile-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -657,6 +669,10 @@ MODE_SET=0
 YOLO_SET=0
 BRANCH_PREFIX_SET=0
 TRACEPARENT_SET=0
+PROFILE_ARG=
+PROFILE_SET=0
+OVERRIDE_ARG=
+OVERRIDE_SET=0
 RELAUNCH=0
 POS=()
 want_value=
@@ -700,6 +716,14 @@ for a in "$@"; do
     traceparent)
       TRACEPARENT_ARG=$a
       TRACEPARENT_SET=1
+      ;;
+    profile)
+      PROFILE_ARG=$a
+      PROFILE_SET=1
+      ;;
+    captain-override)
+      OVERRIDE_ARG=$a
+      OVERRIDE_SET=1
       ;;
     *)
       echo "error: internal parser state for --$want_value" >&2
@@ -759,6 +783,16 @@ for a in "$@"; do
     TRACEPARENT_ARG=${a#--traceparent=}
     TRACEPARENT_SET=1
     ;;
+  --profile) want_value=profile ;;
+  --profile=*)
+    PROFILE_ARG=${a#--profile=}
+    PROFILE_SET=1
+    ;;
+  --captain-override) want_value=captain-override ;;
+  --captain-override=*)
+    OVERRIDE_ARG=${a#--captain-override=}
+    OVERRIDE_SET=1
+    ;;
   *) POS+=("$a") ;;
   esac
 done
@@ -794,6 +828,34 @@ done
   echo "error: --traceparent requires a non-empty value" >&2
   exit 1
 }
+[ "$PROFILE_SET" -eq 0 ] || [ -n "$PROFILE_ARG" ] || {
+  echo "error: --profile requires a non-empty value" >&2
+  exit 1
+}
+[ "$OVERRIDE_SET" -eq 0 ] || [ -n "$OVERRIDE_ARG" ] || {
+  echo "error: --captain-override requires the captain's words as a non-empty value" >&2
+  exit 1
+}
+[ "$PROFILE_SET" -eq "$OVERRIDE_SET" ] || {
+  echo "error: --profile and --captain-override go together: a profile other than the project's own needs the captain's words that chose it" >&2
+  exit 1
+}
+if [ "$PROFILE_SET" -eq 1 ]; then
+  [ "$KIND" != secondmate ] || {
+    echo "error: --profile applies only to ship and scout spawns; a secondmate resolves no project profile in this version" >&2
+    exit 1
+  }
+  [ "$RELAUNCH" -eq 0 ] || {
+    echo "error: --relaunch keeps the task's recorded spend profile; --profile cannot change it" >&2
+    exit 1
+  }
+  # One recorded line: collapse whitespace so the words cannot break the record.
+  OVERRIDE_ARG=$(printf '%s' "$OVERRIDE_ARG" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+  [ -n "$OVERRIDE_ARG" ] || {
+    echo "error: --captain-override requires the captain's words as a non-empty value" >&2
+    exit 1
+  }
+fi
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
 # Nothing else may reach the pane's TRACEPARENT export.
@@ -1466,6 +1528,7 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   [ "$MODE_SET" -eq 0 ] || shared_args+=(--mode "$MODE")
   [ "$YOLO_SET" -eq 0 ] || shared_args+=(--yolo "$YOLO")
   [ "$BRANCH_PREFIX_SET" -eq 0 ] || shared_args+=(--branch-prefix "$BRANCH_PREFIX")
+  [ "$PROFILE_SET" -eq 0 ] || shared_args+=(--profile "$PROFILE_ARG" --captain-override "$OVERRIDE_ARG")
   for pair in "${POS[@]}"; do
     case "$pair" in
     *=*) : ;;
@@ -1682,6 +1745,8 @@ RAW_LAUNCH=0
 # validation teardown uses, so a malformed, ambiguous, or foreign record
 # refuses here exactly as it refuses there.
 RELAUNCH_PRIOR_HARNESS=
+RELAUNCH_PROFILE=
+RELAUNCH_PROFILE_OVERRIDE=
 # 1 when the recorded endpoint is authoritatively gone and this relaunch must
 # create a fresh one for the task rather than adopt its recorded address.
 RELAUNCH_REBIND=0
@@ -1805,6 +1870,8 @@ if [ "$RELAUNCH" -eq 1 ]; then
       echo "error: task $ID has no recorded project; refusing to relaunch" >&2
       exit 1
     }
+    RELAUNCH_PROFILE=$(fm_meta_get "$RELAUNCH_META" profile)
+    RELAUNCH_PROFILE_OVERRIDE=$(fm_meta_get "$RELAUNCH_META" captain_override)
   fi
   if [ "$BACKEND" = herdr ]; then
     # fm-spawn uses HERDR_PANE_ID for the TASK's pane, while the herdr adapter
@@ -2378,6 +2445,23 @@ fi
 # trust registration below writes the store the worker will actually read.
 RAW_COMMAND=
 [ "$RAW_LAUNCH" = 0 ] || RAW_COMMAND=$ARG3
+# Spend profile (bin/fm-spend-profile-lib.sh): the project decides which models
+# and which account this task may use. Silent for a legacy dispatch file and for
+# a secondmate; otherwise it refuses before any endpoint exists and its account
+# replaces config/pi-account for the check just below.
+SPEND_PROFILE=
+SPEND_OVERRIDE=
+FM_WORKER_ACCOUNT_PROFILE_PIN=
+if [ "$KIND" != secondmate ]; then
+  SPEND_SELECTION=$(fm_spend_profile_select "$CONFIG" "$(fm_spend_profile_project_name "$PROJ" "$PROJECTS")" \
+    "$PROFILE_ARG" "$OVERRIDE_ARG" "$RELAUNCH_PROFILE" "$RELAUNCH_PROFILE_OVERRIDE" "$HARNESS" "$MODEL" "$RAW_COMMAND") || exit 1
+  if [ -n "$SPEND_SELECTION" ]; then
+    SPEND_PROFILE=${SPEND_SELECTION%%$'\t'*}
+    FM_WORKER_ACCOUNT_PROFILE_PIN=${SPEND_SELECTION#*$'\t'}
+    SPEND_OVERRIDE=$OVERRIDE_ARG
+    [ -z "$RELAUNCH_PROFILE" ] || SPEND_OVERRIDE=$RELAUNCH_PROFILE_OVERRIDE
+  fi
+fi
 WORKER_ACCOUNT=$(fm_worker_account_select "$HARNESS" "$CONFIG" "$MODEL" "${PI_BIN:-$HARNESS}" "$RAW_COMMAND") || exit 1
 WORKER_ACCOUNT_DECLARED=${WORKER_ACCOUNT%%$'\t'*}
 WORKER_ACCOUNT_ROOT=${WORKER_ACCOUNT#*$'\t'}
@@ -4864,7 +4948,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo branch tasktmp model effort account account_provider busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo branch tasktmp model effort account account_provider profile captain_override busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -4886,6 +4970,10 @@ preserve_relaunch_meta() {
   # The worker account pin, only when this home declares one, so an unpinned
   # task record stays byte-identical.
   [ -z "$WORKER_ACCOUNT" ] || echo "account=$WORKER_ACCOUNT_DECLARED"
+  # The spend profile, only when this home declares them, so a legacy task
+  # record stays byte-identical.
+  [ -z "$SPEND_PROFILE" ] || echo "profile=$SPEND_PROFILE"
+  [ -z "$SPEND_OVERRIDE" ] || echo "captain_override=$SPEND_OVERRIDE"
   [ -z "$WORKER_ACCOUNT_PROVIDER" ] || echo "account_provider=$WORKER_ACCOUNT_PROVIDER"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   echo "spawn_gen=$SPAWN_GEN"
@@ -5483,6 +5571,7 @@ SPAWN_DELIVERY=
 SPAWN_ACCOUNT=
 [ -z "$WORKER_ACCOUNT" ] || SPAWN_ACCOUNT=" account=$WORKER_ACCOUNT_DECLARED"
 [ -z "$WORKER_ACCOUNT_PROVIDER" ] || SPAWN_ACCOUNT="$SPAWN_ACCOUNT account_provider=$WORKER_ACCOUNT_PROVIDER"
+[ -z "$SPEND_PROFILE" ] || SPAWN_ACCOUNT="$SPAWN_ACCOUNT profile=$SPEND_PROFILE"
 # Opt-in fleet activity ledger (docs/fleet-ledger.md); off costs one file test.
 [ ! -e "$CONFIG/fleet-ledger" ] || [ "$RELAUNCH" -eq 1 ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" dispatched "$ID" "$KIND" "${PROJ_ABS##*/}" "$HARNESS" "$MODEL" || true
 echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT$SPAWN_ACCOUNT"

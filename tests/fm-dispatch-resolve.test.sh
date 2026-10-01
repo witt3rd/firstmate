@@ -1000,4 +1000,63 @@ expect_code 0 "$code" "--help exits 0"
 assert_contains "$out" 'Usage:' "--help prints usage"
 pass "configuration errors exit 2 before any network call"
 
+# --- spend profiles: the request carries only the project's profile rules ----
+cat > "$RULES" <<'JSON'
+{
+  "spend_profiles": {
+    "work": {
+      "pi_account": { "root": "ordinary", "providers": ["openrouter"] },
+      "rules": [ { "when": "WORK-ONLY-RULE-ALPHA hard design work.", "use": { "harness": "pi", "model": "openrouter/anthropic/claude-opus-5.5", "provider": "claude" } } ],
+      "default": { "harness": "pi", "model": "openrouter/anthropic/claude-sonnet-5.5", "provider": "claude" }
+    },
+    "personal": {
+      "pi_account": { "root": "/nonexistent/personal-store", "providers": ["openrouter"] },
+      "rules": [ { "when": "PERSONAL-RULE-BETA cheap routine work.", "use": { "harness": "pi", "model": "openrouter/deepseek/deepseek-v4.1-flash", "provider": "claude" } } ],
+      "default": { "harness": "pi", "model": "openrouter/deepseek/deepseek-v4.1-flash", "provider": "claude" }
+    }
+  },
+  "project_profiles": { "cappz-core": "personal", "spire": "work" }
+}
+JSON
+cat > "$TMP_ROOT/spend-response.json" <<'JSON'
+{ "model": "jev-1.13.0",
+  "answers": { "rule": { "type": "choice", "choice": "rule_1", "confidence": 0.95,
+    "probabilities": { "rule_1": 0.95, "default": 0.05 } } },
+  "usage": { "input_tokens": 100, "output_tokens": 10 } }
+JSON
+cp "$TMP_ROOT/spend-response.json" "$RESPONSE"
+reset_log
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --project cappz-core
+expect_code 0 "$code" "a mapped project resolves under spend profiles: $err"
+assert_contains "$out" '  spend-profile: personal' "the result names the profile it resolved under"
+assert_contains "$(cat "$LOG/body")" 'PERSONAL-RULE-BETA' "the request carries the project's own profile rules"
+assert_not_contains "$(cat "$LOG/body")" 'WORK-ONLY-RULE-ALPHA' "the request never carries another profile's rules"
+assert_not_contains "$out" 'opus' "no candidate from another profile is evaluated"
+reset_log
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --project spire
+expect_code 0 "$code" "the other project resolves under its own profile: $err"
+assert_contains "$out" '  spend-profile: work' "the work project resolves under work"
+assert_contains "$(cat "$LOG/body")" 'WORK-ONLY-RULE-ALPHA' "the work request carries the work rules"
+assert_not_contains "$(cat "$LOG/body")" 'PERSONAL-RULE-BETA' "the work request never carries the personal rules"
+reset_log
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --project brand-new-app
+expect_code 2 "$code" "an unmapped project exits 2"
+assert_contains "$err" "project 'brand-new-app' is not in project_profiles" "the unmapped project is named"
+assert_absent "$LOG/argv" "an unmapped project never reaches the network"
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+expect_code 2 "$code" "no project under spend profiles exits 2"
+assert_contains "$err" '--project (or --profile) is required' "the missing project is named"
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --profile personal
+expect_code 0 "$code" "a declared override profile resolves with no project: $err"
+assert_contains "$(cat "$LOG/body")" 'PERSONAL-RULE-BETA' "the override profile's rules are used"
+reset_log
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --profile ghost
+expect_code 2 "$code" "an undeclared override profile exits 2"
+assert_absent "$LOG/argv" "a configuration error never reaches the network"
+cp "$BASE_RULES" "$RULES"
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --profile personal
+expect_code 2 "$code" "--profile on a legacy file exits 2"
+assert_contains "$err" 'declares no spend_profiles' "the legacy refusal says why"
+pass "under spend profiles the resolver request carries only the project's profile rules, built offline"
+
 printf '# all fm-dispatch-resolve tests passed\n'

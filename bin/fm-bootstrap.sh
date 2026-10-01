@@ -190,6 +190,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-cursor-lib.sh"
 # shellcheck source=bin/fm-config-inherit-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
+# shellcheck source=bin/fm-spend-profile-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-spend-profile-lib.sh"
 # shellcheck source=bin/fm-secondmate-nudge-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-secondmate-nudge-lib.sh"
 # shellcheck source=bin/fm-startup-memory-budget-lib.sh disable=SC1091
@@ -1033,27 +1035,40 @@ EOF
   echo "FMX: X mode on - relay poll armed via state/x-watch.check.sh; 30s watcher cadence in config/x-mode.env"
 }
 
-crew_dispatch_validate() {
-  local file err verified_harnesses typed_key typed_active=false
-  file="$CONFIG/crew-dispatch.json"
-  [ -f "$file" ] || return 0
-  if ! command -v jq >/dev/null 2>&1; then
-    echo "MISSING: jq (install: $(install_cmd jq))"
+# crew_dispatch_spend_profiles_error <file> <typed-active> <verified-harnesses-json>
+# Prints the first error of the optional spend_profiles feature
+# (bin/fm-spend-profile-lib.sh owns the contract): the structure the lib checks,
+# then the ordinary rule and default schema of every profile. A legacy file with
+# no spend_profiles prints nothing.
+crew_dispatch_spend_profiles_error() {
+  local file=$1 typed_active=$2 verified_harnesses=$3 cfg msg name doc rc
+  cfg=$(dirname "$file")
+  fm_spend_profile_active "$cfg" >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -ne 1 ] || return 0
+  msg=$(fm_spend_profile_validate "$cfg" 2>&1 >/dev/null) || {
+    printf '%s\n' "${msg#error: config/crew-dispatch.json spend_profiles invalid - }"
     return 0
-  fi
-  if ! jq -e . "$file" >/dev/null 2>&1; then
-    echo "CREW_DISPATCH: invalid config/crew-dispatch.json - malformed JSON"
-    return 0
-  fi
-  typed_key=$TYPESAFE_API_KEY_PRIVATE
-  [ -n "$typed_key" ] || typed_key=$(fmx_env_get TYPESAFE_API_KEY "$FM_HOME/.env")
-  [ -z "$typed_key" ] || typed_active=true
-  if $typed_active; then
-    verified_harnesses=$(fm_control_harnesses | jq -Rsc 'split("\n") | map(select(length > 0))')
-  else
-    verified_harnesses='["claude","codex","opencode","pi","pi-signed","grok","kimi","cursor","agy","muse","rovo","omp","devin"]'
-  fi
-  err=$(jq -r --argjson typed "$typed_active" --argjson verified_harnesses "$verified_harnesses" --arg provider_re "$FM_QUOTA_PROVIDER_ID_RE" '
+  }
+  doc=$(mktemp) || return 0
+  while IFS= read -r name; do
+    fm_spend_profile_rules_doc "$cfg" "$name" >"$doc" 2>/dev/null || continue
+    msg=$(crew_dispatch_doc_error "$doc" "$typed_active" "$verified_harnesses")
+    if [ -n "$msg" ]; then
+      printf 'spend profile %s: %s\n' "$name" "$msg"
+      break
+    fi
+  done < <(jq -r '.spend_profiles | keys[]' "$file")
+  rm -f "$doc"
+}
+
+# crew_dispatch_doc_error <file> <typed-active> <verified-harnesses-json>
+# Prints the first schema error of one dispatch document (rules plus default),
+# or nothing. The top-level file and every spend profile's own rules and default
+# share this one check.
+crew_dispatch_doc_error() {
+  local file=$1 typed_active=$2 verified_harnesses=$3
+  jq -r --argjson typed "$typed_active" --argjson verified_harnesses "$verified_harnesses" --arg provider_re "$FM_QUOTA_PROVIDER_ID_RE" '
     def verified($h): $verified_harnesses | index($h);
     def provider_id($p): ($p | type) == "string" and ($p | test($provider_re));
     def effort_ok($h; $m; $e):
@@ -1142,7 +1157,33 @@ crew_dispatch_validate() {
         else empty
         end
     end
-  ' "$file" 2>/dev/null || true)
+  ' "$file" 2>/dev/null || true
+}
+
+crew_dispatch_validate() {
+  local file err verified_harnesses typed_key typed_active=false
+  file="$CONFIG/crew-dispatch.json"
+  [ -f "$file" ] || return 0
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "MISSING: jq (install: $(install_cmd jq))"
+    return 0
+  fi
+  if ! jq -e . "$file" >/dev/null 2>&1; then
+    echo "CREW_DISPATCH: invalid config/crew-dispatch.json - malformed JSON"
+    return 0
+  fi
+  typed_key=$TYPESAFE_API_KEY_PRIVATE
+  [ -n "$typed_key" ] || typed_key=$(fmx_env_get TYPESAFE_API_KEY "$FM_HOME/.env")
+  [ -z "$typed_key" ] || typed_active=true
+  if $typed_active; then
+    verified_harnesses=$(fm_control_harnesses | jq -Rsc 'split("\n") | map(select(length > 0))')
+  else
+    verified_harnesses='["claude","codex","opencode","pi","pi-signed","grok","kimi","cursor","agy","muse","rovo","omp","devin"]'
+  fi
+  err=$(crew_dispatch_doc_error "$file" "$typed_active" "$verified_harnesses")
+  if [ -z "$err" ]; then
+    err=$(crew_dispatch_spend_profiles_error "$file" "$typed_active" "$verified_harnesses")
+  fi
   if [ -n "$err" ]; then
     echo "CREW_DISPATCH: invalid config/crew-dispatch.json - $err"
     return 0

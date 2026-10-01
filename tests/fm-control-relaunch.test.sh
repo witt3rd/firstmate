@@ -814,6 +814,99 @@ test_worker_account_pin_follows_the_relaunch() {
   pass "fm-control relaunch: the replacement follows the home's current worker account pin"
 }
 
+# A fake pi that answers `pi auth check` ready only for a provider the
+# selected store lists, like the real runner, so a relaunch's sign-in check is
+# decided by the store a spend profile selects.
+make_pi_auth_stub() {  # <case-dir>
+  cat > "$1/fakebin/pi" <<'SH'
+#!/usr/bin/env bash
+root=${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}
+case "${1:-}" in
+  auth)
+    provider=$4
+    printf '%s\n' "$provider" >> "$root/checked"
+    if grep -qx "$provider" "$root/signed-in" 2>/dev/null; then
+      printf '{"status":"ready","provider":"%s"}\n' "$provider"; exit 0
+    fi
+    printf '{"status":"not_ready","provider":"%s","reason":"credentials_not_configured"}\n' "$provider"; exit 1 ;;
+esac
+printf 'Options: --tui-mode\n'
+SH
+  chmod +x "$1/fakebin/pi"
+}
+
+# add_spend_profile_task <case-dir> <id> <profile> [model]: a running Pi task in
+# project "proj" recorded under a spend profile, with two signed-in stores and a
+# dispatch file mapping proj to personal.
+add_spend_profile_task() {
+  local dir=$1 id=$2 profile=$3 model=${4:-openrouter/deepseek/deepseek-v4.1-flash}
+  add_ship_task "$dir" "$id" pi
+  printf pi > "$dir/fake/command"
+  printf pi > "$dir/fake/becomes"
+  make_pi_auth_stub "$dir"
+  mkdir -p "$dir/home/config" "$dir/pi-work" "$dir/pi-personal"
+  printf 'openrouter\n' | tee "$dir/pi-work/signed-in" > "$dir/pi-personal/signed-in"
+  cat > "$dir/home/config/crew-dispatch.json" <<JSON
+{
+  "spend_profiles": {
+    "work": { "pi_account": { "root": "$dir/pi-work", "providers": ["openrouter"] },
+      "rules": [ { "when": "Hard work.", "use": { "harness": "pi", "model": "openrouter/anthropic/claude-opus-5.5" } } ],
+      "default": { "harness": "pi", "model": "openrouter/anthropic/claude-sonnet-5.5" } },
+    "personal": { "pi_account": { "root": "$dir/pi-personal", "providers": ["openrouter"] },
+      "default": { "harness": "pi", "model": "openrouter/deepseek/deepseek-v4.1-flash" } }
+  },
+  "project_profiles": { "proj": "personal" }
+}
+JSON
+  sed "s|^model=default\$|model=$model|" "$dir/home/state/$id.meta" > "$dir/home/state/$id.meta.tmp"
+  mv "$dir/home/state/$id.meta.tmp" "$dir/home/state/$id.meta"
+  printf 'profile=%s\n' "$profile" >> "$dir/home/state/$id.meta"
+}
+
+test_relaunch_keeps_the_spend_profile_and_its_store() {
+  local dir out rc id=rl-spend
+  dir=$(new_case spend "$id")
+  add_spend_profile_task "$dir" "$id" personal
+  out=$(run_control "$dir" "$id" relaunch --note "keep the account"); rc=$?
+  expect_code 0 "$rc" "a relaunch under the recorded spend profile should succeed"$'\n'"$out"
+  [ "$(meta_field "$dir" "$id" profile)" = personal ] || fail "the relaunched record should keep its spend profile"
+  [ "$(meta_field "$dir" "$id" account)" = "$dir/pi-personal" ] || fail "the relaunched record should carry the profile's store"
+  assert_contains "$(cat "$dir/fake/literal")" "PI_CODING_AGENT_DIR='$dir/pi-personal'" \
+    "the replacement should launch on the profile's store"
+  [ -s "$dir/pi-personal/checked" ] && [ ! -e "$dir/pi-work/checked" ] \
+    || fail "the relaunch sign-in check should ask only the personal store"
+  pass "fm-control relaunch: the replacement keeps the spend profile and launches on its store"
+}
+
+test_relaunch_refuses_a_model_outside_the_profile_before_stop() {
+  local dir out rc id=rl-spend-opus
+  dir=$(new_case spend-opus "$id")
+  add_spend_profile_task "$dir" "$id" personal
+  cp "$dir/home/state/$id.meta" "$dir/meta-before"
+  out=$(run_control "$dir" "$id" relaunch --model openrouter/anthropic/claude-opus-5.5 --note "upgrade"); rc=$?
+  expect_code 1 "$rc" "a relaunch onto Opus under the personal profile must refuse"
+  assert_contains "$out" "spend profile 'personal' does not allow harness 'pi' with model 'openrouter/anthropic/claude-opus-5.5'" \
+    "the refusal should name the profile and model"
+  [ "$(cat "$dir/fake/command")" = pi ] || fail "the refusal must come before the running agent stops"
+  [ ! -s "$dir/fake/literal" ] || fail "the refusal must come before any lifecycle input"
+  cmp -s "$dir/meta-before" "$dir/home/state/$id.meta" || fail "a refused relaunch must leave the task record untouched"
+  pass "fm-control relaunch: a model outside the recorded profile refuses before the old agent stops"
+}
+
+test_relaunch_refuses_when_the_project_now_maps_elsewhere() {
+  local dir out rc id=rl-spend-moved
+  dir=$(new_case spend-moved "$id")
+  add_spend_profile_task "$dir" "$id" personal
+  sed -i 's/"proj": "personal"/"proj": "work"/' "$dir/home/config/crew-dispatch.json"
+  out=$(run_control "$dir" "$id" relaunch --note "remapped"); rc=$?
+  expect_code 1 "$rc" "a relaunch onto a different account must refuse"
+  assert_contains "$out" "now maps to 'work'; refusing to relaunch it on a different account" \
+    "the refusal should say the project moved profiles"
+  [ "$(cat "$dir/fake/command")" = pi ] && [ ! -s "$dir/fake/literal" ] \
+    || fail "the refusal must come before the running agent stops"
+  pass "fm-control relaunch: a task never moves to another profile's account on relaunch"
+}
+
 test_explicit_model_wins_over_the_recorded_one() {
   local dir out rc
   dir=$(new_case explicit rl7)
@@ -2410,6 +2503,9 @@ test_same_harness_relaunch_keeps_the_profile_axes
 test_native_ultra_relaunch_preserves_profile_and_rejects_before_stop
 test_signed_out_worker_account_pin_refuses_before_stop
 test_worker_account_pin_follows_the_relaunch
+test_relaunch_keeps_the_spend_profile_and_its_store
+test_relaunch_refuses_a_model_outside_the_profile_before_stop
+test_relaunch_refuses_when_the_project_now_maps_elsewhere
 test_explicit_model_wins_over_the_recorded_one
 test_relaunch_onto_an_unverified_harness_is_refused
 test_prior_harness_turnend_registry_entry_is_cleared

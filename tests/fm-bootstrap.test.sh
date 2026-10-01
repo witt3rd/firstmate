@@ -1239,7 +1239,36 @@ ROWS
   pass "bootstrap gates resolver fields and additive harnesses on the typed key"
 }
 
+test_crew_dispatch_spend_profiles_validation() {
+  local case_dir fakebin out label body expect n=0 example
+  example="$ROOT/docs/examples/crew-dispatch.spend-profiles.json"
+  while IFS='^' read -r label body expect; do
+    [ -n "$label" ] || continue
+    n=$((n + 1))
+    case_dir="$TMP_ROOT/spend-profiles-$n"
+    mkdir -p "$case_dir/home/config"
+    printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+    jq "$body" "$example" > "$case_dir/home/config/crew-dispatch.json"
+    fakebin=$(make_fake_toolchain "$case_dir")
+    add_real_jq "$fakebin"
+    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+      FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+    [ "$out" = "$expect" ] || fail "$label: expected '$expect', got: $out"
+  done <<'ROWS'
+the day-one example is silent^.^
+a shared store root is flagged^.spend_profiles.personal.pi_account.root = "/stores/shared" | .spend_profiles.work.pi_account.root = "/stores/shared"^CREW_DISPATCH: invalid config/crew-dispatch.json - spend profiles work, personal share the store root /stores/shared; one store must belong to one profile
+a project mapped to an undeclared profile is flagged^.project_profiles.rung = "ghost"^CREW_DISPATCH: invalid config/crew-dispatch.json - project_profiles must map each project to a declared spend profile
+an unmapped-by-default setting is flagged^.default_profile = "work"^CREW_DISPATCH: invalid config/crew-dispatch.json - default_profile is not supported: a project that is not in project_profiles is refused until it is mapped
+a profile without a default is flagged^del(.spend_profiles.work.default)^CREW_DISPATCH: invalid config/crew-dispatch.json - each spend profile needs a default profile with a harness: a profile never falls back to config/crew-harness
+a profile rule with a bad effort is flagged^.spend_profiles.personal.rules[0].use.effort = "ultra"^CREW_DISPATCH: invalid config/crew-dispatch.json - spend profile personal: invalid effort: pi:ultra
+a non-Pi candidate is flagged^.spend_profiles.work.rules[0].use.harness = "claude"^CREW_DISPATCH: invalid config/crew-dispatch.json - spend profile candidates must use harness pi or pi-signed: only a Pi store can be pinned by a profile in this version
+ROWS
+  pass "bootstrap validates spend_profiles and each profile's own rules"
+}
+
+
 test_bootstrap_reporting
+test_crew_dispatch_spend_profiles_validation
 test_no_mistakes_min_version
 test_gh_axi_min_version
 test_lavish_axi_min_version

@@ -75,7 +75,9 @@
 #              A replacement Claude or Pi profile must also pass this home's
 #              worker account pin (bin/fm-worker-account-lib.sh) here, so a pin
 #              that no longer resolves or is signed out refuses before the old
-#              agent stops.
+#              agent stops. A home with spend_profiles repeats the spend profile
+#              check (bin/fm-spend-profile-lib.sh) the same way, keeping the
+#              profile the task was recorded under.
 #              --note is required for a ship or scout, whose replacement
 #              inherits the local copy but none of the conversation; a
 #              secondmate reconciles its own home's records at startup, so its
@@ -176,6 +178,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-worker-account-lib.sh
 . "$SCRIPT_DIR/fm-worker-account-lib.sh"
+# shellcheck source=bin/fm-spend-profile-lib.sh
+. "$SCRIPT_DIR/fm-spend-profile-lib.sh"
 
 POLL=${FM_CONTROL_POLL:-0.5}
 SETTLE_WAIT=${FM_CONTROL_SETTLE_WAIT:-5}
@@ -854,9 +858,21 @@ resolve_relaunch_profile() {
   # The launch owner applies this home's worker account pin too, but only after
   # the old agent has been stopped, so a pin that no longer resolves or is
   # signed out must refuse here, while nothing has changed yet.
-  local account_model=$TARGET_MODEL
+  local account_model=$TARGET_MODEL spend_config spend_selection
   [ "$account_model" != default ] || account_model=
-  fm_worker_account_select "$TARGET_HARNESS" "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" \
+  spend_config=${FM_CONFIG_OVERRIDE:-$FM_HOME/config}
+  # The spend profile (bin/fm-spend-profile-lib.sh) is part of the same
+  # decision: the task keeps the profile it was recorded under, and its account
+  # replaces config/pi-account for the check below.
+  FM_WORKER_ACCOUNT_PROFILE_PIN=
+  if [ "$KIND" != secondmate ]; then
+    spend_selection=$(fm_spend_profile_select "$spend_config" \
+      "$(fm_spend_profile_project_name "$(fm_meta_get "$META" project)" "${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}")" \
+      "" "" "$(fm_meta_get "$META" profile)" "$(fm_meta_get "$META" captain_override)" \
+      "$TARGET_HARNESS" "$account_model" "") || return 1
+    [ -z "$spend_selection" ] || FM_WORKER_ACCOUNT_PROFILE_PIN=${spend_selection#*$'\t'}
+  fi
+  fm_worker_account_select "$TARGET_HARNESS" "$spend_config" \
     "$account_model" "$TARGET_HARNESS" >/dev/null || return 1
 }
 
