@@ -1,0 +1,30 @@
+== fm-spend-profile
+ok - malformed spend profiles, a shared store, and an unreadable spend-profile file refuse before launch
+ok - a secondmate spawn is exempt from project profiles and refuses --profile
+ok - the day-one example maps work, personal, and unmapped projects as today's routing requires
+# all fm-spend-profile tests passed
+rc=0
+== fm-spawn-dispatch-profile
+ok - keep-ai-trailers is inherited so a secondmate's crew launch keeps AI trailers
+ok - a claude secondmate launch carries the attribution-off policy too
+ok - active crew-dispatch profile does not block secondmate launches
+# all fm-spawn-dispatch-profile tests passed
+rc=0
+== fm-sibling
+ok - secondmate notes: same-primary registry proof, parent copy, cross-primary/remote/kind/self refused
+ok - limits: per-sender, per-pair (answers count), ping-pong, same-direction, window expiry
+ok - briefs: flag off byte-identical to no flag (ship, scout, secondmate); flag on only adds the sibling section
+ok - config/sibling-notes is in the inherited-config set
+rc=0
+== fm-shared-captain-inheritance
+ok - fm-config-push source-only edit after inherit stays quiet
+ok - session-start digest renders data/captain-shared.md with the shared read-only label
+ok - the header check names the first required phrase it did not find, without widening the accept set
+# all fm-shared-captain-inheritance tests passed
+rc=0
+== fm-bootstrap
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+ok - bootstrap gates resolver fields and additive harnesses on the typed key
+rc=0
