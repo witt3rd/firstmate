@@ -94,6 +94,7 @@ import {
   type ModelRegistry,
   SessionManager,
   ToolExecutionComponent,
+  VERSION,
   type AgentSession,
   type ExtensionAPI,
   type ExtensionCommandContext,
@@ -2150,60 +2151,6 @@ ${context.command}
     return stockOutcomesPreviewLines ?? undefined;
   };
 
-  // Pi 0.99 made the stock generic call header carry the tool arguments
-  // (`name key=value`, or `key: value` lines when expanded); Pi 0.87 shows only
-  // the title. Probe once so this shell keeps matching whatever the installed
-  // stock renderer does, and mirror Pi's format only when it shows arguments.
-  let stockCallShowsArgs: boolean | undefined;
-  const getStockCallShowsArgs = (): boolean => {
-    if (stockCallShowsArgs !== undefined) return stockCallShowsArgs;
-    try {
-      const probeDefinition: ToolDefinition = {
-        name: "fm_call_args_probe",
-        label: "Call args probe",
-        description: "Call args probe",
-        parameters: Type.Object({}),
-        execute: async () => ({ content: [], details: undefined }),
-      };
-      const probe = new ToolExecutionComponent(
-        probeDefinition.name,
-        "fm-call-args-probe",
-        { fm_probe: 1 },
-        { showImages: false },
-        probeDefinition,
-        { requestRender() {} } as ConstructorParameters<typeof ToolExecutionComponent>[5],
-        root,
-      );
-      stockCallShowsArgs = probe.render(4096).join("\n").includes("fm_probe");
-    } catch {
-      stockCallShowsArgs = false;
-    }
-    return stockCallShowsArgs;
-  };
-  const formatOutcomesToolCall = (
-    title: string,
-    args: unknown,
-    theme: Parameters<NonNullable<ToolDefinition["renderCall"]>>[1],
-    expanded: boolean,
-  ): string => {
-    const header = theme.fg("toolTitle", theme.bold(title));
-    if (!getStockCallShowsArgs() || args == null) return header;
-    const entries: Array<[string, unknown]> = typeof args === "object" && !Array.isArray(args)
-      ? Object.entries(args as Record<string, unknown>)
-      : [["args", args]];
-    if (entries.length === 0) return header;
-    if (expanded) {
-      const lines = entries.map(([key, value]) => {
-        const text = typeof value === "string" ? value : (JSON.stringify(value, null, 2) ?? String(value));
-        return `  ${key}: ${text.replace(/\t/g, "   ").replace(/\r/g, "").split("\n").join("\n    ")}`;
-      });
-      return `${header}\n${theme.fg("muted", lines.join("\n"))}`;
-    }
-    const pairs = entries.map(([key, value]) => `${key}=${JSON.stringify(value) ?? String(value)}`).join(" ");
-    const preview = pairs.length > 100 ? `${pairs.slice(0, 97)}...` : pairs;
-    return `${header} ${theme.fg("muted", preview)}`;
-  };
-
   type OutcomesToolShellState = {
     shell?: Box;
     call?: Text;
@@ -2228,6 +2175,41 @@ ${context.command}
     return shell;
   };
 
+  // Pi's stock call header (formatToolCallWithArgs) is not a public export.
+  // Before Pi 0.99 it is the bold title alone. Since Pi 0.99 a collapsed call
+  // is `title key=json` on the title line, cut at 100 characters, and an
+  // expanded call puts one muted `key: value` line under the title. Calm-off
+  // rendering has to match the installed Pi or the stock comparison fails.
+  // Keep this in step with that function.
+  const [stockMajor = 0, stockMinor = 0] = VERSION.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const stockCallHeaderShowsArgs = stockMajor > 0 || stockMinor >= 99;
+  const stockCollapsedArgsChars = 100;
+  const stockToolCallHeader = (
+    title: string,
+    args: unknown,
+    theme: Parameters<NonNullable<ToolDefinition["renderCall"]>>[1],
+    expanded: boolean,
+  ): string => {
+    const header = theme.fg("toolTitle", theme.bold(title));
+    if (!stockCallHeaderShowsArgs || args == null) return header;
+    const entries = typeof args === "object" && !Array.isArray(args)
+      ? Object.entries(args)
+      : [["args", args] as [string, unknown]];
+    if (entries.length === 0) return header;
+    if (expanded) {
+      const lines = entries.map(([key, value]) => {
+        const text = typeof value === "string" ? value : (JSON.stringify(value, null, 2) ?? String(value));
+        return `  ${key}: ${text.replace(/\t/g, "   ").replace(/\r/g, "").split("\n").join("\n    ")}`;
+      });
+      return `${header}\n${theme.fg("muted", lines.join("\n"))}`;
+    }
+    const pairs = entries.map(([key, value]) => `${key}=${JSON.stringify(value) ?? String(value)}`).join(" ");
+    const preview = pairs.length > stockCollapsedArgsChars
+      ? `${pairs.slice(0, stockCollapsedArgsChars - 3)}...`
+      : pairs;
+    return `${header} ${theme.fg("muted", preview)}`;
+  };
+
   registerFirstmateTool(pi, {
     name: "fm_branch_outcomes",
     label: "Read supervision branch outcomes",
@@ -2242,7 +2224,7 @@ ${context.command}
       if (calmPresentation.stockExportRendering) throw new Error("Use Pi stock export rendering");
       if (calmHides("assistant-tool-call")) return new Container();
       const shellState = context.state as OutcomesToolShellState;
-      shellState.call = new Text(formatOutcomesToolCall("fm_branch_outcomes", args, theme, context.expanded), 0, 0);
+      shellState.call = new Text(stockToolCallHeader("fm_branch_outcomes", args, theme, context.expanded), 0, 0);
       return refreshOutcomesToolShell(shellState, theme, context);
     },
     renderResult: (result, options, theme, context) => {
@@ -2304,7 +2286,7 @@ ${context.command}
       if (calmPresentation.stockExportRendering) throw new Error("Use Pi stock export rendering");
       if (calmHides("assistant-tool-call")) return new Container();
       const shellState = context.state as OutcomesToolShellState;
-      shellState.call = new Text(formatOutcomesToolCall("fm_branch_processed", args, theme, context.expanded), 0, 0);
+      shellState.call = new Text(stockToolCallHeader("fm_branch_processed", args, theme, context.expanded), 0, 0);
       return refreshOutcomesToolShell(shellState, theme, context);
     },
     renderResult: (result, _options, theme, context) => {
