@@ -164,7 +164,7 @@ test_crewmate_delivers_marks_and_copies_parent() {
     fail "parent copy missing or malformed on the sender's status file: $(cat "$p/state/a.status")"
   [ ! -s "$p/state/b.status" ] || fail "target status must be untouched"
   assert_contains "$(cat "$FM_SEND_LOG")" "fm-b" "doorbell should ring the target's endpoint"
-  assert_contains "$(cat "$FM_SEND_LOG")" "$p/state/b.inbox" "doorbell should name the target inbox"
+  assert_contains "$(cat "$FM_SEND_LOG")" "'b.inbox' steering inbox" "doorbell should name the target inbox"
   assert_not_contains "$(cat "$FM_SEND_LOG")" "fm-a	" "the sender must not be rung"
   # A scout is a crewmate-tier sibling too.
   rc=0
