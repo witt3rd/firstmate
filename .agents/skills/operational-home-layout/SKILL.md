@@ -56,6 +56,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   secondmates.md      local and remote secondmate routing table; firstmate-private, maintained by the secondmate seed helpers (section 6)
   <id>/brief.md      per-task crewmate brief, or per-secondmate charter brief when kind=secondmate
   <id>/report.md     scout task deliverable, written by the crewmate; survives teardown
+  destructive-guard.log  append-only JSON lines for every destructive-command guard denial, override, and grant in panes this home owns; bin/fm-destructive-pretool-check.sh is the only writer (docs/destructive-guard.md)
   caretaker-sweep.record  a caretaker home's durable health-sweep schedule record; bin/fm-caretaker-sweep.sh owns it
   health-sweep-<date>/report.md  a caretaker health sweep's report, written under the caretaker-sweep skill
 projects/            cloned repos; gitignored; read-only except under hard rule 1's concrete captain-approved project operation exception

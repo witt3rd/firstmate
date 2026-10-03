@@ -17,6 +17,7 @@ Update its executable or hook owner, concise tool fact, and `../../../docs/verif
 
 Supported primaries deny watcher-arm anti-patterns before execution, including shell `&`, truncating pipes, bundling, and broad `pkill -f fm-watch`.
 `../../../docs/arm-pretool-check.md` owns hook commands, output quirks, and evidence.
+They also refuse destructive bulk deletes through the destructive-command guard, which `../../../docs/destructive-guard.md` owns.
 The tool reference names the integration form.
 Validate changes against the real harness in a scratch project before trusting them.
 

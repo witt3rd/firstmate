@@ -476,15 +476,21 @@ function runGuard(stopHookActive: boolean): Promise<{ code: number; stderr: stri
 }
 
 // PreToolUse seatbelts (bin/fm-arm-pretool-check.sh, docs/arm-pretool-check.md;
-// bin/fm-cd-pretool-check.sh, docs/cd-guard.md). Both piggyback on this same
+// bin/fm-cd-pretool-check.sh, docs/cd-guard.md; and the destructive-command
+// guard, docs/destructive-guard.md). All piggyback on this same
 // extension file so no extra -e flag is needed: omp auto-discovers this file
 // for the turn-end guard, and pi.on("tool_call", ...) can block (verified on
 // omp 18.1.2: returning {block: true, reason} refused the bash command and
 // surfaced the reason verbatim to the model). Each owner script owns its own
-// decision and is inert outside the real primary checkout.
-function runChecker(script: string, command: string): Promise<{ code: number; stderr: string }> {
+// decision; the arm and cd owners are inert outside the real primary checkout,
+// while the destructive guard covers every pane here.
+function runChecker(
+  script: string,
+  command: string,
+  extraArgs: string[] = [],
+): Promise<{ code: number; stderr: string }> {
   return new Promise((resolveResult) => {
-    const child = spawn(`${root}/bin/${script}`, ["--command", command], {
+    const child = spawn(`${root}/bin/${script}`, [...extraArgs, "--command", command], {
       stdio: ["ignore", "ignore", "pipe"],
     });
     let stderr = "";
@@ -502,6 +508,12 @@ function runPretoolCheck(command: string): Promise<{ code: number; stderr: strin
 
 function runCdCheck(command: string): Promise<{ code: number; stderr: string }> {
   return runChecker("fm-cd-pretool-check.sh", command);
+}
+
+// --primary stands down in a worker pane, where fm-spawn's per-task adapter
+// owns the decision.
+function runDestructiveCheck(command: string): Promise<{ code: number; stderr: string }> {
+  return runChecker("fm-destructive-pretool-check.sh", command, ["--primary"]);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -584,6 +596,10 @@ export default function (pi: ExtensionAPI) {
     if (!event || event.type !== "tool_call" || event.toolName !== "bash") return {};
     const command = String((event.input as { command?: unknown })?.command ?? "");
     if (!command) return {};
+    const destructiveResult = await runDestructiveCheck(command);
+    if (destructiveResult.code === 2) {
+      return { block: true, reason: destructiveResult.stderr.trim() || "denied by the destructive-command guard" };
+    }
     const cdResult = await runCdCheck(command);
     if (cdResult.code === 2) {
       return { block: true, reason: cdResult.stderr.trim() || "denied by the cd-guard PreToolUse seatbelt" };

@@ -470,17 +470,23 @@ function runGuard(): Promise<{ code: number; stderr: string }> {
 }
 
 // PreToolUse seatbelts (bin/fm-arm-pretool-check.sh, docs/arm-pretool-check.md;
-// bin/fm-cd-pretool-check.sh, docs/cd-guard.md). Both piggyback on this same
+// bin/fm-cd-pretool-check.sh, docs/cd-guard.md; and the destructive-command
+// guard below). All piggyback on this same
 // extension file rather than separate ones so no extra Pi -e flag is needed at
 // launch - the primary already loads this file for the turn-end guard, and
 // pi.on("tool_call", ...) can block (verified 2026-07-09 against pi 0.80.5:
 // returning {block: true} prevents the bash command from running). Each owner
-// script owns its own decision and is inert outside the real primary checkout.
-function runChecker(script: string, command: string): Promise<{ code: number; stderr: string }> {
+// script owns its own decision; the arm and cd owners are inert outside the
+// real primary checkout, while the destructive guard covers every pane here.
+function runChecker(
+  script: string,
+  command: string,
+  extraArgs: string[] = [],
+): Promise<{ code: number; stderr: string }> {
   return new Promise((resolveResult) => {
     const invocation = firstmateShellInvocation(
       `${root}/bin/${script}`,
-      ["--command", command],
+      [...extraArgs, "--command", command],
     );
     let child: ChildProcess;
     try {
@@ -506,6 +512,14 @@ function runPretoolCheck(command: string): Promise<{ code: number; stderr: strin
 
 function runCdCheck(command: string): Promise<{ code: number; stderr: string }> {
   return runChecker("fm-cd-pretool-check.sh", command);
+}
+
+// Destructive-command guard (bin/fm-destructive-pretool-check.sh,
+// docs/destructive-guard.md). --primary makes it stand down in a worker pane,
+// where fm-spawn's per-task adapter owns the decision, so it guards this
+// primary or secondmate pane without double-logging a worker's attempt.
+function runDestructiveCheck(command: string): Promise<{ code: number; stderr: string }> {
+  return runChecker("fm-destructive-pretool-check.sh", command, ["--primary"]);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -591,6 +605,10 @@ export default function (pi: ExtensionAPI) {
     if (event.type !== "tool_call" || event.toolName !== "bash") return {};
     const command = String((event.input as { command?: unknown })?.command ?? "");
     if (!command) return {};
+    const destructiveResult = await runDestructiveCheck(command);
+    if (destructiveResult.code === 2) {
+      return { block: true, reason: destructiveResult.stderr.trim() || "denied by the destructive-command guard" };
+    }
     const cdResult = await runCdCheck(command);
     if (cdResult.code === 2) {
       return { block: true, reason: cdResult.stderr.trim() || "denied by the cd-guard PreToolUse seatbelt" };
