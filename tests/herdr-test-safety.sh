@@ -13,6 +13,10 @@ set -u
 # which the no-mistakes gate runs from a gate worktree, must be exempt).
 export FM_GATE_REFUSE_BYPASS=1
 
+# fm-spawn refuses unguarded runtimes (sh/codex) without a grant; these suites
+# spawn them in throwaway homes, so grant the fixture override (see tests/lib.sh).
+export FM_UNGUARDED_RUNTIME_OK=fm-test-fixture
+
 HERDR_TEST_SAFETY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$HERDR_TEST_SAFETY_DIR/bin/fm-herdr-lab.sh"

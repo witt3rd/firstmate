@@ -68,6 +68,13 @@ unset FM_TASK_ID
 # against an ambient override sets TASKS_AXI_FILE itself.
 unset TASKS_AXI_FILE TASKS_AXI_BACKEND
 
+# bin/fm-spawn.sh refuses a ship or scout worker on a runtime the
+# destructive-command guard cannot reach unless main grants a logged override
+# (docs/destructive-guard.md). The suites exercise those runtimes' launches in
+# throwaway homes, so they run with the override granted; the guard's own suite
+# unsets it to prove the refusal. Never inherit an operator's real grant.
+export FM_UNGUARDED_RUNTIME_OK=fm-test-fixture
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034

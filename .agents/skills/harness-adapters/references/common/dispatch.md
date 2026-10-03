@@ -24,6 +24,15 @@ Natural-language rules stay with firstmate, while scripts receive concrete axes.
 Composer shapes, glyphs, placeholders, popups, rendered delivery signals, and the `empty` / `pending` / `pending-unproven` / `unknown` decision belong only to `../../../bin/fm-composer-lib.sh`.
 Tool references record empirical knowledge for those executable owners.
 
+## Destructive-command guard convention
+
+Every Firstmate-launched worker, primary, and secondmate pane refuses destructive bulk deletes before they run: docker prunes, filtered, piped, or wildcard docker removals, recursive wildcard `rm` under the home directory or `/mnt`, `git clean -f` outside the worker's own worktree, `find -delete` outside `/tmp/fm-*`, block-device writes, btrfs subvolume deletes, and `systemctl disable`/`mask`.
+A worker may still remove resources it named with its own task id and anything inside its own worktree, so a brief that needs cleanup should tell the worker to label what it creates.
+Each denial is logged in the owning home's `data/destructive-guard.log` and surfaces as the worker's `note:` status line; treat it as an attempted destructive action to reconcile with the worker, not as a blocker.
+The only override is `FM_DESTRUCTIVE_OK=<ticket>` in the harness environment, which main grants to one launch with `fm-spawn.sh --destructive-ok <ticket>` and only on the captain's explicit word for that destructive action.
+A ship or scout worker on a runtime the guard cannot reach per task (anything but Pi, pi-signed, omp, Claude, and OpenCode, or a raw launch command) is refused at spawn; prefer a guarded runtime, and grant `--unguarded-runtime <ticket>` only on the captain's explicit word.
+`../../../docs/destructive-guard.md` owns the exact refused shapes, coverage gaps, and log fields.
+
 ## Adapter verification
 
 For an approved new adapter check, use the spawn owner's raw-launch escape hatch only for a trivial supervised task.

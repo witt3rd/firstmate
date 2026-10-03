@@ -353,6 +353,17 @@
 #   account, then launches on the profile's account. The profile is recorded as
 #   profile= (and captain_override=) in the task record. A legacy file with no
 #   spend_profiles changes nothing. bin/fm-spend-profile-lib.sh owns the guards.
+#   --destructive-ok <ticket> grants this one launch the destructive-command
+#   guard override: the launch exports FM_DESTRUCTIVE_OK=<ticket> into the
+#   worker's harness environment, the only place the guard honors it, and the
+#   grant is logged first. A malformed ticket refuses the spawn. The grant is
+#   per launch and never recorded for a later relaunch.
+#   bin/fm-destructive-pretool-check.sh owns the ticket shape and the log, and
+#   docs/destructive-guard.md the contract. Every Pi, pi-signed, omp, Claude,
+#   and OpenCode worker launch also installs that guard in its per-task adapter.
+#   A ship or scout on any other runtime, or a raw launch command, is refused
+#   unless --unguarded-runtime <ticket> or FM_UNGUARDED_RUNTIME_OK=<ticket> in
+#   the spawning environment grants it; that grant is logged the same way.
 #   Launch templates live in launch_template() below; placeholders replaced before launch:
 #     __BRIEF__    absolute path to data/<task-id>/brief.md
 #     __CLAUDEPERMFLAG__ the claude permission flag selected by config/claude-permission-mode
@@ -684,6 +695,10 @@ PROFILE_ARG=
 PROFILE_SET=0
 OVERRIDE_ARG=
 OVERRIDE_SET=0
+DESTRUCTIVE_OK=
+DESTRUCTIVE_OK_SET=0
+UNGUARDED_RUNTIME=
+UNGUARDED_RUNTIME_SET=0
 RELAUNCH=0
 POS=()
 want_value=
@@ -735,6 +750,14 @@ for a in "$@"; do
     captain-override)
       OVERRIDE_ARG=$a
       OVERRIDE_SET=1
+      ;;
+    destructive-ok)
+      DESTRUCTIVE_OK=$a
+      DESTRUCTIVE_OK_SET=1
+      ;;
+    unguarded-runtime)
+      UNGUARDED_RUNTIME=$a
+      UNGUARDED_RUNTIME_SET=1
       ;;
     *)
       echo "error: internal parser state for --$want_value" >&2
@@ -799,6 +822,16 @@ for a in "$@"; do
     PROFILE_ARG=${a#--profile=}
     PROFILE_SET=1
     ;;
+  --destructive-ok) want_value=destructive-ok ;;
+  --unguarded-runtime) want_value=unguarded-runtime ;;
+  --unguarded-runtime=*)
+    UNGUARDED_RUNTIME=${a#--unguarded-runtime=}
+    UNGUARDED_RUNTIME_SET=1
+    ;;
+  --destructive-ok=*)
+    DESTRUCTIVE_OK=${a#--destructive-ok=}
+    DESTRUCTIVE_OK_SET=1
+    ;;
   --captain-override) want_value=captain-override ;;
   --captain-override=*)
     OVERRIDE_ARG=${a#--captain-override=}
@@ -845,6 +878,10 @@ done
 }
 [ "$OVERRIDE_SET" -eq 0 ] || [ -n "$OVERRIDE_ARG" ] || {
   echo "error: --captain-override requires the captain's words as a non-empty value" >&2
+  exit 1
+}
+[ "$DESTRUCTIVE_OK_SET" -eq 0 ] || "$SCRIPT_DIR/fm-destructive-pretool-check.sh" --check-ticket "$DESTRUCTIVE_OK" || {
+  echo "error: --destructive-ok needs a well-formed ticket" >&2
   exit 1
 }
 [ "$PROFILE_SET" -eq "$OVERRIDE_SET" ] || {
@@ -1540,6 +1577,7 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   [ "$YOLO_SET" -eq 0 ] || shared_args+=(--yolo "$YOLO")
   [ "$BRANCH_PREFIX_SET" -eq 0 ] || shared_args+=(--branch-prefix "$BRANCH_PREFIX")
   [ "$PROFILE_SET" -eq 0 ] || shared_args+=(--profile "$PROFILE_ARG" --captain-override "$OVERRIDE_ARG")
+  [ "$UNGUARDED_RUNTIME_SET" -eq 0 ] || shared_args+=(--unguarded-runtime "$UNGUARDED_RUNTIME")
   for pair in "${POS[@]}"; do
     case "$pair" in
     *=*) : ;;
@@ -2369,6 +2407,36 @@ fi
 if [ "$KIND" = secondmate ] && [ "$HARNESS" = rovo ]; then
   echo "error: rovo is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
   exit 1
+fi
+
+# The destructive-command guard (docs/destructive-guard.md) reaches a ship or
+# scout worker only through the per-task adapter written below, which exists for
+# pi, pi-signed, omp, claude, and opencode launches from a template. Any other
+# runtime, and a raw launch command, would run that worker unguarded, so it is
+# refused unless main or the captain grants an explicit override with
+# --unguarded-runtime <ticket> or FM_UNGUARDED_RUNTIME_OK=<ticket> in this
+# process's environment; the grant is logged before launch. A secondmate is
+# guarded by its home's tracked primary hooks instead.
+UNGUARDED_GRANT=
+if [ "$KIND" != secondmate ]; then
+  case "$RAW_LAUNCH:$HARNESS" in
+  0:pi | 0:pi-signed | 0:omp | 0:claude | 0:opencode) ;;
+  *)
+    if [ "$UNGUARDED_RUNTIME_SET" -eq 1 ]; then
+      UNGUARDED_GRANT=$UNGUARDED_RUNTIME
+    else
+      UNGUARDED_GRANT=${FM_UNGUARDED_RUNTIME_OK:-}
+    fi
+    if [ -z "$UNGUARDED_GRANT" ]; then
+      echo "error: the destructive-command guard covers $KIND workers only on pi, pi-signed, omp, claude, opencode; refusing to launch an unguarded ${HARNESS:-raw} worker. Select a guarded runtime, or have main or the captain grant --unguarded-runtime <ticket>." >&2
+      exit 1
+    fi
+    "$SCRIPT_DIR/fm-destructive-pretool-check.sh" --check-ticket "$UNGUARDED_GRANT" || {
+      echo "error: --unguarded-runtime needs a well-formed ticket" >&2
+      exit 1
+    }
+    ;;
+  esac
 fi
 
 case "$HARNESS" in
@@ -4575,6 +4643,46 @@ if [ "$KIND" != secondmate ]; then
     fi
     ;;
   esac
+# The destructive-command guard's tool_call adapter, shared verbatim by the
+# Pi-family worker extensions below (docs/destructive-guard.md). It passes this
+# task's state, id, and spawned worktree so the guard can label own resources,
+# open the worktree, log in this home, and note the task's status stream.
+destructive_guard_ts_check() {
+  cat <<EOF
+// Destructive-command guard (bin/fm-destructive-pretool-check.sh, contract in
+// docs/destructive-guard.md): a bash call the guard denies never runs, and the
+// guard logs it and tells this task's supervisor. A checker that cannot run
+// allows rather than blocking every shell call.
+const destructiveCheck = (command: string) =>
+  new Promise<{ code: number; stderr: string }>((resolve) => {
+    let stderr = "";
+    let child: any;
+    try {
+      child = spawn("$FM_ROOT/bin/fm-destructive-pretool-check.sh", [
+        "--command", command, "--state", "$STATE_REAL", "--task", "$ID", "--worktree", "$WT",
+      ], { stdio: ["ignore", "ignore", "pipe"] });
+    } catch {
+      resolve({ code: 0, stderr: "" });
+      return;
+    }
+    child.stderr?.on("data", (chunk: any) => { stderr += String(chunk); });
+    child.on("error", () => resolve({ code: 0, stderr: "" }));
+    child.on("close", (code: number | null) => resolve({ code: code ?? 0, stderr }));
+  });
+EOF
+}
+destructive_guard_ts_handler() {
+  cat <<'EOF'
+  pi.on("tool_call", async (event: any) => {
+    if (!event || event.type !== "tool_call" || event.toolName !== "bash") return {};
+    const command = String(event.input?.command ?? "");
+    if (!command) return {};
+    const result = await destructiveCheck(command);
+    if (result.code !== 2) return {};
+    return { block: true, reason: result.stderr.trim() || "denied by the destructive-command guard" };
+  });
+EOF
+}
   case "$HARNESS" in
   claude*)
     # Semantic busy-state hooks (bin/fm-busy-lib.sh): UserPromptSubmit opens
@@ -4593,8 +4701,12 @@ if [ "$KIND" != secondmate ]; then
     j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
     j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
     j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
+    # Destructive-command guard (docs/destructive-guard.md): a Bash call it
+    # denies never runs. This per-task entry carries the spawned worktree; a
+    # tracked primary hook in the same pane records the same attempt only once.
+    j_destructive=$(json_escape "$(shell_quote "$FM_ROOT/bin/fm-destructive-pretool-check.sh") --claude --state $(shell_quote "$STATE_REAL") --task $(shell_quote "$ID") --worktree $(shell_quote "$WT")")
     cat >"$WT/.claude/settings.local.json" <<EOF
-{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
+{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"$j_destructive"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
 EOF
     exclude_path '.claude/settings.local.json'
     ;;
@@ -4649,7 +4761,7 @@ EOF
 // sessions' status until the latched session settles, so a child's idle can
 // never clear the worker's busy state. The session.idle touch stays the
 // watcher's wake NOTIFICATION, never current-state truth.
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 const busyEvent = (state, event) =>
   new Promise((resolve) => {
     execFile("$FM_ROOT/bin/fm-busy-event.sh", [
@@ -4657,9 +4769,35 @@ const busyEvent = (state, event) =>
       "--gen", "$BUSY_GEN", "--source", "opencode-plugin", "--event", event,
     ], () => resolve());
   });
+// Destructive-command guard (bin/fm-destructive-pretool-check.sh, contract in
+// docs/destructive-guard.md): a bash call it denies never runs; throwing from
+// tool.execute.before is OpenCode's block. A checker that cannot run allows.
+const destructiveCheck = (command) =>
+  new Promise((resolve) => {
+    let stderr = "";
+    let child;
+    try {
+      child = spawn("$FM_ROOT/bin/fm-destructive-pretool-check.sh", [
+        "--command", command, "--state", "$STATE_REAL", "--task", "$ID", "--worktree", "$WT",
+      ], { stdio: ["ignore", "ignore", "pipe"] });
+    } catch {
+      resolve({ code: 0, stderr: "" });
+      return;
+    }
+    child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
+    child.on("error", () => resolve({ code: 0, stderr: "" }));
+    child.on("close", (code) => resolve({ code: code ?? 0, stderr }));
+  });
 export const FmBusyState = async () => {
   let activeSession = null;
   return {
+    "tool.execute.before": async (input, output) => {
+      if (input?.tool !== "bash") return;
+      const command = output?.args?.command;
+      if (!command || typeof command !== "string") return;
+      const result = await destructiveCheck(command);
+      if (result.code === 2) throw new Error(result.stderr.trim() || "denied by the destructive-command guard");
+    },
     event: async ({ event }) => {
       if (event.type === "session.status") {
         const sessionID = event.properties.sessionID;
@@ -4705,7 +4843,7 @@ EOF
 // "turn_end" fires at every inner turn boundary (one LLM response plus its
 // tool calls) and stays a wake NOTIFICATION touch for the watcher, never
 // current-state truth.
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 const busyEvent = (state: string, event: string) =>
   new Promise<void>((resolve) => {
     execFile("$FM_ROOT/bin/fm-busy-event.sh", [
@@ -4713,7 +4851,9 @@ const busyEvent = (state: string, event: string) =>
       "--gen", "$BUSY_GEN", "--source", "pi-ext", "--event", event,
     ], () => resolve());
   });
+$(destructive_guard_ts_check)
 export default function (pi: any) {
+$(destructive_guard_ts_handler)
   pi.on("agent_start", () => busyEvent("busy", "agent-start"));
   pi.on("agent_settled", (_event: any, ctx: any) => {
     if (ctx && typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
@@ -4753,7 +4893,7 @@ EOF
 // would leave every completed turn recorded busy. "turn_end" fires at every
 // inner turn boundary and stays a wake NOTIFICATION touch for the watcher,
 // never current-state truth.
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 const busyEvent = (state: string, event: string) =>
   new Promise<void>((resolve) => {
     execFile("$FM_ROOT/bin/fm-busy-event.sh", [
@@ -4761,7 +4901,9 @@ const busyEvent = (state: string, event: string) =>
       "--gen", "$BUSY_GEN", "--source", "omp-ext", "--event", event,
     ], () => resolve());
   });
+$(destructive_guard_ts_check)
 export default function (pi: any) {
+$(destructive_guard_ts_handler)
   pi.on("agent_start", () => busyEvent("busy", "agent-start"));
   pi.on("agent_end", (event: any) => {
     if (event && event.willContinue === true) return;
@@ -5296,6 +5438,16 @@ fi
 # kill switch below it is an export statement, so it survives a compound raw
 # launch and the launch-env-allowlist `env -i` wrapper.
 LAUNCH="export FM_TASK_INBOX=$(shell_quote "$STATE_REAL/$ID.inbox"); $LAUNCH"
+# The destructive-command guard honors FM_DESTRUCTIVE_OK only from the harness
+# process environment, so main's explicit per-launch grant rides this export;
+# the grant is logged before the launch can use it.
+if [ -n "$UNGUARDED_GRANT" ]; then
+  "$SCRIPT_DIR/fm-destructive-pretool-check.sh" --grant "$UNGUARDED_GRANT" --grant-what "unguarded ${HARNESS:-raw} runtime" --state "$STATE_REAL" --task "$ID" || exit 1
+fi
+if [ "$DESTRUCTIVE_OK_SET" -eq 1 ]; then
+  "$SCRIPT_DIR/fm-destructive-pretool-check.sh" --grant "$DESTRUCTIVE_OK" --state "$STATE_REAL" --task "$ID" || exit 1
+  LAUNCH="export FM_DESTRUCTIVE_OK=$(shell_quote "$DESTRUCTIVE_OK"); $LAUNCH"
+fi
 LAUNCH="export COMPACT_ADVISER_DISABLE=1; $LAUNCH"
 # When the live-harness gate has exported DISABLE_AUTOUPDATER into this spawn's
 # own environment, carry it into the launch command text so Claude Code's
