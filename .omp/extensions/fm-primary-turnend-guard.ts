@@ -510,8 +510,8 @@ function runCdCheck(command: string): Promise<{ code: number; stderr: string }> 
   return runChecker("fm-cd-pretool-check.sh", command);
 }
 
-// --primary stands down in a worker pane, where fm-spawn's per-task adapter
-// owns the decision.
+// --primary applies the worker policy in a worker pane (FM_TASK_ID set) and
+// the primary policy elsewhere.
 function runDestructiveCheck(command: string): Promise<{ code: number; stderr: string }> {
   return runChecker("fm-destructive-pretool-check.sh", command, ["--primary"]);
 }

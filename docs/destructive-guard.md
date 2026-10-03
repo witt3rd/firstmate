@@ -45,17 +45,20 @@ Quoted text, comments, heredoc bodies, and later argument words are data, so `ec
 
 ## Where it runs
 
-Every pane runs it in one of two forms, and exactly one form owns a given pane.
+Every pane Firstmate launches runs it in at least one of two forms.
 
 - **Worker panes.** `bin/fm-spawn.sh` installs a per-task adapter that passes the task's state directory, task id, and spawned worktree: the generated `state/<id>.pi-ext.ts` for Pi and pi-signed, `state/<id>.omp-ext.ts` for omp, a `PreToolUse` Bash entry in the worktree's `.claude/settings.local.json` for Claude, and `tool.execute.before` in the worktree's generated OpenCode plugin.
 - **Primary and secondmate panes.** The tracked adapters run the guard with `--primary`: `.pi/extensions/fm-primary-turnend-guard.ts` (Pi and pi-signed primaries and secondmates), `.omp/extensions/fm-primary-turnend-guard.ts`, `.claude/settings.json`, `.codex/hooks.json`, `.grok/hooks/fm-primary-destructive-check.json`, `.opencode/plugins/fm-primary-destructive-check.js`, and `.cursor/hooks.json`.
-  `--primary` stands down when `FM_TASK_ID` is set, because such a pane is a worker whose per-task adapter owns the decision; that also keeps a worker working inside a firstmate worktree from being logged twice.
+  When one of them fires in a worker pane (`FM_TASK_ID` set), it applies the worker policy from the identity `bin/fm-spawn.sh` exports into every worker launch: the task id, the parent home's state directory beside `FM_TASK_INBOX`, and the linked worktree the pane runs in.
+  When both forms deny the same command in one worker pane within ten seconds, only the first logs and notes it.
 
-Known gaps, by construction of each runtime rather than by choice of this guard:
+**Unguarded runtimes are refused at launch.** A ship or scout worker on any runtime without a per-task adapter (Codex, Grok, Cursor, Gemini, Muse, Kimi, AGY, Rovo, Devin) or from a raw launch command would run unguarded, because those runtimes either expose no hook Firstmate wires per task or, like Codex workers, launch with project hooks disabled.
+`bin/fm-spawn.sh` therefore refuses it before creating anything, naming the guarded runtimes, unless main or the captain grants an explicit override: `--unguarded-runtime <ticket>` on the spawn, or `FM_UNGUARDED_RUNTIME_OK=<ticket>` in the spawning process's environment.
+The ticket has the same shape as the command override below, and the grant is logged before launch.
+Secondmates are guarded by their home's tracked primary hooks and are not refused.
 
-- Codex, Grok, Cursor, Gemini, Muse, Kimi, AGY, Rovo, and Devin workers receive no per-task adapter, and a Codex worker also launches with project hooks disabled, so a worker on those runtimes is not guarded; their primaries and secondmates are.
-- A session started outside Firstmate (a captain's own shell, a pane launched by hand without the tracked extensions) is not guarded.
-- The class-level remedy for both gaps is a host-level install of the same transport into each runtime's user-wide hook surface (for example `~/.pi/agent/extensions/`, `~/.claude/settings.json`, `~/.codex/hooks.json`), owned by the fleet configuration rather than this repository.
+A session started outside Firstmate (a captain's own shell, a pane launched by hand without the tracked extensions) is not guarded.
+The class-level remedy for that gap is a host-level install of the same transport into each runtime's user-wide hook surface (for example `~/.pi/agent/extensions/`, `~/.claude/settings.json`, `~/.codex/hooks.json`), owned by the fleet configuration rather than this repository.
 
 ## Override
 
@@ -73,7 +76,7 @@ Destructive and irreversible work still needs the captain's explicit word under 
 
 ## Where denials are recorded
 
-Every denial, override, and grant appends one JSON line to `data/destructive-guard.log` in the home that owns the pane: the parent home for a worker, the pane's own home for a primary or secondmate.
+Every denial, override, and grant (command override or unguarded runtime) appends one JSON line to `data/destructive-guard.log` in the home that owns the pane: the parent home for a worker, the pane's own home for a primary or secondmate.
 Each line records `at` and `time` (when), `who` (`task:<id>` or `primary`), `home`, `host`, `harness`, `pid`, and `cwd` (who and where), and `decision`, `code`, `ticket`, and `command` (what).
 
 A worker's denial or override also appends a stamped `note:` line to `state/<task-id>.status`, which reaches the supervisor through its unread-status surface without opening a decision or claiming the worker is blocked.
@@ -92,7 +95,7 @@ The output contract is identical in shape to [`arm-pretool-check.md`](arm-pretoo
 ## Automated validation
 
 `tests/fm-destructive-pretool-check.test.sh` owns the acceptance matrix, led by the xwvol incident command shapes, across all five entry forms.
-It also proves the override and its self-grant refusal, the log fields and the supervisor note, the primary stand-down, the secondmate parent-channel note, fail-open transport, every per-task worker adapter `bin/fm-spawn.sh` writes, every tracked primary adapter, and the `--destructive-ok` grant.
+It also proves the override and its self-grant refusal, the log fields and the supervisor note, the primary adapters' worker policy in worker panes and its single record when two hooks deny, the secondmate parent-channel note, fail-open transport, every per-task worker adapter `bin/fm-spawn.sh` writes, every tracked primary adapter, the `--destructive-ok` grant, and the unguarded-runtime refusal and its override.
 
 Run:
 

@@ -24,16 +24,18 @@
 #   --command <cmd>   the exact shell command (OpenCode, Pi, pi-signed, omp).
 #   --claude          Claude's stderr-only deny rendering.
 #   --cursor          Cursor's own returned-object deny rendering.
-#   --primary         the tracked primary adapter: stand down (allow) when
-#                     FM_TASK_ID is set, because fm-spawn installs a per-task
-#                     adapter in every worker pane it covers and that adapter
-#                     owns the decision there.
+#   --primary         the tracked primary adapter. In a worker pane (FM_TASK_ID
+#                     set) it applies the worker policy from the identity
+#                     fm-spawn exports: FM_TASK_ID, the state directory beside
+#                     FM_TASK_INBOX, and the linked worktree it runs in.
 #   --state <dir>     the parent home's state directory (per-task adapters).
 #   --task <id>       the worker's task id; also the worker's own resource label.
 #   --worktree <dir>  the isolated worktree fm-spawn created for this worker.
 #   --grant <ticket>  record that main granted FM_DESTRUCTIVE_OK=<ticket> to the
 #                     named task's launch; prints nothing, exits 0, or exits 1
 #                     when the ticket is malformed. Used by bin/fm-spawn.sh.
+#   --grant-what <text>  names what --grant granted in the log line (default
+#                     FM_DESTRUCTIVE_OK).
 #   --check-ticket <ticket>
 #                     exit 0 when the ticket is well formed, else print the
 #                     required shape and exit 1. Used by bin/fm-spawn.sh.
@@ -51,7 +53,8 @@
 # A worker denial also appends a `note:` line to <state>/<task>.status so the
 # supervisor sees the attempt; a secondmate primary's denial goes to its parent
 # channel (bin/fm-parent-channel-lib.sh). A log or note failure never turns a
-# denial into an allow.
+# denial into an allow. When two hooks in one worker pane deny the same
+# command within ten seconds, only the first logs and notes it.
 #
 # Exit/output contract (identical shape to bin/fm-cd-pretool-check.sh):
 #   ALLOW - exit 0 and no output.
@@ -74,6 +77,7 @@ GRANT=""
 GRANT_SET=0
 CHECK_TICKET=""
 CHECK_TICKET_SET=0
+GRANT_WHAT=""
 
 usage() {
   cat <<'EOF'
@@ -108,6 +112,7 @@ while [ "$#" -gt 0 ]; do
     --worktree) need_value "$1" "$#"; WORKTREE=$2; shift 2 ;;
     --grant) need_value "$1" "$#"; GRANT=$2; GRANT_SET=1; shift 2 ;;
     --check-ticket) need_value "$1" "$#"; CHECK_TICKET=$2; CHECK_TICKET_SET=1; shift 2 ;;
+    --grant-what) need_value "$1" "$#"; GRANT_WHAT=$2; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *)
       echo "error: unknown argument: $1" >&2
@@ -202,12 +207,27 @@ fi
 if [ "$GRANT_SET" -eq 1 ]; then
   ticket_valid "$GRANT" || { echo "error: --grant ticket must match $TICKET_SHAPE" >&2; exit 1; }
   [ -n "$STATE_DIR" ] && [ -n "$TASK" ] || { echo "error: --grant requires --state and --task" >&2; exit 1; }
-  append_log grant - "$GRANT" "FM_DESTRUCTIVE_OK granted to the launch of $TASK" || true
+  append_log grant - "$GRANT" "${GRANT_WHAT:-FM_DESTRUCTIVE_OK} granted to the launch of $TASK" || true
   exit 0
 fi
 
-if [ "$PRIMARY_MODE" -eq 1 ] && [ -n "${FM_TASK_ID:-}" ]; then
-  exit 0
+# A primary-registered hook in a worker pane applies the worker policy, from the
+# identity fm-spawn exports into every worker launch: the task id, the parent
+# home's state directory beside the steering inbox, and the linked worktree the
+# pane runs in. Pane runtimes without a per-task adapter are guarded this way.
+if [ "$PRIMARY_MODE" -eq 1 ] && [ -n "${FM_TASK_ID:-}" ] && [ -z "$TASK" ]; then
+  TASK=$FM_TASK_ID
+  case "${FM_TASK_INBOX:-}" in
+    */"$TASK".inbox) STATE_DIR=${FM_TASK_INBOX%/*} ;;
+  esac
+  if command -v git >/dev/null 2>&1; then
+    top=$(git rev-parse --show-toplevel 2>/dev/null) || top=
+    gd=$(git rev-parse --absolute-git-dir 2>/dev/null) || gd=
+    cd_=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || cd_=
+    if [ -n "$top" ] && [ -n "$gd" ] && [ -n "$cd_" ] && [ "$gd" != "$cd_" ]; then
+      WORKTREE=$top
+    fi
+  fi
 fi
 
 if [ "$CMD_SET" -eq 0 ]; then
@@ -270,15 +290,38 @@ REASON=${REST#*"$TAB"}
 [ -n "$CODE" ] && [ -n "$REASON" ] && [ "$REASON" != "$REST" ] || exit 0
 
 NOW=$(date +%s)
+
+# A worker pane may run both its per-task adapter and a primary-registered hook
+# for one attempt. Both deny; only the first records it. The marker holds the
+# last recorded command checksum and time for this task.
+already_recorded() {
+  local marker sum prev_sum prev_at
+  [ -n "$STATE_DIR" ] && [ -n "$TASK" ] && [ -d "$STATE_DIR" ] || return 1
+  marker="$STATE_DIR/.destructive-guard-$TASK.last"
+  sum=$(printf '%s' "$CMD" | cksum | cut -d' ' -f1)
+  if [ -f "$marker" ] && [ ! -L "$marker" ] && read -r prev_sum prev_at <"$marker" 2>/dev/null; then
+    case "$prev_at" in ''|*[!0-9]*) prev_at=0 ;; esac
+    if [ "$prev_sum" = "$sum" ] && [ $((NOW - prev_at)) -le 10 ]; then
+      return 0
+    fi
+  fi
+  [ -L "$marker" ] || printf '%s %s\n' "$sum" "$NOW" >"$marker" 2>/dev/null
+  return 1
+}
+
 TICKET=${FM_DESTRUCTIVE_OK:-}
 if [ -n "$TICKET" ] && ticket_valid "$TICKET"; then
-  append_log override "$CODE" "$TICKET" "$CMD" || true
-  notify_parent "note [at=$NOW]: destructive-command guard override FM_DESTRUCTIVE_OK=$TICKET allowed [$CODE]: $(excerpt "$CMD")" || true
+  if ! already_recorded; then
+    append_log override "$CODE" "$TICKET" "$CMD" || true
+    notify_parent "note [at=$NOW]: destructive-command guard override FM_DESTRUCTIVE_OK=$TICKET allowed [$CODE]: $(excerpt "$CMD")" || true
+  fi
   exit 0
 fi
 
-append_log deny "$CODE" "" "$CMD" || true
-notify_parent "note [at=$NOW]: destructive-command guard denied [$CODE]; the command did not run: $(excerpt "$CMD")" || true
+if ! already_recorded; then
+  append_log deny "$CODE" "" "$CMD" || true
+  notify_parent "note [at=$NOW]: destructive-command guard denied [$CODE]; the command did not run: $(excerpt "$CMD")" || true
+fi
 
 json_escape() {
   printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n' ' '

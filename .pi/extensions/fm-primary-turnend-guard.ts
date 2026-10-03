@@ -515,9 +515,8 @@ function runCdCheck(command: string): Promise<{ code: number; stderr: string }> 
 }
 
 // Destructive-command guard (bin/fm-destructive-pretool-check.sh,
-// docs/destructive-guard.md). --primary makes it stand down in a worker pane,
-// where fm-spawn's per-task adapter owns the decision, so it guards this
-// primary or secondmate pane without double-logging a worker's attempt.
+// docs/destructive-guard.md). --primary applies the worker policy in a worker
+// pane (FM_TASK_ID set) and the primary policy in a primary or secondmate pane.
 function runDestructiveCheck(command: string): Promise<{ code: number; stderr: string }> {
   return runChecker("fm-destructive-pretool-check.sh", command, ["--primary"]);
 }

@@ -6,8 +6,8 @@ import { spawn } from "node:child_process";
 // before the agent's bash tool runs it (see bin/fm-destructive-pretool-check.sh
 // and docs/destructive-guard.md). This mirrors fm-primary-cd-check.js, calling
 // the destructive-guard owner instead of the cd-guard one; tool.execute.before
-// blocks by throwing. --primary makes the owner stand down in a worker pane,
-// where FM_TASK_ID is set, so it guards primary and secondmate panes only.
+// blocks by throwing. --primary applies the worker policy in a worker pane,
+// where FM_TASK_ID is set, and the primary policy in other panes.
 
 function runProcess(command, args) {
   return new Promise((resolvePromise) => {

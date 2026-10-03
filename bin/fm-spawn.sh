@@ -361,6 +361,9 @@
 #   bin/fm-destructive-pretool-check.sh owns the ticket shape and the log, and
 #   docs/destructive-guard.md the contract. Every Pi, pi-signed, omp, Claude,
 #   and OpenCode worker launch also installs that guard in its per-task adapter.
+#   A ship or scout on any other runtime, or a raw launch command, is refused
+#   unless --unguarded-runtime <ticket> or FM_UNGUARDED_RUNTIME_OK=<ticket> in
+#   the spawning environment grants it; that grant is logged the same way.
 #   Launch templates live in launch_template() below; placeholders replaced before launch:
 #     __BRIEF__    absolute path to data/<task-id>/brief.md
 #     __CLAUDEPERMFLAG__ the claude permission flag selected by config/claude-permission-mode
@@ -694,6 +697,8 @@ OVERRIDE_ARG=
 OVERRIDE_SET=0
 DESTRUCTIVE_OK=
 DESTRUCTIVE_OK_SET=0
+UNGUARDED_RUNTIME=
+UNGUARDED_RUNTIME_SET=0
 RELAUNCH=0
 POS=()
 want_value=
@@ -749,6 +754,10 @@ for a in "$@"; do
     destructive-ok)
       DESTRUCTIVE_OK=$a
       DESTRUCTIVE_OK_SET=1
+      ;;
+    unguarded-runtime)
+      UNGUARDED_RUNTIME=$a
+      UNGUARDED_RUNTIME_SET=1
       ;;
     *)
       echo "error: internal parser state for --$want_value" >&2
@@ -814,6 +823,11 @@ for a in "$@"; do
     PROFILE_SET=1
     ;;
   --destructive-ok) want_value=destructive-ok ;;
+  --unguarded-runtime) want_value=unguarded-runtime ;;
+  --unguarded-runtime=*)
+    UNGUARDED_RUNTIME=${a#--unguarded-runtime=}
+    UNGUARDED_RUNTIME_SET=1
+    ;;
   --destructive-ok=*)
     DESTRUCTIVE_OK=${a#--destructive-ok=}
     DESTRUCTIVE_OK_SET=1
@@ -1563,6 +1577,7 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   [ "$YOLO_SET" -eq 0 ] || shared_args+=(--yolo "$YOLO")
   [ "$BRANCH_PREFIX_SET" -eq 0 ] || shared_args+=(--branch-prefix "$BRANCH_PREFIX")
   [ "$PROFILE_SET" -eq 0 ] || shared_args+=(--profile "$PROFILE_ARG" --captain-override "$OVERRIDE_ARG")
+  [ "$UNGUARDED_RUNTIME_SET" -eq 0 ] || shared_args+=(--unguarded-runtime "$UNGUARDED_RUNTIME")
   for pair in "${POS[@]}"; do
     case "$pair" in
     *=*) : ;;
@@ -2392,6 +2407,36 @@ fi
 if [ "$KIND" = secondmate ] && [ "$HARNESS" = rovo ]; then
   echo "error: rovo is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
   exit 1
+fi
+
+# The destructive-command guard (docs/destructive-guard.md) reaches a ship or
+# scout worker only through the per-task adapter written below, which exists for
+# pi, pi-signed, omp, claude, and opencode launches from a template. Any other
+# runtime, and a raw launch command, would run that worker unguarded, so it is
+# refused unless main or the captain grants an explicit override with
+# --unguarded-runtime <ticket> or FM_UNGUARDED_RUNTIME_OK=<ticket> in this
+# process's environment; the grant is logged before launch. A secondmate is
+# guarded by its home's tracked primary hooks instead.
+UNGUARDED_GRANT=
+if [ "$KIND" != secondmate ]; then
+  case "$RAW_LAUNCH:$HARNESS" in
+  0:pi | 0:pi-signed | 0:omp | 0:claude | 0:opencode) ;;
+  *)
+    if [ "$UNGUARDED_RUNTIME_SET" -eq 1 ]; then
+      UNGUARDED_GRANT=$UNGUARDED_RUNTIME
+    else
+      UNGUARDED_GRANT=${FM_UNGUARDED_RUNTIME_OK:-}
+    fi
+    if [ -z "$UNGUARDED_GRANT" ]; then
+      echo "error: the destructive-command guard covers $KIND workers only on pi, pi-signed, omp, claude, opencode; refusing to launch an unguarded ${HARNESS:-raw} worker. Select a guarded runtime, or have main or the captain grant --unguarded-runtime <ticket>." >&2
+      exit 1
+    fi
+    "$SCRIPT_DIR/fm-destructive-pretool-check.sh" --check-ticket "$UNGUARDED_GRANT" || {
+      echo "error: --unguarded-runtime needs a well-formed ticket" >&2
+      exit 1
+    }
+    ;;
+  esac
 fi
 
 case "$HARNESS" in
@@ -4657,8 +4702,8 @@ EOF
     j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
     j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
     # Destructive-command guard (docs/destructive-guard.md): a Bash call it
-    # denies never runs. The tracked primary hook stands down in this pane
-    # because FM_TASK_ID is set, so this per-task entry owns the decision.
+    # denies never runs. This per-task entry carries the spawned worktree; a
+    # tracked primary hook in the same pane records the same attempt only once.
     j_destructive=$(json_escape "$(shell_quote "$FM_ROOT/bin/fm-destructive-pretool-check.sh") --claude --state $(shell_quote "$STATE_REAL") --task $(shell_quote "$ID") --worktree $(shell_quote "$WT")")
     cat >"$WT/.claude/settings.local.json" <<EOF
 {"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"$j_destructive"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
@@ -5396,6 +5441,9 @@ LAUNCH="export FM_TASK_INBOX=$(shell_quote "$STATE_REAL/$ID.inbox"); $LAUNCH"
 # The destructive-command guard honors FM_DESTRUCTIVE_OK only from the harness
 # process environment, so main's explicit per-launch grant rides this export;
 # the grant is logged before the launch can use it.
+if [ -n "$UNGUARDED_GRANT" ]; then
+  "$SCRIPT_DIR/fm-destructive-pretool-check.sh" --grant "$UNGUARDED_GRANT" --grant-what "unguarded ${HARNESS:-raw} runtime" --state "$STATE_REAL" --task "$ID" || exit 1
+fi
 if [ "$DESTRUCTIVE_OK_SET" -eq 1 ]; then
   "$SCRIPT_DIR/fm-destructive-pretool-check.sh" --grant "$DESTRUCTIVE_OK" --state "$STATE_REAL" --task "$ID" || exit 1
   LAUNCH="export FM_DESTRUCTIVE_OK=$(shell_quote "$DESTRUCTIVE_OK"); $LAUNCH"

@@ -302,17 +302,31 @@ test_grant_validates_and_logs() {
 
 # --- primary adapter scoping -------------------------------------------------
 
-test_primary_stands_down_in_worker_panes() {
+# A primary-registered hook in a worker pane (FM_TASK_ID set) applies the worker
+# policy: it denies, labels own resources by the task id, and notes the worker's
+# status stream in the parent home named by FM_TASK_INBOX.
+test_primary_applies_worker_policy_in_worker_panes() {
   local home="$TMP_ROOT/primary-home" rc
   mkdir -p "$home/state"
   (
     cd "$FIX_WT" || exit 99
     unset FM_DESTRUCTIVE_OK
-    FM_TASK_ID=some-worker FM_HOME="$home" HOME="$FIX_HOME" "$CHECK" --primary --command 'docker volume prune -f' >/dev/null 2>&1
+    FM_TASK_ID=some-worker FM_TASK_INBOX="$home/state/some-worker.inbox" HOME="$FIX_HOME" \
+      "$CHECK" --primary --command 'docker volume prune -f' >/dev/null 2>&1
   )
   rc=$?
-  expect_code 0 "$rc" "the tracked primary adapter must defer to the per-task adapter in a worker pane"
-  assert_absent "$home/data/destructive-guard.log" "a stand-down must not log"
+  expect_code 2 "$rc" "the tracked primary adapter must deny in a worker pane too"
+  tail -n 1 "$home/data/destructive-guard.log" | jq -e '.who == "task:some-worker" and .decision == "deny"' >/dev/null \
+    || fail "a worker-pane denial through the primary adapter must log as that worker in its parent home"
+  assert_grep "destructive-command guard denied [docker-prune]" "$home/state/some-worker.status" \
+    "a worker-pane denial through the primary adapter must note the worker's status stream"
+  (
+    cd "$FIX_WT" || exit 99
+    unset FM_DESTRUCTIVE_OK
+    FM_TASK_ID=some-worker FM_TASK_INBOX="$home/state/some-worker.inbox" HOME="$FIX_HOME" \
+      "$CHECK" --primary --command 'docker volume rm some-worker-db' >/dev/null 2>&1
+  )
+  expect_code 0 $? "the worker's own labelled volume must stay allowed through the primary adapter"
   (
     cd "$FIX_WT" || exit 99
     unset FM_DESTRUCTIVE_OK FM_TASK_ID
@@ -322,7 +336,28 @@ test_primary_stands_down_in_worker_panes() {
   expect_code 2 "$rc" "the primary adapter must deny in a primary or mate pane"
   tail -n 1 "$home/data/destructive-guard.log" | jq -e '.who == "primary" and .decision == "deny"' >/dev/null \
     || fail "a primary denial must log to its own home"
-  pass "the primary adapter stands down in worker panes and guards primary and mate panes"
+  pass "the primary adapter applies the worker policy in worker panes and guards primary and mate panes"
+}
+
+# A worker pane can run both its per-task adapter and a primary-registered hook
+# (a worker inside a firstmate worktree). Both deny, but the attempt is logged
+# and noted once.
+test_worker_denial_is_recorded_once_across_two_hooks() {
+  local home="$TMP_ROOT/dedupe-home" rc lines notes
+  mkdir -p "$home/state"
+  (
+    cd "$FIX_WT" || exit 99
+    unset FM_DESTRUCTIVE_OK
+    export FM_TASK_ID=dd-task FM_TASK_INBOX="$home/state/dd-task.inbox" HOME="$FIX_HOME"
+    "$CHECK" --command 'docker system prune -af' --state "$home/state" --task dd-task --worktree "$FIX_WT" >/dev/null 2>&1
+    "$CHECK" --primary --command 'docker system prune -af' >/dev/null 2>&1
+  )
+  rc=$?
+  expect_code 2 "$rc" "the second hook must still deny"
+  lines=$(grep -c '"decision":"deny"' "$home/data/destructive-guard.log")
+  notes=$(grep -c 'destructive-command guard denied' "$home/state/dd-task.status")
+  assert_equals "$lines/$notes" "1/1" "one attempt seen by two hooks must log and note once"
+  pass "one attempt denied by two hooks in the same worker pane is logged and noted once"
 }
 
 test_secondmate_primary_reports_to_parent_channel() {
@@ -368,7 +403,7 @@ make_spawn_case() {  # <name> <harness> <id>
   home="$case_dir/home"
   proj="$case_dir/project"
   wt="$case_dir/wt"
-  fakebin=$(make_spawn_fakebin "$case_dir/fake" pi claude opencode)
+  fakebin=$(make_spawn_fakebin "$case_dir/fake" pi claude opencode codex)
   # A fake omp that answers the catalog query and exits 0 for everything else.
   cat >"$fakebin/omp" <<'SH'
 #!/usr/bin/env bash
@@ -503,11 +538,16 @@ test_tracked_primary_adapters() {
   cmd=$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(contains("fm-destructive-pretool-check.sh"))' "$ROOT/.claude/settings.json")
   run_adapter "$dir" "" "$cmd" "$payload" CLAUDE_PROJECT_DIR="$dir" >/dev/null 2>&1
   expect_code 2 $? "the tracked Claude primary hook must deny"
-  run_adapter "$dir" w1 "$cmd" "$payload" CLAUDE_PROJECT_DIR="$dir" >/dev/null 2>&1
-  expect_code 0 $? "the tracked Claude primary hook must stand down in a worker pane"
+  run_adapter "$dir" w1 "$cmd" "$payload" CLAUDE_PROJECT_DIR="$dir" FM_TASK_INBOX="$dir/state/w1.inbox" >/dev/null 2>&1
+  expect_code 2 $? "the tracked Claude primary hook must also deny in a worker pane"
   cmd=$(jq -r '.hooks.PreToolUse[].hooks[].command | select(contains("fm-destructive-pretool-check.sh"))' "$ROOT/.codex/hooks.json")
   run_adapter "$dir" "" "$cmd" "$payload" >/dev/null 2>&1
   expect_code 2 $? "the tracked Codex primary hook must deny"
+  run_adapter "$dir" cx-worker "$cmd" "$(jq -cn '{tool_name:"Bash",tool_input:{command:"docker volume ls -q -f name=xwvol | xargs docker volume rm"}}')" \
+    FM_TASK_INBOX="$dir/state/cx-worker.inbox" >/dev/null 2>&1
+  expect_code 2 $? "the tracked Codex primary hook must deny the xwvol shape in a worker pane"
+  assert_grep "destructive-command guard denied [docker-bulk-rm]" "$dir/state/cx-worker.status" \
+    "a worker denial through a primary-registered hook must note that worker's status stream"
   cmd=$(jq -r '.hooks.PreToolUse[].hooks[].command' "$ROOT/.grok/hooks/fm-primary-destructive-check.json")
   out=$(run_adapter "$dir" "" "$cmd" "$(jq -cn '{toolName:"run_terminal_command",toolInput:{command:"docker volume prune -f"}}')" GROK_WORKSPACE_ROOT="$dir" 2>/dev/null)
   rc=$?
@@ -534,7 +574,7 @@ EOF
     "blocked:"*"[docker-prune]"*) ;;
     *) fail "the tracked OpenCode primary plugin must block a prune: $out" ;;
   esac
-  pass "tracked Claude, Codex, Grok, Cursor, and OpenCode primary adapters deny through the guard; Claude stands down in worker panes"
+  pass "tracked Claude, Codex, Grok, Cursor, and OpenCode primary adapters deny through the guard, in primary and worker panes alike"
 }
 
 test_claude_worker_adapter_denies() {
@@ -557,6 +597,29 @@ test_claude_worker_adapter_denies() {
   assert_grep "destructive-command guard denied [docker-prune]" "$state/$id.status" \
     "the claude worker denial must reach the task's status stream"
   pass "fm-spawn's Claude worker settings carry a Bash PreToolUse guard that denies and notes"
+}
+
+# A ship or scout worker on a runtime with no per-task adapter would run
+# unguarded, so fm-spawn refuses it unless main or the captain grants an
+# explicit, logged override.
+test_spawn_refuses_unguarded_runtime() {
+  local rec id=dg-cx-1 out rc
+  rec=$(make_spawn_case codex-refuse codex "$id")
+  read_case_record "$rec"
+  out=$(unset FM_UNGUARDED_RUNTIME_OK; FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" fm_test_run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR" --scout --harness codex)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "a codex scout without the override must be refused: $out"
+  assert_contains "$out" "destructive-command guard" "the refusal must name the guard"
+  assert_contains "$out" "pi, pi-signed, omp, claude, opencode" "the refusal must name the guarded runtimes"
+  assert_absent "$HOME_DIR/state/$id.meta" "a refused spawn must leave no task record"
+  out=$(unset FM_UNGUARDED_RUNTIME_OK; FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" fm_test_run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR" --scout --harness codex --unguarded-runtime 'bad ticket')
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "a malformed --unguarded-runtime ticket must be refused"
+  out=$(unset FM_UNGUARDED_RUNTIME_OK; FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" fm_test_run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR" --scout --harness codex --unguarded-runtime CAPT-11)
+  expect_code 0 $? "a codex scout with the override must launch: $out"
+  tail -n 1 "$HOME_DIR/data/destructive-guard.log" | jq -e --arg id "$id" '.decision == "grant" and .ticket == "CAPT-11" and .who == ("task:" + $id) and (.command | contains("codex"))' >/dev/null \
+    || fail "the unguarded-runtime override must be logged: $(tail -n 1 "$HOME_DIR/data/destructive-guard.log" 2>/dev/null)"
+  pass "fm-spawn refuses an unguarded runtime worker unless main grants a logged override"
 }
 
 test_spawn_destructive_ok_grant() {
@@ -592,9 +655,9 @@ test_pi_primary_extension_guards_mate_panes() {
     || fail "the Pi primary extension must block a prune in a primary or mate pane: $out"
   out=$(cd "$FIX_WT" && unset FM_DESTRUCTIVE_OK && export FM_TASK_ID=w1 FM_HOME="$project" HOME="$FIX_HOME" &&
     drive_tool_call "$project/.pi/extensions/fm-primary-turnend-guard.ts" 'docker volume prune -f')
-  printf '%s' "$out" | jq -e '.block != true' >/dev/null \
-    || fail "the Pi primary extension must stand down where a per-task adapter owns the pane: $out"
-  pass "the tracked Pi primary extension guards primary and mate panes and defers in worker panes"
+  printf '%s' "$out" | jq -e '.block == true and (.reason | contains("[docker-prune]"))' >/dev/null \
+    || fail "the Pi primary extension must also block a prune in a worker pane: $out"
+  pass "the tracked Pi primary extension guards primary, mate, and worker panes"
 }
 
 test_scripts_are_lint_clean() {
@@ -610,7 +673,8 @@ test_policy_reason_codes
 test_denial_is_logged_and_noted
 test_override_from_process_environment
 test_grant_validates_and_logs
-test_primary_stands_down_in_worker_panes
+test_primary_applies_worker_policy_in_worker_panes
+test_worker_denial_is_recorded_once_across_two_hooks
 test_secondmate_primary_reports_to_parent_channel
 test_fail_open_transport
 test_pi_worker_adapter_denies_and_notes
@@ -619,5 +683,6 @@ test_claude_worker_adapter_denies
 test_opencode_worker_adapter_denies
 test_tracked_primary_adapters
 test_spawn_destructive_ok_grant
+test_spawn_refuses_unguarded_runtime
 test_pi_primary_extension_guards_mate_panes
 test_scripts_are_lint_clean
