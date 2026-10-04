@@ -92,14 +92,14 @@ run_inst() {
 test_installs_pinned_builds() {
   local w
   w=$(mk_world sc)
-  run_inst "$w" "$SHELLCHECK" SHA256_STUB_HASH=$SC_SHA_LINUX_X86_64
+  run_inst "$w" "$SHELLCHECK" SHA256_STUB_HASH="$SC_SHA_LINUX_X86_64"
   [ "$RC" -eq 0 ] || fail "shellcheck install failed: $OUT"
   [ -x "$w/dest/shellcheck" ] || fail "shellcheck binary not installed"
   assert_contains "$(cat "$w/urls")" \
     "https://github.com/koalaman/shellcheck/releases/download/v$SC_VERSION/shellcheck-v$SC_VERSION.linux.x86_64.tar.xz" \
     "shellcheck download URL is not the pinned official asset"
   w=$(mk_world al)
-  run_inst "$w" "$ACTIONLINT" SHA256_STUB_HASH=$AL_SHA_LINUX_X86_64
+  run_inst "$w" "$ACTIONLINT" SHA256_STUB_HASH="$AL_SHA_LINUX_X86_64"
   [ "$RC" -eq 0 ] || fail "actionlint install failed: $OUT"
   [ -x "$w/dest/actionlint" ] || fail "actionlint binary not installed"
   assert_contains "$(cat "$w/urls")" \
@@ -112,22 +112,22 @@ test_selects_asset_per_platform() {
   local w s m sc al scsha alsha other_sc other_al
   while read -r s m sc al scsha alsha; do
     w=$(mk_world plat)
-    run_inst "$w" "$SHELLCHECK" SHA256_STUB_HASH=$scsha FM_TEST_UNAME_S="$s" FM_TEST_UNAME_M="$m"
+    run_inst "$w" "$SHELLCHECK" SHA256_STUB_HASH="$scsha" FM_TEST_UNAME_S="$s" FM_TEST_UNAME_M="$m"
     [ "$RC" -eq 0 ] || fail "shellcheck pinned digest rejected for $s-$m: $OUT"
     assert_contains "$(cat "$w/urls")" "shellcheck-v$SC_VERSION.$sc.tar.xz" "wrong shellcheck asset for $s-$m"
     other_sc=$SC_SHA_LINUX_X86_64
     [ "$scsha" != "$other_sc" ] || other_sc=$SC_SHA_LINUX_AARCH64
     w=$(mk_world plat)
-    run_inst "$w" "$SHELLCHECK" SHA256_STUB_HASH=$other_sc FM_TEST_UNAME_S="$s" FM_TEST_UNAME_M="$m"
+    run_inst "$w" "$SHELLCHECK" SHA256_STUB_HASH="$other_sc" FM_TEST_UNAME_S="$s" FM_TEST_UNAME_M="$m"
     [ "$RC" -ne 0 ] || fail "shellcheck accepted another platform's digest for $s-$m"
     w=$(mk_world plat)
-    run_inst "$w" "$ACTIONLINT" SHA256_STUB_HASH=$alsha FM_TEST_UNAME_S="$s" FM_TEST_UNAME_M="$m"
+    run_inst "$w" "$ACTIONLINT" SHA256_STUB_HASH="$alsha" FM_TEST_UNAME_S="$s" FM_TEST_UNAME_M="$m"
     [ "$RC" -eq 0 ] || fail "actionlint pinned digest rejected for $s-$m: $OUT"
     assert_contains "$(cat "$w/urls")" "actionlint_${AL_VERSION}_$al.tar.gz" "wrong actionlint asset for $s-$m"
     other_al=$AL_SHA_LINUX_X86_64
     [ "$alsha" != "$other_al" ] || other_al=$AL_SHA_LINUX_AARCH64
     w=$(mk_world plat)
-    run_inst "$w" "$ACTIONLINT" SHA256_STUB_HASH=$other_al FM_TEST_UNAME_S="$s" FM_TEST_UNAME_M="$m"
+    run_inst "$w" "$ACTIONLINT" SHA256_STUB_HASH="$other_al" FM_TEST_UNAME_S="$s" FM_TEST_UNAME_M="$m"
     [ "$RC" -ne 0 ] || fail "actionlint accepted another platform's digest for $s-$m"
   done <<EOP
 Linux x86_64 linux.x86_64 linux_amd64 $SC_SHA_LINUX_X86_64 $AL_SHA_LINUX_X86_64
@@ -167,12 +167,12 @@ test_refuses_checksum_mismatch() {
 test_download_retries_then_fails() {
   local w
   w=$(mk_world retry)
-  run_inst "$w" "$SHELLCHECK" SHA256_STUB_HASH=$SC_SHA_LINUX_X86_64 CURL_FAIL_FIRST=2
+  run_inst "$w" "$SHELLCHECK" SHA256_STUB_HASH="$SC_SHA_LINUX_X86_64" CURL_FAIL_FIRST=2
   [ "$RC" -eq 0 ] || fail "transient download failures must be retried: $OUT"
   assert_equals "3" "$(wc -l < "$w/urls" | tr -d ' ')" "expected two failures then one success"
   assert_equals "1 2 " "$(tr '\n' ' ' < "$w/sleeps")" "backoff must double between attempts"
   w=$(mk_world dl)
-  run_inst "$w" "$ACTIONLINT" SHA256_STUB_HASH=$AL_SHA_LINUX_X86_64 CURL_FAIL_FIRST=99
+  run_inst "$w" "$ACTIONLINT" SHA256_STUB_HASH="$AL_SHA_LINUX_X86_64" CURL_FAIL_FIRST=99
   [ "$RC" -ne 0 ] || fail "persistent download failure must fail"
   assert_contains "$OUT" "download failed after 6 attempts" "missing download diagnostic"
   assert_equals "6" "$(wc -l < "$w/urls" | tr -d ' ')" "expected exactly six download attempts"
