@@ -15,6 +15,12 @@ SC_VERSION=$("$ROOT/bin/fm-lint.sh" --required-version)
 AL_VERSION=$("$ROOT/bin/fm-lint-workflows.sh" --required-version)
 SC_SHA_LINUX_X86_64=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
 AL_SHA_LINUX_X86_64=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+SC_SHA_LINUX_AARCH64=12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588
+SC_SHA_DARWIN_X86_64=3c89db4edcab7cf1c27bff178882e0f6f27f7afdf54e859fa041fca10febe4c6
+SC_SHA_DARWIN_ARM64=56affdd8de5527894dca6dc3d7e0a99a873b0f004d7aabc30ae407d3f48b0a79
+AL_SHA_LINUX_AARCH64=325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6
+AL_SHA_DARWIN_X86_64=5b44c3bc2255115c9b69e30efc0fecdf498fdb63c5d58e17084fd5f16324c644
+AL_SHA_DARWIN_ARM64=aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f
 
 # mk_world <name>: fakebin with uname, sha256sum, sleep, tar, and a curl that
 # logs its URL, fails its first CURL_FAIL_FIRST calls, and writes a placeholder.
@@ -103,22 +109,34 @@ test_installs_pinned_builds() {
 }
 
 test_selects_asset_per_platform() {
-  local w s m sc al
-  while read -r s m sc al; do
+  local w s m sc al scsha alsha other_sc other_al
+  while read -r s m sc al scsha alsha; do
     w=$(mk_world plat)
-    # Digest differs per platform, so a mismatch is expected; the URL is the check.
-    run_inst "$w" "$SHELLCHECK" SHA256_STUB_HASH=0 FM_TEST_UNAME_S="$s" FM_TEST_UNAME_M="$m"
+    run_inst "$w" "$SHELLCHECK" SHA256_STUB_HASH=$scsha FM_TEST_UNAME_S="$s" FM_TEST_UNAME_M="$m"
+    [ "$RC" -eq 0 ] || fail "shellcheck pinned digest rejected for $s-$m: $OUT"
     assert_contains "$(cat "$w/urls")" "shellcheck-v$SC_VERSION.$sc.tar.xz" "wrong shellcheck asset for $s-$m"
+    other_sc=$SC_SHA_LINUX_X86_64
+    [ "$scsha" != "$other_sc" ] || other_sc=$SC_SHA_LINUX_AARCH64
     w=$(mk_world plat)
-    run_inst "$w" "$ACTIONLINT" SHA256_STUB_HASH=0 FM_TEST_UNAME_S="$s" FM_TEST_UNAME_M="$m"
+    run_inst "$w" "$SHELLCHECK" SHA256_STUB_HASH=$other_sc FM_TEST_UNAME_S="$s" FM_TEST_UNAME_M="$m"
+    [ "$RC" -ne 0 ] || fail "shellcheck accepted another platform's digest for $s-$m"
+    w=$(mk_world plat)
+    run_inst "$w" "$ACTIONLINT" SHA256_STUB_HASH=$alsha FM_TEST_UNAME_S="$s" FM_TEST_UNAME_M="$m"
+    [ "$RC" -eq 0 ] || fail "actionlint pinned digest rejected for $s-$m: $OUT"
     assert_contains "$(cat "$w/urls")" "actionlint_${AL_VERSION}_$al.tar.gz" "wrong actionlint asset for $s-$m"
-  done <<'EOP'
-Linux aarch64 linux.aarch64 linux_arm64
-Linux arm64 linux.aarch64 linux_arm64
-Darwin x86_64 darwin.x86_64 darwin_amd64
-Darwin arm64 darwin.aarch64 darwin_arm64
+    other_al=$AL_SHA_LINUX_X86_64
+    [ "$alsha" != "$other_al" ] || other_al=$AL_SHA_LINUX_AARCH64
+    w=$(mk_world plat)
+    run_inst "$w" "$ACTIONLINT" SHA256_STUB_HASH=$other_al FM_TEST_UNAME_S="$s" FM_TEST_UNAME_M="$m"
+    [ "$RC" -ne 0 ] || fail "actionlint accepted another platform's digest for $s-$m"
+  done <<EOP
+Linux x86_64 linux.x86_64 linux_amd64 $SC_SHA_LINUX_X86_64 $AL_SHA_LINUX_X86_64
+Linux aarch64 linux.aarch64 linux_arm64 $SC_SHA_LINUX_AARCH64 $AL_SHA_LINUX_AARCH64
+Linux arm64 linux.aarch64 linux_arm64 $SC_SHA_LINUX_AARCH64 $AL_SHA_LINUX_AARCH64
+Darwin x86_64 darwin.x86_64 darwin_amd64 $SC_SHA_DARWIN_X86_64 $AL_SHA_DARWIN_X86_64
+Darwin arm64 darwin.aarch64 darwin_arm64 $SC_SHA_DARWIN_ARM64 $AL_SHA_DARWIN_ARM64
 EOP
-  pass "lint-tool installers select the right asset per platform"
+  pass "lint-tool installers select the right asset and digest per platform"
 }
 
 test_refuses_unsupported_platform_without_download() {
