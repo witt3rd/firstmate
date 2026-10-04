@@ -35,7 +35,7 @@ Every path that provisions or launches one refuses a host that is not ready for 
 
 ### SSH access from the primary
 
-1. Configure an SSH alias in the primary account's normal OpenSSH configuration.
+1. Configure an SSH alias in the primary account's normal OpenSSH configuration. Any exact name on a multi-pattern `Host` line also routes (`fm-on.sh` header).
 2. Use ordinary public-key authentication, strict host-key verification, and a dedicated remote account where practical.
 3. Do not enable agent forwarding for Firstmate.
 

@@ -7,8 +7,10 @@
 # Routes come only from remote records in data/secondmates.md. A record names an
 # SSH config alias, remote Firstmate code root, and remote FM_HOME. A host alias
 # may be used directly only when exactly one record selects it; an ambiguous
-# alias is refused. The command must be a genuine executable in this checkout's
-# bin/fm-*.sh namespace. No per-command table exists.
+# alias is refused. An alias also matches when it shares a multi-pattern
+# `Host a b` line in ~/.ssh/config (FM_SSH_CONFIG overrides) with a record's host;
+# wildcard and negated patterns never match. The command must be a genuine
+# executable in this checkout's bin/fm-*.sh namespace. No per-command table exists.
 #
 # argv is encoded as one NUL-delimited stream and passed through the fixed
 # fm-remote-entrypoint.sh. The remote command's stdin is /dev/null by default,
@@ -43,6 +45,9 @@ PROTOCOL=1
 
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
+# shellcheck source=bin/fm-ssh-config-lib.sh
+. "$SCRIPT_DIR/fm-ssh-config-lib.sh"
+SSH_CONFIG="${FM_SSH_CONFIG:-$HOME/.ssh/config}"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
@@ -82,7 +87,8 @@ while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in '- '*) ;; *) continue ;; esac
   secondmate_registry_parse_line "$line" || die "malformed secondmate registry entry: $line"
   [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ] || continue
-  if [ "$SECONDMATE_REGISTRY_ID" = "$ROUTE" ] || [ "$SECONDMATE_REGISTRY_HOST" = "$ROUTE" ]; then
+  if [ "$SECONDMATE_REGISTRY_ID" = "$ROUTE" ] \
+    || fm_ssh_config_same_host "$SSH_CONFIG" "$SECONDMATE_REGISTRY_HOST" "$ROUTE"; then
     MATCHES=$((MATCHES + 1))
     HOST=$SECONDMATE_REGISTRY_HOST
     ROOT=$SECONDMATE_REGISTRY_ROOT
