@@ -545,4 +545,27 @@ set -e
 [ "$(grep -c mutation "$REMOTE_HOME/mutations")" -eq 1 ] || fail "ambiguous mutation did not execute exactly once"
 pass "unreachable and ambiguous transport failures are surfaced without retry"
 
+# Multi-pattern ssh Host lines: any exact token is an alias of the record's host.
+SSH_CFG="$TMP_ROOT/ssh_config"
+cat > "$SSH_CFG" <<'CFG'
+# Host commented-out remote-mac
+Host *
+  ServerAliveInterval 5
+Host mcfeely-tailscale tensor-tailscale
+  HostName 100.1.1.1
+Host !banned remote-mac   mcfeely tensor # trailing comment
+  HostName 10.0.0.9
+CFG
+printf '%s\n' "- ios - iOS delivery (host: remote-mac; root: $REMOTE_ROOT; home: $REMOTE_HOME; scope: iOS work; projects: alpha; added 2026-08-02)" > "$LOCAL_HOME/data/secondmates.md"
+for alias in mcfeely tensor remote-mac ios; do
+  FM_SSH_CONFIG="$SSH_CFG" fm_on "$alias" fm-probe-path.sh >/dev/null 2>&1 || fail "alias $alias on a multi-pattern Host line did not route"
+done
+for alias in banned '*' commented-out nothere mcfeely-tailscale 'mcfeely tensor'; do
+  if FM_SSH_CONFIG="$SSH_CFG" fm_on "$alias" fm-probe-path.sh >/dev/null 2>&1; then fail "alias '$alias' must not route"; fi
+done
+printf '%s\n' "- ios - iOS delivery (host: tensor-tailscale; root: $REMOTE_ROOT; home: $REMOTE_HOME; scope: iOS work; projects: alpha; added 2026-08-02)" > "$LOCAL_HOME/data/secondmates.md"
+FM_SSH_CONFIG="$SSH_CFG" fm_on mcfeely-tailscale fm-probe-path.sh >/dev/null 2>&1 && fail "fake ssh should reject non remote-mac host"
+write_registry
+pass "fm-on matches any exact token of a multi-pattern ssh Host line"
+
 echo "ALL TESTS PASSED"
