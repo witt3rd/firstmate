@@ -642,6 +642,26 @@ if [ "$TEARDOWN_BACKLOG_APPLIES" = 1 ]; then
   esac
 fi
 
+# Cleanup retires the status log, and with it the only record of a keyed
+# needs-decision the worker opened. A task that is not itself held for the
+# captain would then be closed with that question unanswered and its key lost,
+# so refuse while one is open, before any destructive step. The way out is to
+# answer it (bin/fm-send.sh --resolve-key) or hold the task for the captain
+# (bin/fm-captain-hold.sh hold, which this cleanup then retains). Discard
+# authority (--force) covers unlanded work, never the captain's question.
+if [ "$TEARDOWN_META_KIND" != secondmate ] && [ "$TEARDOWN_BACKLOG_TRANSITION" != retain ]; then
+  TEARDOWN_OPEN_KEYS=
+  while IFS=$'\t' read -r td_key td_verb td_note; do
+    [ "$td_verb" = needs-decision ] || continue
+    TEARDOWN_OPEN_KEYS="${TEARDOWN_OPEN_KEYS:+$TEARDOWN_OPEN_KEYS, }$td_key"
+  done <<EOF_OPEN_KEYS
+$(status_open_decisions "$STATE/$ID.status")
+EOF_OPEN_KEYS
+  if [ -n "$TEARDOWN_OPEN_KEYS" ]; then
+    echo "REFUSED: task $ID still has an open keyed decision ($TEARDOWN_OPEN_KEYS) in its status log; cleanup would erase it with no recorded answer. Answer it with bin/fm-send.sh --resolve-key, or hold the task with bin/fm-captain-hold.sh hold $ID --reason <reason> so cleanup retains it, then retry." >&2
+    exit 1
+  fi
+fi
 REMOTE_HANDOFF_DIR_PRESENT=0
 REMOTE_HANDOFF_DIR_REAL=
 REMOTE_OUTBOX_PRESENT=0

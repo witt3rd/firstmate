@@ -4629,6 +4629,46 @@ SH
   pass "marked hold reasons round-trip through public reads, fleet, startup, and return without changing other fields"
 }
 
+test_teardown_does_not_lose_an_open_keyed_decision() {
+  local home id show
+  home=$(make_home teardown-open-key)
+  id=sample-open-key-ship
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Ship the sample open-key change" --kind ship \
+    --repo sample --start >/dev/null || fail "could not create the ship fixture"
+  write_origin_meta "$home" "$id" ship
+  printf 'needs-decision [key=pick-api]: choose REST or RPC\n' > "$home/state/$id.status"
+  if run_teardown "$home" "$id" > "$home/teardown.out" 2> "$home/teardown.err"; then
+    fail "cleanup erased an open keyed decision with no recorded answer"
+  fi
+  assert_grep "pick-api" "$home/teardown.err" "the refusal must name the open decision key"
+  assert_present "$home/state/$id.meta" "refused cleanup removed the task record"
+  assert_present "$home/state/$id.status" "refused cleanup removed the status log"
+  show=$(tasks_in "$home" show "$id" --full) || fail "the row is gone after a refused cleanup"
+  assert_not_contains "$show" "state: done" "refused cleanup closed the backlog item"
+
+  # Answering the key clears the gate; the ordinary close then proceeds.
+  printf 'resolved [key=pick-api]: use REST\n' >> "$home/state/$id.status"
+  run_teardown "$home" "$id" > "$home/answered.out" 2> "$home/answered.err" \
+    || fail "cleanup refused after the decision was resolved: $(cat "$home/answered.err")"
+
+  # Holding the task for the captain is the other way out: cleanup retains it.
+  id=sample-open-key-held
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Ship the sample held change" --kind ship \
+    --repo sample --start >/dev/null || fail "could not create the held fixture"
+  write_origin_meta "$home" "$id" ship
+  printf 'needs-decision [key=pick-db]: choose sqlite or postgres\n' > "$home/state/$id.status"
+  run_captain "$home" hold "$id" --reason "captain must choose sqlite or postgres" >/dev/null \
+    || fail "could not hold the task for the captain"
+  run_teardown "$home" "$id" > "$home/held.out" 2> "$home/held.err" \
+    || fail "cleanup of a held task with an open key failed: $(cat "$home/held.err")"
+  show=$(tasks_in "$home" show "$id" --full) || fail "the held row is gone"
+  assert_contains "$show" "hold_kind: captain" "cleanup dropped the captain hold"
+  pass "cleanup refuses to erase an open keyed decision unless it was answered or held"
+}
+
+test_teardown_does_not_lose_an_open_keyed_decision
 test_hold_reason_round_trips_awkward_characters
 test_hold_origins_precede_backend_holds
 test_historical_self_inventory_has_workable_repair
