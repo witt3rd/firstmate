@@ -3747,7 +3747,13 @@ remove_kimi_turnend_auth "$STATE" "$ID" || exit 1
 fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
-[ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
+# Tool caches under it (go module cache) are read-only, so restore write bits
+# first or rm -rf leaves them behind; report rather than silently leak.
+if [ -n "$TASK_TMP" ] && [ -e "$TASK_TMP" ]; then
+  chmod -R u+rwX -- "$TASK_TMP" 2>/dev/null || true
+  rm -rf -- "$TASK_TMP"
+  [ ! -e "$TASK_TMP" ] || echo "warning: could not fully remove task temp root $TASK_TMP; remove it manually" >&2
+fi
 # Retire only this Firstmate home's launch namespace. Its never-reused per-spawn
 # files leave the equal task-id namespace of every other home untouched.
 teardown_launch_home_token() {

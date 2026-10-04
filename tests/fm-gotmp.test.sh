@@ -247,6 +247,23 @@ test_teardown_skips_gracefully_when_dir_missing() {
   pass "fm-teardown skips gracefully when tasktmp= points to a nonexistent dir"
 }
 
+test_teardown_removes_readonly_tasktmp() {
+  # Go's module cache is read-only (0555 dirs/files); teardown must still remove it.
+  local id=td-ro-z5
+  local task_tmp="$TMP_ROOT/fm-$id"
+  mkdir -p "$task_tmp/gotmp/mod/pkg"
+  printf 'x\n' > "$task_tmp/gotmp/mod/pkg/f.go"
+  chmod 0444 "$task_tmp/gotmp/mod/pkg/f.go"
+  chmod 0555 "$task_tmp/gotmp/mod/pkg" "$task_tmp/gotmp/mod"
+  local fake
+  fake=$(make_fake_root "$id" "$task_tmp")
+  FM_HOME="$fake" bash "$fake/bin/fm-teardown.sh" "$id" >/dev/null 2>&1 \
+    || fail "teardown exited non-zero with a read-only tasktmp"
+  [ ! -e "$task_tmp" ] || { chmod -R u+rwX "$task_tmp"; fail "read-only tasktmp survived teardown"; }
+  pass "fm-teardown removes a read-only tasktmp tree"
+}
+
 test_teardown_removes_tasktmp_dir
+test_teardown_removes_readonly_tasktmp
 test_teardown_skips_gracefully_without_tasktmp
 test_teardown_skips_gracefully_when_dir_missing
