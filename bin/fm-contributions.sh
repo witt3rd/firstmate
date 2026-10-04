@@ -100,6 +100,9 @@ command -v jq >/dev/null 2>&1 || fail 'jq is required to measure contribution co
 NOW=${FM_CONTRIBUTIONS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
 EPOCH=$(jq -nr --arg now "$NOW" '$now | fromdateiso8601') || fail 'invalid observation clock'
 MAX_AGE=${FM_CONTRIBUTIONS_MAX_AGE:-900}
+# A long-lived multi-PR task legitimately grows one record file past 1 MiB (1.13 MB / 193 records seen), so the cap only guards against runaway files.
+MAX_RECORD_BYTES=${FM_CONTRIBUTIONS_MAX_RECORD_BYTES:-16777216}
+case "$MAX_RECORD_BYTES" in ''|*[!0-9]*) fail 'invalid record size bound' ;; esac
 BUDGET=${FM_CONTRIBUTIONS_BUDGET:-20}
 case "$MAX_AGE" in ''|*[!0-9]*) fail 'invalid freshness bound' ;; esac
 case "$BUDGET" in ''|*[!0-9]*) fail 'invalid poll budget' ;; esac
@@ -128,22 +131,23 @@ read_saved() {
   local file dir task
   : > "$TMP/saved.jsonl"
   ERRORS=0
+  BAD_FILES=
   if [ -L "$DATA" ]; then
-    ERRORS=1; printf '[]\n' > "$TMP/saved.json"; return 0
+    ERRORS=1; BAD_FILES=$DATA; printf '[]\n' > "$TMP/saved.json"; return 0
   fi
   for file in "$DATA"/*/contributions.json; do
     [ -e "$file" ] || [ -L "$file" ] || continue
     fm_dirname_to dir "$file"
     fm_basename_to task "$dir"
     if [ -L "$file" ] || [ -L "$dir" ] || [ ! -f "$file" ] \
-      || [ "$(wc -c < "$file")" -gt 1048576 ] \
+      || [ "$(wc -c < "$file")" -gt "$MAX_RECORD_BYTES" ] \
       || ! jq_lib -ne --slurpfile record "$file" '($record | length) == 1 and ($record[0] | valid_record)' >/dev/null 2>&1; then
-      ERRORS=$((ERRORS + 1))
+      ERRORS=$((ERRORS + 1)); BAD_FILES="$BAD_FILES${BAD_FILES:+, }$file"
       continue
     fi
     # A file's task identity must match its durable directory, not arbitrary JSON.
     if ! jq -e --arg task "$task" '.task == $task' "$file" >/dev/null; then
-      ERRORS=$((ERRORS + 1)); continue
+      ERRORS=$((ERRORS + 1)); BAD_FILES="$BAD_FILES${BAD_FILES:+, }$file"; continue
     fi
     jq -c . "$file" >> "$TMP/saved.jsonl"
   done
@@ -354,7 +358,7 @@ poll() {
   acquire
   get_input
   read_saved
-  [ "$ERRORS" -eq 0 ] || printf 'contributions: %s unreadable durable record(s)\n' "$ERRORS"
+  [ "$ERRORS" -eq 0 ] || printf 'contributions: %s unreadable durable record(s): %s\n' "$ERRORS" "$BAD_FILES"
   # One line per distinct URL: the URL, then every owning task.
   jq_lib -nr --slurpfile input "$TMP/input.json" --slurpfile saved "$TMP/saved.json" '
     known($input[0];$saved[0])
@@ -455,7 +459,7 @@ case "${1:-}" in
   arm) arm "${2:-}" ;;
   pending)
     read_saved
-    [ "$ERRORS" -eq 0 ] || fail "$ERRORS unreadable contribution record(s); pending signals are unverified"
+    [ "$ERRORS" -eq 0 ] || fail "$ERRORS unreadable contribution record(s) ($BAD_FILES); pending signals are unverified"
     jq '[.[] | .task as $task | .records[] | .url as $url | .pending[] | . + {task:$task,url:$url}]' "$TMP/saved.json"
     ;;
   verdict|ack)
