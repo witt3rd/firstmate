@@ -986,6 +986,15 @@ if fm_pf_relay_active "$FM_HOME" \
   fi
 fi
 
+# Scratch-size report (read-only; silent unless task scratch exists or /tmp is high).
+if [ -x "$SCRIPT_DIR/fm-tmp-report.sh" ]; then
+  tmp_report=$(timeout 30 "$SCRIPT_DIR/fm-tmp-report.sh" 2>/dev/null || true)
+  if [ -n "$tmp_report" ]; then
+    subsection "Task scratch (/tmp/fm-*)"
+    printf '%s\n' "$tmp_report"
+  fi
+fi
+
 # --- 7. network checks ------------------------------------------------------
 # Deliberately here and not later: these lines are actionable (a stuck clone, a
 # secondmate that could not be relaunched, broken GitHub auth), and the section
