@@ -9,8 +9,8 @@
 # may be used directly only when exactly one record selects it; an ambiguous
 # alias is refused. An alias also matches when it shares a multi-pattern
 # `Host a b` line in ~/.ssh/config (FM_SSH_CONFIG overrides) with a record's host;
-# wildcard and negated patterns never match. The command must be a genuine executable in this checkout's
-# bin/fm-*.sh namespace. No per-command table exists.
+# wildcard and negated patterns never match. The command must be a genuine
+# executable in this checkout's bin/fm-*.sh namespace. No per-command table exists.
 #
 # argv is encoded as one NUL-delimited stream and passed through the fixed
 # fm-remote-entrypoint.sh. The remote command's stdin is /dev/null by default,
