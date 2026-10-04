@@ -181,7 +181,10 @@
 #   also adds --approve when that help advertises it, so the first unattended
 #   launch does not stall on Pi's "Trust project folder?" dialog for that home
 #   path; --approve is session-scoped to the launch cwd and does not rewrite the
-#   operator's trust.json. Ordinary Pi worker launches never receive --approve.
+#   operator's trust.json. Ordinary Pi worker launches receive --approve only
+#   when the home sets the local presence flag config/pi-approve-workers, so
+#   pooled worktree slots do not stall at the trust dialog; without the flag
+#   they never receive it.
 #   A missing selected executable refuses before endpoint creation, and pi-signed
 #   never falls back to pi.
 #   Devin is worker-only: --permission-mode dangerous and
@@ -622,6 +625,9 @@ if [ "$LAVISH_AXI_HOST_CONFIG_PRESENT" = 1 ]; then
   esac
 fi
 if ! KEEP_AI_TRAILERS=$(fm_config_source_present "$CONFIG/keep-ai-trailers"); then
+  exit 1
+fi
+if ! PI_APPROVE_WORKERS=$(fm_config_source_present "$CONFIG/pi-approve-workers"); then
   exit 1
 fi
 SUB_HOME_MARKER=".fm-secondmate-home"
@@ -2461,7 +2467,9 @@ pi | pi-signed)
   # the pane). Session-only --approve; never expand to a parent path or
   # rewrite the operator trust store.
   PI_APPROVE=
-  if [ "$KIND" = secondmate ] && pi_supports_approve "$PI_BIN"; then
+  # Ordinary worker launches get it only when this home opts in with the
+  # config/pi-approve-workers presence flag.
+  if { [ "$KIND" = secondmate ] || [ "$PI_APPROVE_WORKERS" = 1 ]; } && pi_supports_approve "$PI_BIN"; then
     PI_APPROVE=' --approve'
   fi
   LAUNCH=${LAUNCH//__PIAPPROVE__/$PI_APPROVE}

@@ -1006,6 +1006,13 @@ This applies only to agents Firstmate launches; the captain's own primary Firstm
 
 [`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns the delivery mechanics, with focused regression coverage in [`tests/fm-spawn-compact-adviser-disable.test.sh`](../tests/fm-spawn-compact-adviser-disable.test.sh) and [`tests/fm-spawn-compact-adviser-disable-remote.test.sh`](../tests/fm-spawn-compact-adviser-disable-remote.test.sh).
 
+### Pi worker project trust
+
+The optional local, gitignored `config/pi-approve-workers` presence flag opts this home's ordinary Pi and Pi-signed worker launches into Pi's `--approve`, so a worker in a pooled worktree slot does not stall at the "Trust project folder?" dialog.
+`--approve` is session-scoped to the launch cwd, so it trusts only that worker's own worktree for that run and never rewrites `trust.json`; it is added only when the selected Pi advertises the flag.
+With the flag absent, only seeded secondmate launches receive `--approve`.
+This is a trust decision, so it is not inherited into secondmate homes and each home sets it deliberately.
+
 ### Commit attribution
 
 The optional local, gitignored `config/keep-ai-trailers` presence flag opts this home into keeping AI co-author trailers on its launched workers.
