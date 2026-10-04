@@ -1,0 +1,8 @@
+ok - treehouse installer installs the pinned verified build
+ok - treehouse installer selects the right asset per platform
+ok - treehouse installer refuses unsupported platforms before downloading
+ok - treehouse installer refuses a checksum mismatch
+ok - treehouse installer refuses download failure, wrong version, and empty archive
+ok - treehouse installer requires a destination
+ok - herdr installer installs the pinned verified build
+ok - herdr installer refuses bad platform, checksum, download, version, and protocol
