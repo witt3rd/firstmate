@@ -112,13 +112,14 @@ jobs:
           set -eu
           npm install -g tasks-axi
           tasks-axi --version
-      # Pinned to the Pi release the fleet runs, so the required check does not
-      # move under a PR. Drift against the latest public Pi is watched by the
-      # separate, non-blocking pi-latest workflow.
+      # Unpinned on purpose: the fleet's Pi version policy follows latest through
+      # a canary (roger first, followers staged), so CI tracks the latest public
+      # Pi rather than a frozen release. The non-blocking pi-latest workflow
+      # remains a daily early warning when no PR is running.
       - name: Install the Pi package for the Pi extension tests
         run: |
           set -eu
-          npm install -g @earendil-works/pi-coding-agent@0.87.1
+          npm install -g @earendil-works/pi-coding-agent@latest
           npm ls -g --depth 0 @earendil-works/pi-coding-agent
       - name: Run portable parallel shard 1
         run: |
@@ -219,13 +220,14 @@ jobs:
       # The Pi extension tests read the installed Pi package's own types and
       # runtime, so without it they gate-skip and pass silently. It is a public
       # npm package and needs no credential, so CI can hold the real thing.
-      # Pinned to the Pi release the fleet runs, so the required check does not
-      # move under a PR. Drift against the latest public Pi is watched by the
-      # separate, non-blocking pi-latest workflow.
+      # Unpinned on purpose: the fleet's Pi version policy follows latest through
+      # a canary (roger first, followers staged), so CI tracks the latest public
+      # Pi rather than a frozen release. The non-blocking pi-latest workflow
+      # remains a daily early warning when no PR is running.
       - name: Install the Pi package for the Pi extension tests
         run: |
           set -eu
-          npm install -g @earendil-works/pi-coding-agent@0.87.1
+          npm install -g @earendil-works/pi-coding-agent@latest
           npm ls -g --depth 0 @earendil-works/pi-coding-agent
       - name: Run portable serial shard ${{ matrix.shard }}
         env:
