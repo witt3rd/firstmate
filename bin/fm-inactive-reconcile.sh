@@ -508,9 +508,12 @@ ledger_seen_record() { # <id> <sig> <settle> <now>
   esac
   mkdir -p "$LEDGER_SEEN_DIR" 2>/dev/null || return 0
   [ ! -L "$LEDGER_SEEN_DIR" ] || return 0
-  printf '%s\n%s\n' "$2" "$until" > "$LEDGER_SEEN_DIR/$1.$$" 2>/dev/null \
-    && mv -f "$LEDGER_SEEN_DIR/$1.$$" "$LEDGER_SEEN_DIR/$1" 2>/dev/null \
-    || rm -f "$LEDGER_SEEN_DIR/$1.$$" 2>/dev/null
+  if printf '%s\n%s\n' "$2" "$until" > "$LEDGER_SEEN_DIR/$1.$$" 2>/dev/null; then
+    mv -f "$LEDGER_SEEN_DIR/$1.$$" "$LEDGER_SEEN_DIR/$1" 2>/dev/null \
+      || rm -f "$LEDGER_SEEN_DIR/$1.$$" 2>/dev/null
+  else
+    rm -f "$LEDGER_SEEN_DIR/$1.$$" 2>/dev/null
+  fi
   return 0
 }
 
