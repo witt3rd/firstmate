@@ -142,6 +142,13 @@ So the backlog row a finished task's cleanup is about to close is routinely the 
 | 1 | The row is not an open captain call. | Proceeds with its automatic close. |
 | 2 | The answer could not be established. | Treats it as a refusal before any destructive step, never as permission to close. |
 
+### Open keyed decisions in the status log
+
+Cleanup retires the status log, so an unanswered keyed `needs-decision` in it would be erased with its key.
+Before any destructive step, teardown refuses a task that is not held for the captain while the log still folds such a decision open, and names the key.
+Answer it with `bin/fm-send.sh --resolve-key`, or hold the task with `bin/fm-captain-hold.sh hold` so cleanup retains it.
+`--force` does not bypass this refusal.
+
 ### Retaining the row on exit 0
 
 On 0 only the close changes.
