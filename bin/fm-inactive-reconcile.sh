@@ -22,7 +22,10 @@
 # pre-validation `done: {summary}` still reads done (the pipeline handoff),
 # while a CI-ready or direct-PR/local-only done whose head lives only in the
 # disposable copy reads blocked and is not a terminal inactive outcome.
-# A line still being appended (no trailing newline yet)
+# That pass is bounded per poll: a child whose meta and status are unchanged
+# since an evaluation that left nothing owed is skipped without a lock or read,
+# and an unreachable ship done: is re-checked at most once per
+# FM_INACTIVE_LEDGER_RECHECK_SECS (default 30). A line still being appended (no trailing newline yet)
 # is left for the next poll. This is what keeps a mate's PR-ready, finding,
 # and failure outcomes from depending on the mate model appending them
 # (docs/secondmate-parent-channel.md). A main home has no parent channel and
@@ -414,8 +417,15 @@ claim_inactive_report_for_ledger() { # <task> <incarnation> <state> <ledger-fing
 # could not be written (the notice is queued once per record).
 report_child_ledger_locked() { # <id> <meta>
   local id=$1 meta=$2 status last previous state note pr mode yolo data incarnation fingerprint predecessor_head outcome_key line
+  local ledger_rc=0
   status="$STATE/$id.status"
-  last=$(child_terminal_ledger_line "$status") || return 0
+  LEDGER_SETTLE=none
+  last=$(child_terminal_ledger_line "$status") || ledger_rc=$?
+  if [ "$ledger_rc" -ne 0 ]; then
+    # No whole terminal line: nothing is owed until the ledger changes.
+    [ "$ledger_rc" -ne 1 ] || LEDGER_SETTLE=settled
+    return 0
+  fi
   state=$(status_line_verb "$last")
   pr=$(pr_for_task "$meta" "$last")
   incarnation=$(meta_incarnation "$meta")
@@ -425,17 +435,20 @@ report_child_ledger_locked() { # <id> <meta>
     && ! fm_dod_accept_ship_done "$(meta_field "$meta" kind)" "$(meta_field "$meta" mode)" \
       "$(meta_field "$meta" worktree)" "$(meta_field "$meta" project)" "$last" \
       "$STATE" "$id" "$meta" >/dev/null; then
+    # Reachability can change with no ledger change, so re-check on a throttle.
+    LEDGER_SETTLE=retry
     return 0
   fi
   outcome_key="child-outcome-$id-$state-${fingerprint:0:8}"
   ensure_record "$fingerprint" "$id" "$incarnation" "$state" "$outcome_key" direct upstream "$pr" || return 1
-  [ -n "$RECORD_PENDING" ] || return 0
+  [ -n "$RECORD_PENDING" ] || { LEDGER_SETTLE=settled; return 0; }
   last_status_line "$status" previous >/dev/null
   predecessor_head=$(sha256_text "$previous")
   if claim_inactive_report_for_ledger "$id" "$incarnation" "$state" "$fingerprint" "$predecessor_head"; then
     # The fallback line is already on the parent channel. This reported ledger
     # receipt records that its richer rendering owes no second publication.
     mark_reported "$RECORD_PENDING" || return 1
+    LEDGER_SETTLE=settled
     return 0
   elif [ "$?" -eq 2 ]; then
     return 1
@@ -453,6 +466,7 @@ report_child_ledger_locked() { # <id> <meta>
   fi
   if fm_parent_channel_report "$FM_HOME" "$STATE" "$line"; then
     mark_reported "$RECORD_PENDING" || return 1
+    LEDGER_SETTLE=settled
     return 0
   fi
   notice_parent_report_failed "$RECORD_PENDING" "$fingerprint" \
@@ -460,16 +474,68 @@ report_child_ledger_locked() { # <id> <meta>
   return 1
 }
 
-# Every direct child's ledger, under its meta lock. File reads, plus a local
-# git reachability check for a ship done: with no delivery record yet, so it
-# runs on every poll in a secondmate home; a delivery failure is already queued as a
-# notice and never fails the scan.
+# A cheap identity of the ledger inputs, with no subprocess beyond one stat.
+if [ "$(uname)" = Darwin ]; then
+  ledger_sig() { /usr/bin/stat -f '%i:%m:%z' "$1" "$2" 2>/dev/null; }
+else
+  ledger_sig() { stat -c '%i:%y:%s' "$1" "$2" 2>/dev/null; }
+fi
+
+# Per-child record of the last ledger evaluation: line 1 is the input identity,
+# line 2 the epoch before which an unchanged identity may be skipped (0 means
+# until the identity changes). It bounds the per-poll cost, which otherwise
+# grows with every child and forks several processes per child per poll.
+LEDGER_SEEN_DIR="$STATE/.inactive-ledger-seen"
+FM_INACTIVE_LEDGER_RECHECK_SECS=${FM_INACTIVE_LEDGER_RECHECK_SECS:-30}
+case "$FM_INACTIVE_LEDGER_RECHECK_SECS" in ''|*[!0-9]*) FM_INACTIVE_LEDGER_RECHECK_SECS=30 ;; esac
+
+ledger_seen_fresh() { # <id> <sig> <now>
+  local sig line until=''
+  [ -f "$LEDGER_SEEN_DIR/$1" ] && [ ! -L "$LEDGER_SEEN_DIR/$1" ] || return 1
+  { IFS= read -r line && IFS= read -r until; } < "$LEDGER_SEEN_DIR/$1" || return 1
+  sig=$2
+  [ "$line" = "$sig" ] || return 1
+  case "$until" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$until" -eq 0 ] || [ "$3" -lt "$until" ]
+}
+
+ledger_seen_record() { # <id> <sig> <settle> <now>
+  local until
+  case "$3" in
+    settled) until=0 ;;
+    retry) until=$(($4 + FM_INACTIVE_LEDGER_RECHECK_SECS)) ;;
+    *) rm -f "$LEDGER_SEEN_DIR/$1" 2>/dev/null; return 0 ;;
+  esac
+  mkdir -p "$LEDGER_SEEN_DIR" 2>/dev/null || return 0
+  [ ! -L "$LEDGER_SEEN_DIR" ] || return 0
+  if printf '%s\n%s\n' "$2" "$until" > "$LEDGER_SEEN_DIR/$1.$$" 2>/dev/null; then
+    mv -f "$LEDGER_SEEN_DIR/$1.$$" "$LEDGER_SEEN_DIR/$1" 2>/dev/null \
+      || rm -f "$LEDGER_SEEN_DIR/$1.$$" 2>/dev/null
+  else
+    rm -f "$LEDGER_SEEN_DIR/$1.$$" 2>/dev/null
+  fi
+  return 0
+}
+
+# Every direct child's ledger, under its meta lock. A child whose ledger inputs
+# are unchanged since an evaluation that left nothing owed is skipped without
+# taking its lock; a ship done: whose head is not yet reachable is re-checked at
+# most once per FM_INACTIVE_LEDGER_RECHECK_SECS (default 30), because the local
+# git reachability check is the expensive part. A delivery failure is already
+# queued as a notice and never fails the scan.
 ledger_pass() {
-  local meta id lock
+  local meta id lock sig now seen
+  now=$(reconcile_now)
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
-    id=$(basename "$meta" .meta)
+    id=${meta##*/}
+    id=${id%.meta}
     valid_id "$id" || continue
+    sig=$(ledger_sig "$meta" "$STATE/$id.status")
+    sig=${sig//$'\n'/|}
+    if [ -n "$sig" ] && ledger_seen_fresh "$id" "$sig" "$now"; then
+      continue
+    fi
     [ "$(meta_field "$meta" kind)" != secondmate ] || continue
     lock=$(fm_meta_lock_path "$meta") || continue
     fm_lock_try_acquire "$lock" || continue
@@ -478,9 +544,18 @@ ledger_pass() {
       fm_lock_release "$lock"
       continue
     fi
-    report_child_ledger_locked "$id" "$meta" || true
+    LEDGER_SETTLE=none
+    report_child_ledger_locked "$id" "$meta" || LEDGER_SETTLE=none
+    seen=$LEDGER_SETTLE
     fm_lock_release "$lock"
+    [ -z "$sig" ] || ledger_seen_record "$id" "$sig" "$seen" "$now"
   done
+  if [ -d "$LEDGER_SEEN_DIR" ] && [ ! -L "$LEDGER_SEEN_DIR" ]; then
+    for seen in "$LEDGER_SEEN_DIR"/*; do
+      [ -e "$seen" ] || continue
+      [ -f "$STATE/${seen##*/}.meta" ] || rm -f "$seen" 2>/dev/null
+    done
+  fi
 }
 
 # The `report <task-id>` entry point: the caller holds the child's meta lock.

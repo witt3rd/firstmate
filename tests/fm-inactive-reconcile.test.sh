@@ -258,6 +258,36 @@ test_delivered_ledger_done_skips_git_gate() {
   pass "a delivered ship done: skips the git gate on later polls"
 }
 
+# Per-poll cost must not grow with the number of settled children: an unchanged
+# ledger that owes nothing is skipped without reading it, and an unreachable
+# ship done: re-runs its git gate only after the recheck throttle.
+test_unchanged_ledgers_are_skipped_on_later_polls() {
+  local real_git real_tail i
+  make_world poll-bound; bind_secondmate local
+  for i in 1 2 3 4 5 6; do write_child "$MATE" "w$i" 'working: busy'; done
+  write_child "$MATE" held 'done: PR https://example.test/owner/repo/pull/3 checks green'
+  git -C "$MATE/projects/held" commit -q --allow-empty -m 'only in the copy'
+  grep -v '^pr=\|^pr_head=' "$MATE/state/held.meta" > "$MATE/state/held.meta.tmp"
+  mv "$MATE/state/held.meta.tmp" "$MATE/state/held.meta"
+  real_git=$(command -v git); real_tail=$(command -v tail)
+  printf '#!/usr/bin/env bash\nprintf "git %%s\\n" "$*" >> %q\nexec %q "$@"\n' "$WORLD/cost.log" "$real_git" > "$WORLD/fakebin/git"
+  printf '#!/usr/bin/env bash\nprintf "tail %%s\\n" "$*" >> %q\nexec %q "$@"\n' "$WORLD/cost.log" "$real_tail" > "$WORLD/fakebin/tail"
+  chmod +x "$WORLD/fakebin/git" "$WORLD/fakebin/tail"
+  FM_FAKE_CREW_STATE='unknown' run_reconcile "$MATE"
+  [ -s "$WORLD/cost.log" ] || fail "first poll did not evaluate the ledgers"
+  : > "$WORLD/cost.log"
+  FM_FAKE_CREW_STATE='unknown' run_reconcile "$MATE"
+  [ ! -s "$WORLD/cost.log" ] || fail "an unchanged poll re-read settled or throttled ledgers: $(cat "$WORLD/cost.log")"
+  printf 'working: more\n' >> "$MATE/state/w1.status"
+  FM_FAKE_CREW_STATE='unknown' run_reconcile "$MATE"
+  [ "$(grep -c '^tail' "$WORLD/cost.log")" -ge 1 ] || fail "a changed ledger was not re-read"
+  git -C "$MATE/projects/held" update-ref refs/remotes/origin/main "$(git -C "$MATE/projects/held" rev-parse HEAD)"
+  : > "$WORLD/cost.log"
+  FM_INACTIVE_RECONCILE_NOW=$(( $(date +%s) + 40 )) FM_FAKE_CREW_STATE=unknown run_reconcile "$MATE"
+  [ "$(outcome_count "$MATE" reported)" = 1 ] || fail "a done: that became reachable was not delivered after the recheck"
+  pass "unchanged ledgers are skipped and unreachable done: rechecks are throttled"
+}
+
 # A secondmate delivers a child's terminal ledger line to the parent on the
 # very next poll, from the ledger alone: no current-state read, no inactive
 # cadence, and no line appended by the mate model. The delivery carries the
@@ -1042,6 +1072,7 @@ test_main_direct_terminal_presentation_receipt
 test_branch_ack_retires_inactive_outcome_receipt
 test_unpushed_ci_ready_done_is_not_published
 test_delivered_ledger_done_skips_git_gate
+test_unchanged_ledgers_are_skipped_on_later_polls
 test_local_secondmate_delivers_terminal_ledger_line
 test_secondmate_multiline_terminal_outcome_is_delivered_once
 test_secondmate_unterminated_prose_reports_run_outcome
