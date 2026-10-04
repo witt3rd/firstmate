@@ -2389,6 +2389,7 @@ FM_INACTIVE_LEDGER_RECHECK_SECS=30  # seconds between re-checks of an unreachabl
 FM_CHECK_INTERVAL=300   # seconds between slow checks (authenticated merge polls, custom checks, or Relay dispatch)
 FM_TASK_INBOX_GRACE_SECS=90   # seconds an unhandled steering-inbox message may sit before the watcher attempts doorbell delivery on an idle pane; also the minimum spacing between attempts
 FM_TASK_INBOX_RING_MAX=3      # watcher delivery attempts without an acknowledgement before the task surfaces as a stale wake for recovery
+FM_TASK_INBOX_BUSY_MAX=2      # consecutive busy-deferred due polls before a stuck-busy stale wake; 1..999999999, at most 9 decimal digits, otherwise 2; policy: bin/fm-task-inbox-lib.sh
 FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
 FM_CARETAKER_SWEEP_STALL_SECS=86400   # cap on how long a started caretaker health sweep may stay unrecorded before it comes due again; the bound is the smaller of this and the cadence
 FM_CARETAKER_SWEEP_REMOTE_SECS=15     # seconds allowed for each clone's read-only `git ls-remote` in the caretaker sweep snapshot
