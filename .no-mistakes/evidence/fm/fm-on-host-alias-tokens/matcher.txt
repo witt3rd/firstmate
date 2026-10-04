@@ -1,0 +1,6 @@
+tensor mcfeely MATCH
+mcfeely tensor MATCH
+mcfeely foo no
+* mcfeely no
+bad foo no
+tensor tensor MATCH
