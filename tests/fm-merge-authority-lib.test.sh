@@ -80,7 +80,7 @@ github.com
 octo/repo
 42
 away" "$(cat "$rec")" "record body"
-  assert_equals -rw------- "$(ls -l "$rec" | cut -c1-10)" "record mode"
+  assert_equals -rw------- "$(stat -c %A "$rec" 2>/dev/null || stat -f %Sp "$rec")" "record mode"
   read_auth "$c" || fail "read failed"
   assert_equals away "$FM_MERGE_AUTHORITY" "read returns persisted authority"
   [ -n "$FM_MERGE_AUTHORITY_RECORD_IDENTITY" ] || fail "no file identity"
