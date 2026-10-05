@@ -1,0 +1,7 @@
+ok - parse_line handles local, remote, and prose containing punctuation
+ok - parse_line rejects malformed and incomplete records
+ok - line_for_id and field select exactly one valid record
+ok - lock paths and path_key
+ok - validate_bindings accepts good registries and reports exact matches
+ok - validate_bindings refuses every unsafe or colliding registration
+# all fm-secondmate-registry-lib tests passed
