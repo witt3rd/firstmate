@@ -55,6 +55,12 @@ REMOTE_HOST=$(fm_meta_get "$META" remote_host)
 [ -n "$REMOTE_HOST" ] \
   || die "task $ID is not a remotely placed secondmate; use bin/fm-control.sh $ID relaunch instead"
 
+RECORDED_PROFILE=$(fm_meta_get "$META" profile)
+RECORDED_OVERRIDE=$(fm_meta_get "$META" captain_override)
+if [ -z "$SCOPE_PROFILE" ] && [ -n "$RECORDED_PROFILE" ] && [ -z "$RECORDED_OVERRIDE" ]; then
+  die "secondmate $ID is recorded under spend profile '$RECORDED_PROFILE', but its registered scope no longer maps to a single profile; refusing to relaunch it on a different account"
+fi
+
 RELAUNCH_ARGS=("$ID" "$HARNESS" "$MODEL" "$EFFORT")
 [ -z "$SCOPE_PROFILE" ] || RELAUNCH_ARGS+=("--scope-profile=$SCOPE_PROFILE")
 RELAUNCH_OUT=$("$SCRIPT_DIR/fm-on.sh" "$ID" fm-remote-secondmate-control.sh \
@@ -80,7 +86,7 @@ NEW_EFFORT=$(printf '%s\n' "$RELAUNCH_OUT" | sed -n 's/^effort=//p' | tail -1)
 NEW_PROFILE=$(printf '%s\n' "$RELAUNCH_OUT" | sed -n 's/^profile=//p' | tail -1)
 NEW_ACCOUNT=$(printf '%s\n' "$RELAUNCH_OUT" | sed -n 's/^account=//p' | tail -1)
 NEW_ACCOUNT_PROVIDER=$(printf '%s\n' "$RELAUNCH_OUT" | sed -n 's/^account_provider=//p' | tail -1)
-[ "$NEW_PROFILE" = "$SCOPE_PROFILE" ] \
+[ -n "$RECORDED_OVERRIDE" ] || [ "$NEW_PROFILE" = "$SCOPE_PROFILE" ] \
   || die "the host relaunched $ID under spend profile '${NEW_PROFILE:-none}', but its registered scope resolves to '${SCOPE_PROFILE:-none}'; the route record is left as it was, so reconcile the host before another relaunch"
 
 META_LOCK=$(fm_meta_lock_path "$META") || die "metadata lock path is invalid for $ID"
