@@ -1208,7 +1208,7 @@ The spawn prints and records `profile=` and `account=` like a worker's, and a re
 A mate whose projects map to different profiles, include an unmapped project, or are empty keeps the launching home's pin and the `config/secondmate-harness` pin, and records no profile.
 `--profile <name> --captain-override "<words>"` places a local mate on another profile as the captain's explicit decision, exactly as for a worker, and the recorded override survives relaunch; a remote mate takes no override in this version.
 A remote mate's scope is resolved by its parent, because the host holds no registry: the parent hands the profile to the host's launch or relaunch (`--scope-profile`), and the store must exist and be signed in at the same absolute `pi_account.root` on that host.
-The host reports the profile it actually ran, and the parent records that and refuses if it differs.
+The parent refuses before dispatching when a mate recorded under a profile no longer maps to one; the host reports the profile it actually ran, and the parent records that and refuses if it differs.
 The mate's own crewmates still resolve their profile from their own task's project.
 
 **Validation and day-one file**
