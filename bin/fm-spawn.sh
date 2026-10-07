@@ -346,7 +346,7 @@
 #   account_provider=) in the task record and on the spawned line. A local
 #   secondmate reads this launching home's file; pins are never inherited.
 #   bin/fm-worker-account-lib.sh owns parsing, the check, and the shed list.
-#   --profile <name> --captain-override "<words>" (ship and scout only, never
+#   --profile <name> --captain-override "<words>" (ship, scout, and local secondmate, never
 #   with --relaunch) names a spend profile other than the project's own, as the
 #   captain's explicit per-task decision. When config/crew-dispatch.json
 #   declares spend_profiles, every ship and scout spawn and relaunch resolves
@@ -356,6 +356,17 @@
 #   account, then launches on the profile's account. The profile is recorded as
 #   profile= (and captain_override=) in the task record. A legacy file with no
 #   spend_profiles changes nothing. bin/fm-spend-profile-lib.sh owns the guards.
+#   A --secondmate spawn resolves its profile from the mate's registered scope
+#   (the projects field of data/secondmates.md) instead: when every project maps
+#   to ONE profile, the mate launches on that profile's account and default
+#   harness, model, and effort in place of the config/secondmate-harness pin
+#   (an explicit --harness/--model/--effort still replaces its axis and must
+#   remain a profile candidate), with the same guards and the same profile= and
+#   account= record; a mixed or empty scope keeps today's launch. --profile with
+#   --captain-override applies to a local secondmate as to a worker, and a
+#   relaunch keeps the recorded profile. --scope-profile <name> is the parent's
+#   hand-off of that scope profile to the host-local spawn of a REMOTE secondmate
+#   (bin/fm-remote-secondmate-control.sh), which has no registry of its own.
 #   --destructive-ok <ticket> grants this one launch the destructive-command
 #   guard override: the launch exports FM_DESTRUCTIVE_OK=<ticket> into the
 #   worker's harness environment, the only place the guard honors it, and the
@@ -701,6 +712,8 @@ PROFILE_ARG=
 PROFILE_SET=0
 OVERRIDE_ARG=
 OVERRIDE_SET=0
+SCOPE_PROFILE_ARG=
+SCOPE_PROFILE_SET=0
 DESTRUCTIVE_OK=
 DESTRUCTIVE_OK_SET=0
 UNGUARDED_RUNTIME=
@@ -756,6 +769,10 @@ for a in "$@"; do
     captain-override)
       OVERRIDE_ARG=$a
       OVERRIDE_SET=1
+      ;;
+    scope-profile)
+      SCOPE_PROFILE_ARG=$a
+      SCOPE_PROFILE_SET=1
       ;;
     destructive-ok)
       DESTRUCTIVE_OK=$a
@@ -838,6 +855,11 @@ for a in "$@"; do
     DESTRUCTIVE_OK=${a#--destructive-ok=}
     DESTRUCTIVE_OK_SET=1
     ;;
+  --scope-profile) want_value='scope-profile' ;;
+  --scope-profile=*)
+    SCOPE_PROFILE_ARG=${a#--scope-profile=}
+    SCOPE_PROFILE_SET=1
+    ;;
   --captain-override) want_value=captain-override ;;
   --captain-override=*)
     OVERRIDE_ARG=${a#--captain-override=}
@@ -894,11 +916,25 @@ done
   echo "error: --profile and --captain-override go together: a profile other than the project's own needs the captain's words that chose it" >&2
   exit 1
 }
-if [ "$PROFILE_SET" -eq 1 ]; then
-  [ "$KIND" != secondmate ] || {
-    echo "error: --profile applies only to ship and scout spawns; a secondmate resolves no project profile in this version" >&2
+[ "$SCOPE_PROFILE_SET" -eq 0 ] || [ -n "$SCOPE_PROFILE_ARG" ] || {
+  echo "error: --scope-profile requires a non-empty value" >&2
+  exit 1
+}
+# --scope-profile is the parent's hand-off of a secondmate's registered-scope
+# profile to the host-local spawn of a remote secondmate, which has no registry
+# of its own. It never carries a captain override, so it cannot name a profile
+# the scope does not map to.
+if [ "$SCOPE_PROFILE_SET" -eq 1 ]; then
+  [ "$PROFILE_SET" -eq 0 ] || {
+    echo "error: --scope-profile and --profile are different sources for one decision; pass only one" >&2
     exit 1
   }
+  { [ "$KIND" = secondmate ] || [ "$RELAUNCH" -eq 1 ]; } || {
+    echo "error: --scope-profile applies only to a secondmate spawn or relaunch" >&2
+    exit 1
+  }
+fi
+if [ "$PROFILE_SET" -eq 1 ]; then
   [ "$RELAUNCH" -eq 0 ] || {
     echo "error: --relaunch keeps the task's recorded spend profile; --profile cannot change it" >&2
     exit 1
@@ -1008,6 +1044,7 @@ spawn_remote_secondmate() {
   local id=$1 remote host root home harness positional model effort backend out rc meta tmp
   local remote_backend remote_target remote_harness remote_herdr_session registry_lock remote_lock remote_generation
   local remote_traceparent remote_recorded_traceparent sm_primary_head sync_out sync_rc
+  local sm_scope sm_plan sm_profile sm_account sm_account_root sm_account_provider remote_profile
   local -a launch_args
   id=${POS[0]:-}
   fm_task_id_creation_valid "$id" || {
@@ -1061,9 +1098,54 @@ spawn_remote_secondmate() {
     return 1
     ;;
   esac
+  # Spend profile (bin/fm-spend-profile-lib.sh): the mate follows the profile
+  # its registered scope maps to, resolved HERE because the remote host holds no
+  # registry. The profile's default harness, model, and effort stand in for the
+  # configured secondmate pin; an explicit per-spawn harness, model, or effort
+  # still replaces its axis, and the choice must remain a candidate of the
+  # profile. The host re-checks the sign-in against its own copy of the store.
+  sm_profile=
+  if [ "$PROFILE_SET" -eq 1 ]; then
+    fm_lock_release "$registry_lock" || true
+    fm_lock_release "$SPAWN_TASK_LOCK" || true
+    echo "error: --profile applies to a local secondmate only; a remote secondmate follows its registered scope's spend profile and takes no captain override in this version" >&2
+    return 1
+  fi
+  if [ "$SCOPE_PROFILE_SET" -eq 1 ]; then
+    sm_scope=$SCOPE_PROFILE_ARG
+  else
+    sm_scope=$(fm_spend_profile_registered_scope "$CONFIG" "$DATA" "$id")
+  fi
+  if ! sm_plan=$(fm_spend_profile_secondmate_plan "$CONFIG" "$id" "$sm_scope" "" "" "" ""); then
+    fm_lock_release "$registry_lock" || true
+    fm_lock_release "$SPAWN_TASK_LOCK" || true
+    return 1
+  fi
+  if [ -n "$sm_plan" ]; then
+    sm_profile=$(printf '%s' "$sm_plan" | cut -f1)
+    if [ -z "$HARNESS_ARG" ] && [ -z "$positional" ]; then
+      harness=$(printf '%s' "$sm_plan" | cut -f2)
+    fi
+    if [ "$MODEL_SET" -eq 0 ]; then
+      MODEL=$(printf '%s' "$sm_plan" | cut -f3)
+    fi
+    if [ "$EFFORT_SET" -eq 0 ] && [ -n "$(printf '%s' "$sm_plan" | cut -f4)" ]; then
+      EFFORT=$(printf '%s' "$sm_plan" | cut -f4)
+      EFFORT_SET=1
+    fi
+    if ! fm_spend_profile_candidate "$CONFIG" "$sm_profile" "$harness" "${MODEL:-default}"; then
+      fm_lock_release "$registry_lock" || true
+      fm_lock_release "$SPAWN_TASK_LOCK" || true
+      echo "error: spend profile '$sm_profile' does not allow harness '$harness' with model '${MODEL:-default}' for secondmate '$id'; its candidates are the models of its own rules and default" >&2
+      return 1
+    fi
+    sm_account=$(fm_spend_profile_account "$CONFIG" "$sm_profile")
+    sm_account_root=${sm_account%%$'\t'*}
+    sm_account_provider=$(fm_worker_account_pi_provider "$MODEL" 2>/dev/null || true)
+  fi
   model=${MODEL:--}
   effort=${EFFORT:--}
-  if [ -z "$HARNESS_ARG" ] && [ -z "$positional" ]; then
+  if [ -z "$HARNESS_ARG" ] && [ -z "$positional" ] && [ -z "$sm_profile" ]; then
     if [ "$MODEL_SET" -eq 0 ]; then
       model=$("$SCRIPT_DIR/fm-harness.sh" secondmate-model)
       [ -n "$model" ] || model=-
@@ -1190,6 +1272,7 @@ spawn_remote_secondmate() {
     remote_traceparent=$(FM_TRACE_CONTEXT=on fm_trace_context_resolve "$CONFIG" "$meta" || true)
   fi
   launch_args=("$id" "$harness" "$model" "$effort" "$backend")
+  [ -z "$sm_profile" ] || launch_args+=("--scope-profile=$sm_profile")
   [ -z "$remote_traceparent" ] || launch_args+=("$remote_traceparent")
   if out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh launch \
     "${launch_args[@]}" </dev/null 2>&1); then
@@ -1211,6 +1294,17 @@ spawn_remote_secondmate() {
   remote_target=$(printf '%s\n' "$out" | sed -n 's/^target=//p' | tail -1)
   remote_harness=$(printf '%s\n' "$out" | sed -n 's/^harness=//p' | tail -1)
   remote_herdr_session=$(printf '%s\n' "$out" | sed -n 's/^herdr_session=//p' | tail -1)
+  # The host reports the profile its launch actually ran under, so the record
+  # below carries the confirmed one, and a host that did not apply the profile
+  # (an older copy, a refused guard) is never recorded as if it had.
+  remote_profile=$(printf '%s\n' "$out" | sed -n 's/^profile=//p' | tail -1)
+  if [ "$remote_profile" != "$sm_profile" ]; then
+    fm_lock_release "$remote_lock" || true
+    fm_lock_release "$registry_lock" || true
+    fm_lock_release "$SPAWN_TASK_LOCK" || true
+    echo "error: remote launch confirmed spend profile '${remote_profile:-none}', expected '${sm_profile:-none}'; preserving the remote route for reconciliation" >&2
+    return 1
+  fi
   if [ "$remote_backend" != herdr ]; then
     fm_lock_release "$remote_lock" || true
     fm_lock_release "$registry_lock" || true
@@ -1253,6 +1347,9 @@ spawn_remote_secondmate() {
     echo "tasktmp="
     echo "model=${model#-}"
     echo "effort=${effort#-}"
+    [ -z "$sm_profile" ] || echo "account=$sm_account_root"
+    [ -z "$sm_profile" ] || echo "profile=$sm_profile"
+    [ -z "$sm_profile" ] || [ -z "$sm_account_provider" ] || echo "account_provider=$sm_account_provider"
     echo "home=$home"
     echo "projects=$(secondmate_registry_field "$DATA/secondmates.md" "$id" projects)"
     echo "remote_host=$host"
@@ -1286,7 +1383,7 @@ spawn_remote_secondmate() {
     return 1
   fi
   [ ! -e "$CONFIG/fleet-ledger" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" dispatched "$id" secondmate "" "$harness" "${model#-}" || true
-  echo "spawned $id harness=$harness kind=secondmate mode=secondmate yolo=off window=remote:$id worktree=$home remote=$host backend=$remote_backend"
+  echo "spawned $id harness=$harness kind=secondmate mode=secondmate yolo=off window=remote:$id worktree=$home remote=$host backend=$remote_backend${sm_profile:+ account=$sm_account_root profile=$sm_profile}"
   return 0
 }
 
@@ -1919,7 +2016,13 @@ if [ "$RELAUNCH" -eq 1 ]; then
   if [ "$KIND" = secondmate ]; then
     FIRSTMATE_HOME=$(fm_meta_get "$RELAUNCH_META" home)
     [ -n "$FIRSTMATE_HOME" ] || FIRSTMATE_HOME=$RELAUNCH_WT
+    RELAUNCH_PROFILE=$(fm_meta_get "$RELAUNCH_META" profile)
+    RELAUNCH_PROFILE_OVERRIDE=$(fm_meta_get "$RELAUNCH_META" captain_override)
   else
+    [ "$SCOPE_PROFILE_SET" -eq 0 ] || {
+      echo "error: --scope-profile applies only to a secondmate spawn or relaunch, and task $ID is a $KIND" >&2
+      exit 1
+    }
     PROJ=$(fm_meta_get "$RELAUNCH_META" project)
     [ -n "$PROJ" ] || {
       echo "error: task $ID has no recorded project; refusing to relaunch" >&2
@@ -2340,6 +2443,42 @@ launch_template() {
   esac
 }
 
+# Secondmate spend profile (bin/fm-spend-profile-lib.sh): a persistent
+# secondmate follows the profile its registered scope maps to, so a mate whose
+# projects are all personal launches on the personal store and its default
+# model instead of the launching home's pin. The profile supplies the default
+# harness, model, and effort, which an explicit per-spawn choice still replaces
+# (the guard below then holds that choice to the profile's candidates). A
+# remote mate's scope is resolved by its parent and handed in as
+# --scope-profile; a local one is read from this home's registry. Silent for a
+# legacy dispatch file and for a mixed or empty scope.
+SPEND_PROFILE=
+SPEND_OVERRIDE=
+FM_WORKER_ACCOUNT_PROFILE_PIN=
+SM_PROFILE_ACTIVE=0
+if [ "$KIND" = secondmate ]; then
+  if [ "$SCOPE_PROFILE_SET" -eq 1 ]; then
+    SM_SCOPE=$SCOPE_PROFILE_ARG
+  else
+    SM_SCOPE=$(fm_spend_profile_registered_scope "$CONFIG" "$DATA" "$ID")
+  fi
+  SM_PLAN=$(fm_spend_profile_secondmate_plan "$CONFIG" "$ID" "$SM_SCOPE" "$PROFILE_ARG" "$OVERRIDE_ARG" \
+    "$RELAUNCH_PROFILE" "$RELAUNCH_PROFILE_OVERRIDE") || exit 1
+  if [ -n "$SM_PLAN" ]; then
+    SM_PLAN_HARNESS=$(printf '%s' "$SM_PLAN" | cut -f2)
+    SM_PLAN_MODEL=$(printf '%s' "$SM_PLAN" | cut -f3)
+    SM_PLAN_EFFORT=$(printf '%s' "$SM_PLAN" | cut -f4)
+    SPEND_PROFILE=$(printf '%s' "$SM_PLAN" | cut -f1)
+    SPEND_OVERRIDE=$(printf '%s' "$SM_PLAN" | cut -f5-)
+    SM_PROFILE_ACTIVE=1
+    [ -n "$ARG3" ] || ARG3=$SM_PLAN_HARNESS
+    [ "$MODEL_SET" -eq 1 ] || MODEL=$SM_PLAN_MODEL
+    if [ "$EFFORT_SET" -eq 0 ] && [ -n "$SM_PLAN_EFFORT" ]; then
+      EFFORT=$SM_PLAN_EFFORT
+    fi
+  fi
+fi
+
 case "$ARG3" in
 *' '*) # raw launch command (unverified-adapter escape hatch)
   RAW_LAUNCH=1
@@ -2553,12 +2692,11 @@ fi
 RAW_COMMAND=
 [ "$RAW_LAUNCH" = 0 ] || RAW_COMMAND=$ARG3
 # Spend profile (bin/fm-spend-profile-lib.sh): the project decides which models
-# and which account this task may use. Silent for a legacy dispatch file and for
-# a secondmate; otherwise it refuses before any endpoint exists and its account
-# replaces config/pi-account for the check just below.
-SPEND_PROFILE=
-SPEND_OVERRIDE=
-FM_WORKER_ACCOUNT_PROFILE_PIN=
+# and which account this task may use, and a secondmate's registered scope
+# decides it for the mate (resolved above, before the harness). Silent for a
+# legacy dispatch file and for a secondmate with no single scope profile;
+# otherwise it refuses before any endpoint exists and its account replaces
+# config/pi-account for the check just below.
 if [ "$KIND" != secondmate ]; then
   SPEND_SELECTION=$(fm_spend_profile_select "$CONFIG" "$(fm_spend_profile_project_name "$PROJ" "$PROJECTS")" \
     "$PROFILE_ARG" "$OVERRIDE_ARG" "$RELAUNCH_PROFILE" "$RELAUNCH_PROFILE_OVERRIDE" "$HARNESS" "$MODEL" "$RAW_COMMAND") || exit 1
@@ -2568,6 +2706,10 @@ if [ "$KIND" != secondmate ]; then
     SPEND_OVERRIDE=$OVERRIDE_ARG
     [ -z "$RELAUNCH_PROFILE" ] || SPEND_OVERRIDE=$RELAUNCH_PROFILE_OVERRIDE
   fi
+elif [ "$SM_PROFILE_ACTIVE" -eq 1 ]; then
+  SPEND_SELECTION=$(fm_spend_profile_guard "$CONFIG" "$SPEND_PROFILE" "secondmate '$ID'" "$SPEND_OVERRIDE" \
+    "$HARNESS" "$MODEL" "$RAW_COMMAND") || exit 1
+  FM_WORKER_ACCOUNT_PROFILE_PIN=${SPEND_SELECTION#*$'\t'}
 fi
 WORKER_ACCOUNT=$(fm_worker_account_select "$HARNESS" "$CONFIG" "$MODEL" "${PI_BIN:-$HARNESS}" "$RAW_COMMAND") || exit 1
 WORKER_ACCOUNT_DECLARED=${WORKER_ACCOUNT%%$'\t'*}

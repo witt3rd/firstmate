@@ -65,13 +65,14 @@ argv_b64=$4
 command_fields=$(perl -MMIME::Base64=decode_base64 -e '
   my $data=decode_base64($ARGV[0]);
   my @args=split(/\0/, $data);
-  print join("\t", map { defined $_ ? $_ : "" } @args[0..5]);
+  print join("\t", map { defined $_ ? $_ : "" } @args[0..6]);
 ' "$argv_b64")
-IFS=$'\t' read -r cmd action id harness model effort <<EOF
+IFS=$'\t' read -r cmd action id harness model effort extra <<EOF
 $command_fields
 EOF
 [ "$cmd" = fm-remote-secondmate-control.sh ] || exit 93
 [ "$action" = relaunch ] || exit 94
+printf '%s\n' "$extra" > "$FM_FAKE_EXTRA_LOG"
 case "$FM_FAKE_RELAUNCH_MODE" in
   refuse)
     printf 'error: unverified remote secondmate harness: %s\n' "$harness" >&2
@@ -92,12 +93,18 @@ printf 'herdr_session=fm-remote\n'
 printf 'harness=%s\n' "$harness"
 printf 'model=%s\n' "$model"
 printf 'effort=%s\n' "$effort"
+if [ -n "${FM_FAKE_PROFILE:-}" ]; then
+  printf 'account=/srv/pi-personal\n'
+  printf 'profile=%s\n' "$FM_FAKE_PROFILE"
+  printf 'account_provider=openrouter\n'
+fi
 SH
 chmod +x "$FAKEBIN/fake-ssh"
 
 run_relaunch() {  # <args...>
   env FM_HOME="$HOME_DIR" FM_SSH_BIN="$FAKEBIN/fake-ssh" \
     FM_FAKE_RELAUNCH_MODE="${FM_FAKE_RELAUNCH_MODE:-}" \
+    FM_FAKE_PROFILE="${FM_FAKE_PROFILE:-}" FM_FAKE_EXTRA_LOG="$TMP/extra.log" \
     "$ROOT/bin/fm-remote-secondmate-relaunch.sh" "$@" 2>&1
 }
 
@@ -136,6 +143,34 @@ assert_grep 'model=claude-opus-5-5' "$HOME_DIR/state/ios.meta" \
 assert_no_grep 'harness=default' "$HOME_DIR/state/ios.meta" \
   "the parent record must not keep the unresolved request"
 pass "a remote relaunch records the identity the host confirmed"
+
+# --- the parent's spend profile reaches the host and the confirmed one is recorded
+reset_meta
+FM_FAKE_PROFILE=personal
+OUT=$(run_relaunch ios pi openrouter/deepseek/deepseek-v4.1-flash medium personal); RC=$?
+unset FM_FAKE_PROFILE
+expect_code 0 "$RC" "a remote relaunch under the scope's profile should succeed"$'\n'"$OUT"
+[ "$(cat "$TMP/extra.log")" = "--scope-profile=personal" ] \
+  || fail "the host should receive the parent's scope profile, got '$(cat "$TMP/extra.log")'"
+assert_grep 'profile=personal' "$HOME_DIR/state/ios.meta" "the parent record should carry the confirmed profile"
+assert_grep 'account=/srv/pi-personal' "$HOME_DIR/state/ios.meta" "the parent record should carry the confirmed store"
+assert_grep 'account_provider=openrouter' "$HOME_DIR/state/ios.meta" "the parent record should carry the confirmed provider"
+OUT=$(run_relaunch ios claude claude-opus-5-5 medium); RC=$?
+[ "$RC" -eq 0 ] || fail "a later relaunch with no scope profile should succeed: $OUT"
+assert_no_grep 'profile=personal' "$HOME_DIR/state/ios.meta" "a relaunch with no profile must clear the stale profile"
+assert_no_grep 'account=' "$HOME_DIR/state/ios.meta" "a relaunch with no profile must clear the stale account"
+pass "a remote relaunch hands the scope profile to the host and records the profile, account, and provider it confirmed"
+
+# --- a host that did not apply the requested profile is never recorded as if it had
+reset_meta
+cp "$HOME_DIR/state/ios.meta" "$TMP/ios-before-profile.meta"
+OUT=$(run_relaunch ios pi openrouter/deepseek/deepseek-v4.1-flash medium personal); RC=$?
+[ "$RC" -ne 0 ] || fail "a host that reports no profile must not satisfy a requested profile"
+assert_contains "$OUT" "under spend profile 'none', but its registered scope resolves to 'personal'" \
+  "the refusal should say the host did not apply the profile"
+cmp -s "$TMP/ios-before-profile.meta" "$HOME_DIR/state/ios.meta" \
+  || fail "an unconfirmed profile must leave the parent's record untouched"
+pass "a remote relaunch whose host did not confirm the profile leaves the parent's record untouched"
 
 # --- a refused relaunch leaves the parent's record untouched -----------------
 reset_meta
