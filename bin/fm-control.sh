@@ -5,7 +5,7 @@
 # Usage: fm-control.sh <task-id> interrupt
 #        fm-control.sh <task-id> exit
 #        fm-control.sh <task-id> relaunch [--harness <name>] [--model <name>]
-#                                         [--effort <level>]
+#                                         [--effort <level>] [--scope-profile <name>]
 #                                         (--note <text> | --note-file <path>)
 #
 # Why this exists, and how it differs from fm-send.sh. bin/fm-send.sh is the
@@ -77,7 +77,16 @@
 #              that no longer resolves or is signed out refuses before the old
 #              agent stops. A home with spend_profiles repeats the spend profile
 #              check (bin/fm-spend-profile-lib.sh) the same way, keeping the
-#              profile the task was recorded under.
+#              profile the task was recorded under. A secondmate follows the
+#              spend profile its registered scope maps to (data/secondmates.md
+#              projects): with no explicit axis it relaunches on that profile's
+#              default harness, model, and effort and account store instead of
+#              the configured secondmate pin, and refuses rather than move a
+#              mate recorded under one profile onto another account.
+#              --scope-profile <name> is the remote host's hand-off of the
+#              profile its parent resolved, because the host holds no registry
+#              (bin/fm-remote-secondmate-control.sh); it applies to a
+#              secondmate only.
 #              --note is required for a ship or scout, whose replacement
 #              inherits the local copy but none of the conversation; a
 #              secondmate reconciles its own home's records at startup, so its
@@ -180,6 +189,7 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-worker-account-lib.sh"
 # shellcheck source=bin/fm-spend-profile-lib.sh
 . "$SCRIPT_DIR/fm-spend-profile-lib.sh"
+SM_PLAN=
 
 POLL=${FM_CONTROL_POLL:-0.5}
 SETTLE_WAIT=${FM_CONTROL_SETTLE_WAIT:-5}
@@ -242,6 +252,8 @@ MODEL_SET=0
 EFFORT_SET=0
 NOTE=
 NOTE_SET=0
+SCOPE_PROFILE_ARG=
+SCOPE_PROFILE_SET=0
 control_want_value=
 for control_arg in "$@"; do
   if [ -n "$control_want_value" ]; then
@@ -253,6 +265,7 @@ for control_arg in "$@"; do
       model) NEW_MODEL=$control_arg; MODEL_SET=1 ;;
       effort) NEW_EFFORT=$control_arg; EFFORT_SET=1 ;;
       note) NOTE=$control_arg; NOTE_SET=1 ;;
+      scope_profile) SCOPE_PROFILE_ARG=$control_arg; SCOPE_PROFILE_SET=1 ;;
       note_file)
         [ -f "$control_arg" ] || die "--note-file '$control_arg' is not a readable file"
         NOTE=$(cat "$control_arg")
@@ -269,6 +282,8 @@ for control_arg in "$@"; do
     --model=*) NEW_MODEL=${control_arg#--model=}; MODEL_SET=1 ;;
     --effort) control_want_value=effort ;;
     --effort=*) NEW_EFFORT=${control_arg#--effort=}; EFFORT_SET=1 ;;
+    --scope-profile) control_want_value=scope_profile ;;
+    --scope-profile=*) SCOPE_PROFILE_ARG=${control_arg#--scope-profile=}; SCOPE_PROFILE_SET=1 ;;
     --note) control_want_value=note ;;
     --note=*) NOTE=${control_arg#--note=}; NOTE_SET=1 ;;
     --note-file) control_want_value=note_file ;;
@@ -287,11 +302,13 @@ fi
 
 if [ "$VERB" != relaunch ]; then
   [ "$HARNESS_SET" = 0 ] && [ "$MODEL_SET" = 0 ] && [ "$EFFORT_SET" = 0 ] && [ "$NOTE_SET" = 0 ] \
-    || die "--harness, --model, --effort, and --note apply to 'relaunch' only"
+    && [ "$SCOPE_PROFILE_SET" = 0 ] \
+    || die "--harness, --model, --effort, --scope-profile, and --note apply to 'relaunch' only"
 fi
 [ "$HARNESS_SET" = 0 ] || [ -n "$NEW_HARNESS" ] || die "--harness requires a non-empty value"
 [ "$MODEL_SET" = 0 ] || [ -n "$NEW_MODEL" ] || die "--model requires a non-empty value"
 [ "$EFFORT_SET" = 0 ] || [ -n "$NEW_EFFORT" ] || die "--effort requires a non-empty value"
+[ "$SCOPE_PROFILE_SET" = 0 ] || [ -n "$SCOPE_PROFILE_ARG" ] || die "--scope-profile requires a non-empty value"
 case "$NEW_EFFORT" in
   ''|default|low|medium|high|xhigh|max|ultra) ;;
   *) die "--effort must be one of default, low, medium, high, xhigh, max, ultra" ;;
@@ -795,6 +812,12 @@ resolve_relaunch_profile() {
   CONFIG_HARNESS=
   CONFIG_MODEL=
   CONFIG_EFFORT=
+  local spend_config sm_scope
+  SM_PLAN=
+  spend_config=${FM_CONFIG_OVERRIDE:-$FM_HOME/config}
+  if [ "$KIND" != secondmate ] && [ "$SCOPE_PROFILE_SET" = 1 ]; then
+    die "--scope-profile applies only to a secondmate, and task $ID is a $KIND"
+  fi
   if [ "$KIND" = secondmate ]; then
     # A secondmate's harness, model, and effort are a durable configured pin
     # that every respawn re-resolves (the secondmate-provisioning contract), so
@@ -813,6 +836,23 @@ resolve_relaunch_profile() {
         CONFIG_EFFORT=
         ;;
     esac
+    # The spend profile of the mate's registered scope (bin/fm-spend-profile-lib.sh)
+    # supersedes that pin: its default harness, model, and effort are what a
+    # relaunch with no explicit axis re-resolves, on its account store. A mate
+    # recorded under a profile its scope no longer maps to refuses here, while
+    # nothing has changed yet.
+    if [ "$SCOPE_PROFILE_SET" = 1 ]; then
+      sm_scope=$SCOPE_PROFILE_ARG
+    else
+      sm_scope=$(fm_spend_profile_registered_scope "$spend_config" "$DATA" "$ID")
+    fi
+    SM_PLAN=$(fm_spend_profile_secondmate_plan "$spend_config" "$ID" "$sm_scope" "" "" \
+      "$(fm_meta_get "$META" profile)" "$(fm_meta_get "$META" captain_override)") || return 1
+    if [ -n "$SM_PLAN" ]; then
+      CONFIG_HARNESS=$(printf '%s' "$SM_PLAN" | cut -f2)
+      CONFIG_MODEL=$(printf '%s' "$SM_PLAN" | cut -f3)
+      CONFIG_EFFORT=$(printf '%s' "$SM_PLAN" | cut -f4)
+    fi
   fi
   if [ "$HARNESS_SET" = 1 ]; then
     fm_control_harness_supported "$NEW_HARNESS" \
@@ -858,9 +898,8 @@ resolve_relaunch_profile() {
   # The launch owner applies this home's worker account pin too, but only after
   # the old agent has been stopped, so a pin that no longer resolves or is
   # signed out must refuse here, while nothing has changed yet.
-  local account_model=$TARGET_MODEL spend_config spend_selection
+  local account_model=$TARGET_MODEL spend_selection
   [ "$account_model" != default ] || account_model=
-  spend_config=${FM_CONFIG_OVERRIDE:-$FM_HOME/config}
   # The spend profile (bin/fm-spend-profile-lib.sh) is part of the same
   # decision: the task keeps the profile it was recorded under, and its account
   # replaces config/pi-account for the check below.
@@ -871,6 +910,10 @@ resolve_relaunch_profile() {
       "" "" "$(fm_meta_get "$META" profile)" "$(fm_meta_get "$META" captain_override)" \
       "$TARGET_HARNESS" "$account_model" "") || return 1
     [ -z "$spend_selection" ] || FM_WORKER_ACCOUNT_PROFILE_PIN=${spend_selection#*$'\t'}
+  elif [ -n "$SM_PLAN" ]; then
+    spend_selection=$(fm_spend_profile_guard "$spend_config" "$(printf '%s' "$SM_PLAN" | cut -f1)" \
+      "secondmate '$ID'" "$(printf '%s' "$SM_PLAN" | cut -f5-)" "$TARGET_HARNESS" "$account_model" "") || return 1
+    FM_WORKER_ACCOUNT_PROFILE_PIN=${spend_selection#*$'\t'}
   fi
   fm_worker_account_select "$TARGET_HARNESS" "$spend_config" \
     "$account_model" "$TARGET_HARNESS" >/dev/null || return 1
@@ -1024,6 +1067,7 @@ do_relaunch() {
   spawn_args=("$ID" --relaunch --harness "$TARGET_HARNESS")
   [ "$TARGET_MODEL" = default ] || spawn_args+=(--model "$TARGET_MODEL")
   [ "$TARGET_EFFORT" = default ] || spawn_args+=(--effort "$TARGET_EFFORT")
+  [ "$SCOPE_PROFILE_SET" = 0 ] || spawn_args+=(--scope-profile "$SCOPE_PROFILE_ARG")
   if FM_CONTROL_RELAUNCH_TX="$RELAUNCH_TX" \
       "$SCRIPT_DIR/fm-spawn.sh" "${spawn_args[@]}" >/dev/null; then
     RELAUNCH_META_PUBLISHED=1

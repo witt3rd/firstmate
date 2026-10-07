@@ -797,7 +797,7 @@ A bare `<harness>` preserves the previous behavior: harness only, with no model 
 When the harness token is absent or `default`, secondmate launch falls back through `config/crew-harness` and then the primary's own harness, and no model or effort is read from that file.
 
 `fm-harness.sh secondmate-model` and `fm-harness.sh secondmate-effort` expose only the optional tokens from `config/secondmate-harness`; `config/crew-harness` remains a bare adapter-name file.
-Changing this pin affects the next secondmate spawn or control-plane relaunch; the relaunch profile rules are owned by [`docs/agent-control.md`](agent-control.md#transactional-relaunch).
+Changing this pin affects the next secondmate spawn or control-plane relaunch, unless the mate's scope maps to one [spend profile](#spend-profiles-spend_profiles-in-configcrew-dispatchjson), which supersedes it; the relaunch profile rules are owned by [`docs/agent-control.md`](agent-control.md#transactional-relaunch).
 
 ### Per-launch overrides and inherited defaults
 
@@ -1034,7 +1034,7 @@ Firstmate resolves the rule's profile object or array under `AGENTS.md` section 
 
 - When the file exists, `fm-spawn.sh` enforces that contract by refusing crewmate and scout spawns that lack an explicit harness (`--harness`, a positional adapter, or a raw launch command).
 - Batch spawns satisfy the same requirement with a shared `--harness`.
-- Secondmate spawns are exempt and still resolve through `config/secondmate-harness` and its optional model and effort tokens.
+- Secondmate spawns are exempt and still resolve through `config/secondmate-harness` and its optional model and effort tokens, unless the mate's registered scope maps to one [spend profile](#spend-profiles-spend_profiles-in-configcrew-dispatchjson), whose default launch replaces them.
 
 **Contract owners**
 
@@ -1196,8 +1196,20 @@ Firstmate matches rules inside the chosen profile as it does for a legacy file, 
 
 The profile's account replaces `config/pi-account` for that launch, and the existing model guard and sign-in check run against it.
 The spawn prints and records `profile=` beside `account=`.
-A secondmate spawn resolves no project profile in this version and keeps using the launching home's pin.
 `bin/fm-control.sh relaunch` repeats the same check before the old agent stops and keeps the profile the task was recorded under; it refuses when the project now maps to a different profile or the new model is outside the profile.
+
+**Secondmate launches**
+
+A persistent secondmate follows the spend profile of its registered scope instead of one project.
+When every project in its `data/secondmates.md` `projects` field maps to one profile, every launch of that mate - `fm-spawn.sh --secondmate`, recovery respawns, `bin/fm-control.sh relaunch`, and the restart pass - runs the agent on that profile's store (`PI_CODING_AGENT_DIR` from `pi_account.root`) and on the profile's `default` harness, model, and effort, which replace the `config/secondmate-harness` pin; when the `default` is an array, its first entry applies.
+An explicit `--harness`, `--model`, or `--effort` replaces its own axis, and the result must still be a candidate of the profile.
+The same guards as a worker's then run against that store: the sign-in check, the model-must-be-a-candidate check, and the `config/pi-account` agreement check, each refusing with the missing store or model named and never launching on another store.
+The spawn prints and records `profile=` and `account=` like a worker's, and a relaunch keeps the recorded profile and refuses rather than move a mate whose scope no longer maps to it.
+A mate whose projects map to different profiles, include an unmapped project, or are empty keeps the launching home's pin and the `config/secondmate-harness` pin, and records no profile.
+`--profile <name> --captain-override "<words>"` places a local mate on another profile as the captain's explicit decision, exactly as for a worker, and the recorded override survives relaunch; a remote mate takes no override in this version.
+A remote mate's scope is resolved by its parent, because the host holds no registry: the parent hands the profile to the host's launch or relaunch (`--scope-profile`), and the store must exist and be signed in at the same absolute `pi_account.root` on that host.
+The parent refuses before dispatching when a mate recorded under a profile no longer maps to one; the host reports the profile it actually ran, and the parent records that and refuses if it differs.
+The mate's own crewmates still resolve their profile from their own task's project.
 
 **Validation and day-one file**
 

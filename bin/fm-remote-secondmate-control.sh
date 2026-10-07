@@ -2,8 +2,8 @@
 # Host-local lifecycle control for the remote secondmate home selected by fm-on.
 #
 # Usage:
-#   fm-remote-secondmate-control.sh launch <id> <harness> <model|-> <effort|-> herdr [traceparent]
-#   fm-remote-secondmate-control.sh relaunch <id> <harness> <model|default|-> <effort|default|->
+#   fm-remote-secondmate-control.sh launch <id> <harness> <model|-> <effort|-> herdr [--scope-profile=<name>] [traceparent]
+#   fm-remote-secondmate-control.sh relaunch <id> <harness> <model|default|-> <effort|default|-> [--scope-profile=<name>]
 #   fm-remote-secondmate-control.sh state <id>
 #   fm-remote-secondmate-control.sh route <id>
 #   fm-remote-secondmate-control.sh send <id> <message> [fire-and-forget]
@@ -45,6 +45,13 @@
 # invoked it directly (rather than through bin/fm-remote-secondmate-relaunch.sh,
 # which reads this block to keep the parent's own record in sync) still gets
 # the confirmed identity.
+#
+# The optional --scope-profile=<name> is the spend profile (bin/fm-spend-profile-lib.sh)
+# the PARENT resolved from the mate's registered scope, because this host holds
+# no registry. The host-local spawn applies that profile's account store, which
+# must exist and be signed in on THIS host at the same absolute root, and the
+# route block reports the profile, account, and provider the endpoint actually
+# runs under so the parent records the confirmed values.
 #
 # The optional launch traceparent is the per-task W3C trace-context carrier the
 # PARENT home resolved for this secondmate; this host only delivers it to the
@@ -132,12 +139,15 @@ state_value() { # <id>; prints recovery-grade state
 }
 
 print_route() { # <id>
-  local id=$1 harness model effort traceparent
+  local id=$1 harness model effort traceparent profile account account_provider
   remote_endpoint_require "$id"
   harness=$(fm_meta_get "$REMOTE_ENDPOINT_META" harness)
   model=$(fm_meta_get "$REMOTE_ENDPOINT_META" model)
   effort=$(fm_meta_get "$REMOTE_ENDPOINT_META" effort)
   traceparent=$(fm_meta_get "$REMOTE_ENDPOINT_META" traceparent)
+  profile=$(fm_meta_get "$REMOTE_ENDPOINT_META" profile)
+  account=$(fm_meta_get "$REMOTE_ENDPOINT_META" account)
+  account_provider=$(fm_meta_get "$REMOTE_ENDPOINT_META" account_provider)
   printf 'schema=fm-remote-secondmate-control.v1\n'
   printf 'backend=%s\n' "$REMOTE_ENDPOINT_BACKEND"
   printf 'target=%s\n' "$REMOTE_ENDPOINT_TARGET"
@@ -146,6 +156,9 @@ print_route() { # <id>
   printf 'model=%s\n' "$model"
   printf 'effort=%s\n' "$effort"
   [ -z "$traceparent" ] || printf 'traceparent=%s\n' "$traceparent"
+  [ -z "$profile" ] || printf 'profile=%s\n' "$profile"
+  [ -z "$account" ] || printf 'account=%s\n' "$account"
+  [ -z "$account_provider" ] || printf 'account_provider=%s\n' "$account_provider"
 }
 
 cmd_route() {
@@ -160,8 +173,15 @@ cmd_route() {
 }
 
 cmd_launch() {
-  local id=$1 harness=$2 model=$3 effort=$4 selected_backend=$5 traceparent=${6:-}
+  local id=$1 harness=$2 model=$3 effort=$4 selected_backend=$5 traceparent='' scope_profile='' extra
   local current meta out herdr_session
+  shift 5
+  for extra in "$@"; do
+    case "$extra" in
+      --scope-profile=?*) scope_profile=${extra#--scope-profile=} ;;
+      *) traceparent=$extra ;;
+    esac
+  done
 
   validate_id "$id"
   validate_home "$id"
@@ -202,6 +222,7 @@ cmd_launch() {
   ARGS=("$id" "$TARGET_HOME" --secondmate --harness "$harness" --backend "$selected_backend")
   [ "$model" = - ] || ARGS+=(--model "$model")
   [ "$effort" = - ] || ARGS+=(--effort "$effort")
+  [ -z "$scope_profile" ] || ARGS+=(--scope-profile "$scope_profile")
   [ -z "$traceparent" ] || ARGS+=(--traceparent "$traceparent")
   if ! out=$(HERDR_SESSION="$REMOTE_HERDR_SESSION" FM_HOME="$FM_ROOT" FM_ROOT_OVERRIDE="$FM_ROOT" \
     FM_STATE_OVERRIDE="$CONTROL_STATE" FM_DATA_OVERRIDE="$CONTROL_DATA" \
@@ -232,8 +253,13 @@ cmd_launch() {
 # re-resolve it here would silently drift the mate onto another runtime. `default`
 # explicitly clears an absent parent pin; `-` remains its compatibility spelling.
 cmd_relaunch() {
-  local id=$1 harness=$2 model=$3 effort=$4
+  local id=$1 harness=$2 model=$3 effort=$4 scope_profile=
   local -a control_args
+  case "${5:-}" in
+    '') ;;
+    --scope-profile=?*) scope_profile=${5#--scope-profile=} ;;
+    *) die "unexpected relaunch argument: $5" ;;
+  esac
 
   validate_id "$id"
   validate_home "$id"
@@ -250,6 +276,7 @@ cmd_relaunch() {
   [ "$model" != - ] || model=default
   [ "$effort" != - ] || effort=default
   control_args=("$id" relaunch --harness "$harness" --model "$model" --effort "$effort")
+  [ -z "$scope_profile" ] || control_args+=(--scope-profile "$scope_profile")
   # The same launch-boundary facts cmd_launch establishes: the endpoint lives in
   # the dedicated fm-remote session, and the parent already owns both convergence
   # legs, so the host-local spawn must not re-sync or re-inherit against this
@@ -435,8 +462,8 @@ cmd_retire() {
 }
 
 case "${1:-}" in
-  launch) shift; [ "$#" -ge 5 ] && [ "$#" -le 6 ] || usage; cmd_launch "$@" ;;
-  relaunch) shift; [ "$#" -eq 4 ] || usage; cmd_relaunch "$@" ;;
+  launch) shift; [ "$#" -ge 5 ] && [ "$#" -le 7 ] || usage; cmd_launch "$@" ;;
+  relaunch) shift; [ "$#" -ge 4 ] && [ "$#" -le 5 ] || usage; cmd_relaunch "$@" ;;
   state) shift; [ "$#" -eq 1 ] || usage; validate_id "$1"; validate_home "$1"; state_value "$1" ;;
   route) shift; [ "$#" -eq 1 ] || usage; cmd_route "$1" ;;
   send) shift; [ "$#" -ge 2 ] && [ "$#" -le 3 ] || usage; cmd_send "$@" ;;

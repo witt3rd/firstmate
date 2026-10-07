@@ -22,6 +22,12 @@
 # that store may spend on (line 2). The optional doppler field is provenance for
 # people and fleet-ops; Firstmate never calls Doppler.
 #
+# A persistent secondmate resolves its profile from its registered scope
+# instead of one project (fm_spend_profile_secondmate_plan below): when every
+# project in data/secondmates.md maps to ONE profile, the mate launches on that
+# profile's store and default model, and a mixed or empty scope keeps the
+# launching home's pin.
+#
 # Resolution order for one task: a captain override (--profile with
 # --captain-override words), then the project's mapped profile, else refusal. A
 # project that is not mapped never falls back to a default profile, so no
@@ -30,6 +36,8 @@
 # harness and model must be one of the profile's candidates (every rules[].use
 # profile plus the default) unless a captain override is recorded.
 
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-secondmate-registry-lib.sh"
 # shellcheck source=bin/fm-worker-account-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-worker-account-lib.sh"
 
@@ -187,7 +195,7 @@ fm_spend_profile_normalize_root() {
 # the recorded profile and override, so a task keeps the profile it began with.
 fm_spend_profile_select() {
   local config=$1 project=$2 profile_arg=$3 override=$4 recorded=$5 recorded_override=$6 harness=$7 model=$8 raw=${9:-}
-  local rc profile mapped account root providers file_pin file_root file_providers want_providers
+  local rc profile mapped
   fm_spend_profile_active "$config"
   rc=$?
   if [ "$rc" -eq 1 ]; then
@@ -236,8 +244,22 @@ fm_spend_profile_select() {
     fi
   fi
 
+  fm_spend_profile_guard "$config" "$profile" "project '$project'" "$override" "$harness" "$model" "$raw"
+}
+
+# fm_spend_profile_guard <config-dir> <profile> <label> <override> <harness> <model> <raw-command>
+# The guards every launch under a resolved profile passes, whatever resolved the
+# profile (a task's project, or a secondmate's registered scope): the model is
+# one of the profile's candidates unless a captain override is recorded, the
+# harness can carry a per-launch account pin, a raw Pi command is refused, and
+# config/pi-account never disagrees with the profile. <label> names the subject
+# in refusals, for example "project 'cappz-core'". Prints
+# "profile<TAB>root<TAB>providers" on success and one error on refusal.
+fm_spend_profile_guard() {
+  local config=$1 profile=$2 label=$3 override=$4 harness=$5 model=$6 raw=${7:-}
+  local account root providers file_pin file_root file_providers want_providers
   if [ -z "$override" ] && ! fm_spend_profile_candidate "$config" "$profile" "$harness" "${model:-default}"; then
-    echo "error: spend profile '$profile' does not allow harness '$harness' with model '${model:-default}' for project '$project'; its candidates are the models of its own rules and default (a captain override with --profile and --captain-override is the only exception)" >&2
+    echo "error: spend profile '$profile' does not allow harness '$harness' with model '${model:-default}' for $label; its candidates are the models of its own rules and default (a captain override with --profile and --captain-override is the only exception)" >&2
     return 1
   fi
 
@@ -267,9 +289,125 @@ fm_spend_profile_select() {
     want_providers=$(printf '%s\n' "$providers" | tr ' ' '\n' | sort -u | tr '\n' ' ')
     file_providers=$(printf '%s\n' "$file_providers" | tr ' ' '\n' | sort -u | tr '\n' ' ')
     if [ "$file_root" != "$(fm_spend_profile_normalize_root "$root")" ] || [ "$file_providers" != "$want_providers" ]; then
-      echo "error: config/pi-account pins Pi workers to ${file_pin%%$'\t'*} (providers: ${file_providers% }), but spend profile '$profile' for project '$project' declares $root (providers: ${want_providers% }); refusing so one launch never has two answers about which key pays. Remove config/pi-account or make it agree" >&2
+      echo "error: config/pi-account pins Pi workers to ${file_pin%%$'\t'*} (providers: ${file_providers% }), but spend profile '$profile' for $label declares $root (providers: ${want_providers% }); refusing so one launch never has two answers about which key pays. Remove config/pi-account or make it agree" >&2
       return 1
     fi
   fi
   printf '%s\t%s\t%s\n' "$profile" "$root" "$providers"
+}
+
+# fm_spend_profile_scope <config-dir> <projects-field>
+# Prints the one profile every project of a secondmate's registered scope maps
+# to, or nothing when the scope has no projects, names a project that is not
+# mapped, or spans more than one profile. <projects-field> is the registry's
+# comma-separated projects value. The caller has run fm_spend_profile_active
+# and fm_spend_profile_validate.
+fm_spend_profile_scope() {
+  jq -r --arg csv "$2" '
+    ($csv | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $ps
+    | (.project_profiles // {}) as $map
+    | if ($ps | length) == 0 then empty
+      else ([$ps[] | ($map[.] // "")] | unique) as $u
+        | if ($u | length) == 1 and $u[0] != "" then $u[0] else empty end
+      end
+  ' "$1/crew-dispatch.json"
+}
+
+# fm_spend_profile_registered_scope <config-dir> <data-dir> <secondmate-id>
+# Prints the scope profile for a secondmate registered in this home (possibly
+# empty: none, mixed, or no spend profiles), or the single character ? when
+# this home has no registry entry for the mate, as on a remote host whose parent
+# resolved the scope instead. Always returns 0.
+fm_spend_profile_registered_scope() {
+  local config=$1 data=$2 id=$3 projects
+  if ! projects=$(secondmate_registry_field "$data/secondmates.md" "$id" projects 2>/dev/null); then
+    printf '?\n'
+    return 0
+  fi
+  fm_spend_profile_active "$config" 2>/dev/null || return 0
+  fm_spend_profile_validate "$config" 2>/dev/null || return 0
+  fm_spend_profile_scope "$config" "$projects"
+}
+
+# fm_spend_profile_default_launch <config-dir> <profile>
+# Prints "harness<TAB>model<TAB>effort" for the profile's default entry (the
+# first one when the default is an array); model and effort are empty when the
+# entry omits them.
+fm_spend_profile_default_launch() {
+  jq -r --arg n "$2" '
+    .spend_profiles[$n].default as $d
+    | (if ($d | type) == "array" then $d[0] else $d end)
+    | [.harness, (.model // ""), (.effort // "")] | join("\t")
+  ' "$1/crew-dispatch.json"
+}
+
+# fm_spend_profile_secondmate_plan <config-dir> <id> <scope> <profile-arg> <override> <recorded-profile> <recorded-override>
+# Decides which spend profile a persistent secondmate launches under. <scope> is
+# what fm_spend_profile_registered_scope printed: a profile name, empty for a
+# none-or-mixed scope, or ? when the scope is unknown here. Prints nothing and
+# returns 0 when no profile applies (a legacy home, a mixed or empty scope), so
+# the launch keeps the launching home's pin. Otherwise prints
+# "profile<TAB>harness<TAB>model<TAB>effort<TAB>override": the profile and the
+# default launch it supplies, plus the captain-override words that chose it.
+# Precedence matches fm_spend_profile_select: a recorded profile (a relaunch),
+# then --profile with a captain override, then the registered scope. A recorded
+# profile with no override must still match a known scope, so a relaunch never
+# moves a mate onto a different account. On refusal prints one error, returns 1.
+# The caller passes the printed harness and model through fm_spend_profile_guard
+# unless it replaces them with an explicit per-spawn choice.
+fm_spend_profile_secondmate_plan() {
+  local config=$1 id=$2 scope=$3 profile_arg=$4 override=$5 recorded=$6 recorded_override=$7
+  local rc profile launch
+  fm_spend_profile_active "$config"
+  rc=$?
+  if [ "$rc" -eq 1 ]; then
+    # A scope handed in by a remote mate's parent is a request too: a host that
+    # cannot read the profile table must not launch the mate on another store.
+    if [ -n "$profile_arg$recorded" ] || { [ -n "$scope" ] && [ "$scope" != '?' ]; }; then
+      echo "error: spend profile '${profile_arg:-${recorded:-$scope}}' was requested or recorded, but config/crew-dispatch.json declares no spend_profiles" >&2
+      return 1
+    fi
+    return 0
+  fi
+  [ "$rc" -eq 0 ] || return 1
+  fm_spend_profile_validate "$config" || return 1
+  if [ -n "$scope" ] && [ "$scope" != '?' ]; then
+    fm_spend_profile_exists "$config" "$scope" || {
+      echo "error: secondmate '$id' scope maps to spend profile '$scope', which config/crew-dispatch.json does not declare" >&2
+      return 1
+    }
+  fi
+
+  if [ -n "$profile_arg" ] && [ -n "$recorded" ]; then
+    echo "error: a relaunch keeps the secondmate's recorded spend profile '$recorded'; --profile cannot change it" >&2
+    return 1
+  fi
+  if [ -n "$recorded" ]; then
+    profile=$recorded
+    override=$recorded_override
+    fm_spend_profile_exists "$config" "$profile" || {
+      echo "error: secondmate '$id' is recorded under spend profile '$profile', which config/crew-dispatch.json no longer declares" >&2
+      return 1
+    }
+    if [ -z "$override" ] && [ "$scope" != '?' ] && [ "$scope" != "$profile" ]; then
+      echo "error: secondmate '$id' is recorded under spend profile '$profile', but its registered scope now maps to '${scope:-no single profile}'; refusing to relaunch it on a different account" >&2
+      return 1
+    fi
+  elif [ -n "$profile_arg" ]; then
+    if [ -z "$override" ]; then
+      echo "error: --profile needs --captain-override \"<the captain's words>\": a profile other than the secondmate's own is the captain's explicit decision" >&2
+      return 1
+    fi
+    profile=$profile_arg
+    fm_spend_profile_exists "$config" "$profile" || {
+      echo "error: spend profile '$profile' is not declared in config/crew-dispatch.json" >&2
+      return 1
+    }
+  else
+    profile=$scope
+    [ "$profile" != '?' ] || profile=
+    [ -n "$profile" ] || return 0
+  fi
+  launch=$(fm_spend_profile_default_launch "$config" "$profile") || return 1
+  printf '%s\t%s\t%s\n' "$profile" "$launch" "$override"
 }

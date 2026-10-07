@@ -494,6 +494,12 @@ case "${rargs[1]:-}" in
     printf 'harness=%s\n' "${rargs[3]}"
     printf 'model=%s\n' "${rargs[4]}"
     printf 'effort=%s\n' "${rargs[5]}"
+    case "${rargs[6]:-}" in
+      --scope-profile=*)
+        printf 'account=/srv/pi-personal\n'
+        printf 'profile=%s\n' "${rargs[6]#--scope-profile=}"
+        ;;
+    esac
     ;;
 esac
 exit 0
@@ -529,6 +535,42 @@ test_remote_mate_restarts_over_the_transport_hop() {
      -lt "$(grep -n '^fm-remote-secondmate-control.sh relaunch' "$dir/ssh.log" | head -1 | cut -d: -f1)" ] \
     || fail "the remote mate was restarted before it was asked to persist"$'\n'"$(cat "$dir/ssh.log")"
   pass "T6 a remote mate restarts through the host-local control plane over the fm-on hop"
+}
+
+# --- T6b: a remote mate's registered scope profile replaces the parent's pin ---
+# Only the parent holds the registry, so it resolves the scope's spend profile
+# and hands the host the profile's default launch plus the profile itself.
+test_remote_mate_restart_follows_its_scope_profile() {
+  local dir out rc relaunch_line
+  dir=$(new_case remote-profile)
+  setup_remote_case "$dir" sm2 ok
+  export FM_FAKE_ANSWER_STATUS="$dir/home/state/sm2.status"
+  printf 'codex big-model high\n' > "$dir/home/config/secondmate-harness"
+  cat > "$dir/home/config/crew-dispatch.json" <<'JSON'
+{
+  "spend_profiles": {
+    "personal": { "pi_account": { "root": "/srv/pi-personal", "providers": ["openrouter"] },
+      "default": { "harness": "pi", "model": "openrouter/deepseek/deepseek-v4.1-flash", "effort": "medium" } }
+  },
+  "project_profiles": { "p": "personal" }
+}
+JSON
+
+  out=$(run_restart "$dir" fm-sm2); rc=$?
+  unset FM_FAKE_ANSWER_STATUS
+
+  expect_code 0 "$rc" "a remote mate under a scope profile should restart"$'\n'"$out"
+  assert_contains "$out" "restarted: sm2 on remote-mac (pi)" "the mate should restart on the profile's harness, not the pin"
+  relaunch_line=$(grep '^fm-remote-secondmate-control.sh relaunch' "$dir/ssh.log" | head -1)
+  [ "$relaunch_line" = "fm-remote-secondmate-control.sh relaunch sm2 pi openrouter/deepseek/deepseek-v4.1-flash medium --scope-profile=personal" ] \
+    || fail "the host relaunch did not carry the scope profile and its default launch: $relaunch_line"
+  assert_grep 'profile=personal' "$dir/home/state/sm2.meta" "the parent record should carry the confirmed profile"
+
+  # A mate recorded under one profile whose scope maps to none is not moved off its account.
+  printf 'profile=work\n' >> "$dir/home/state/sm2.meta"
+  out=$(run_restart "$dir" fm-sm2); rc=$?
+  assert_not_contains "$out" "restarted: sm2" "a mate recorded under another profile must not restart on this one"
+  pass "T6b a remote mate restarts on its registered scope's profile and never moves between accounts"
 }
 
 # --- T7: an unreachable host is unknown, never a claimed reload --------------
@@ -857,6 +899,7 @@ test_refused_restart_falls_back_without_claiming_a_reload
 test_local_restart_uses_the_home_pin_and_reports_what_ran
 test_native_ultra_restart_keeps_local_and_remote_profiles
 test_remote_mate_restarts_over_the_transport_hop
+test_remote_mate_restart_follows_its_scope_profile
 test_unreachable_host_is_reported_unknown
 test_concurrent_reply_cannot_release_persist_gate
 test_persist_waits_are_polled_together

@@ -305,25 +305,140 @@ test_malformed_spend_profiles_refuse_before_launch() {
   pass "malformed spend profiles, a shared store, and an unreadable spend-profile file refuse before launch"
 }
 
-test_a_secondmate_spawn_is_exempt() {
-  local out rc sm id=sp-sm
-  new_case secondmate cappz-core
+# new_mate <case-name> <id> <projects-csv> -> sets CASE HOME_DIR WT FAKEBIN SM
+# A seeded local secondmate home registered with the given scope projects.
+new_mate() {
+  local name=$1 id=$2 projects=$3
+  new_case "$name" cappz-core
   write_dispatch "$HOME_DIR/config" "$CASE/pi-work" "$CASE/pi-personal"
-  sm="$CASE/secondmate-home"
-  mkdir -p "$sm/bin" "$sm/data" "$sm/config"
-  git init -q -b main "$sm"
-  printf '# Firstmate\n' > "$sm/AGENTS.md"
-  printf '%s\n' "$id" > "$sm/.fm-secondmate-home"
-  printf 'charter for %s\n' "$id" > "$sm/data/charter.md"
-  out=$(FM_FAKE_LAUNCH_LOG="$CASE/launch.log" \
-    fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" "$id" "$sm" --secondmate --harness pi --model "$SONNET"); rc=$?
-  expect_code 0 "$rc" "a secondmate spawn resolves no project profile in this version: $out"
-  assert_not_contains "$out" "profile=" "a secondmate spawn must report no profile"
-  out=$(FM_FAKE_LAUNCH_LOG="$CASE/launch.log" \
-    fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" "$id-2" "$sm" --secondmate --profile work --captain-override "x"); rc=$?
-  expect_code 1 "$rc" "--profile must refuse on a secondmate"
-  assert_contains "$out" "--profile applies only to ship and scout spawns" "the secondmate refusal should say why"
-  pass "a secondmate spawn is exempt from project profiles and refuses --profile"
+  SM="$CASE/secondmate-home"
+  mkdir -p "$SM/bin" "$SM/data" "$SM/config"
+  git init -q -b main "$SM"
+  printf '# Firstmate\n' > "$SM/AGENTS.md"
+  printf '%s\n' "$id" > "$SM/.fm-secondmate-home"
+  printf 'charter for %s\n' "$id" > "$SM/data/charter.md"
+  printf -- '- %s - a test mate (home: %s; scope: test scope; projects: %s; added 2026-01-01)\n' \
+    "$id" "$SM" "$projects" > "$HOME_DIR/data/secondmates.md"
+}
+
+# spawn_mate <id> [fm-spawn args...]
+spawn_mate() {
+  local id=$1
+  shift
+  : > "$CASE/launch.log"
+  FM_FAKE_LAUNCH_LOG="$CASE/launch.log" \
+    fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" "$id" "$SM" --secondmate "$@"
+}
+
+test_a_single_profile_secondmate_launches_on_that_profile() {
+  local out rc id=sp-sm
+  new_mate mate-single "$id" "cappz-core, animus"
+  # animus is mapped like cappz-core: the whole scope is personal.
+  jq '.project_profiles.animus = "personal"' "$HOME_DIR/config/crew-dispatch.json" > "$CASE/d.json" \
+    && mv "$CASE/d.json" "$HOME_DIR/config/crew-dispatch.json"
+  # The ordinary launching-home secondmate pin names the work model: the profile supersedes it.
+  printf 'pi %s\n' "$SONNET" > "$HOME_DIR/config/secondmate-harness"
+  out=$(spawn_mate "$id"); rc=$?
+  expect_code 0 "$rc" "a mate whose projects are all personal should launch: $out"
+  assert_contains "$out" "profile=personal" "the spawn should report the personal profile"
+  assert_contains "$out" "account=$CASE/pi-personal account_provider=openrouter" "the spawn should report the personal store"
+  assert_grep "profile=personal" "$HOME_DIR/state/$id.meta" "the mate record should carry the profile"
+  assert_grep "account=$CASE/pi-personal" "$HOME_DIR/state/$id.meta" "the mate record should carry the store"
+  assert_grep "model=$CHEAP" "$HOME_DIR/state/$id.meta" "the mate should run the profile's default model"
+  assert_grep "effort=medium" "$HOME_DIR/state/$id.meta" "the mate should run the profile's default effort"
+  assert_no_grep "captain_override=" "$HOME_DIR/state/$id.meta" "scope resolution records no override"
+  [ "$(cat "$CASE/pi-checks")" = "$CASE/pi-personal openrouter" ] \
+    || fail "the sign-in check should ask only the personal store: $(cat "$CASE/pi-checks")"
+  run_pane
+  assert_grep "PI_CODING_AGENT_DIR=$CASE/pi-personal" "$CASE/pi-worker" "the mate should run on the personal store"
+  assert_grep "provider openrouter" "$CASE/pi-worker" "the mate should be confined to the profile's provider"
+  assert_grep "$CHEAP" "$CASE/pi-worker" "the mate should launch the profile's model"
+
+  # An explicit per-spawn choice replaces the default but is held to the profile.
+  out=$(spawn_mate "$id" --harness pi --model "$SONNET"); rc=$?
+  expect_code 1 "$rc" "an explicit model outside the profile must refuse"
+  assert_contains "$out" "spend profile 'personal' does not allow harness 'pi' with model '$SONNET' for secondmate '$id'" \
+    "the refusal should name the profile, model, and mate"
+  [ ! -s "$CASE/launch.log" ] || fail "a refused mate launch must not start an agent"
+  out=$(spawn_mate "$id" --harness pi --model "$CHEAP" --effort low); rc=$?
+  expect_code 0 "$rc" "an explicit candidate model and effort should launch: $out"
+  assert_grep "effort=low" "$HOME_DIR/state/$id.meta" "an explicit effort wins over the profile default"
+  pass "a secondmate whose scope maps to one profile launches on its store, default model, and effort"
+}
+
+test_a_mixed_or_empty_scope_keeps_the_launching_homes_pin() {
+  local out rc id=sp-sm
+  new_mate mate-mixed "$id" "cappz-core, spire"
+  out=$(spawn_mate "$id" --harness pi --model "$SONNET"); rc=$?
+  expect_code 0 "$rc" "a mate spanning two profiles keeps today's launch: $out"
+  assert_not_contains "$out" "profile=" "a mixed scope must report no profile"
+  assert_no_grep "profile=" "$HOME_DIR/state/$id.meta" "a mixed scope must record no profile"
+  assert_no_grep "account=" "$HOME_DIR/state/$id.meta" "a mixed scope must record no account"
+  run_pane
+  assert_grep "PI_CODING_AGENT_DIR=$CASE/ambient-pi" "$CASE/pi-worker" "a mixed scope must leave the ambient store alone"
+
+  new_mate mate-unmapped "$id" "cappz-core, not-registered"
+  out=$(spawn_mate "$id" --harness pi --model "$SONNET"); rc=$?
+  expect_code 0 "$rc" "a scope with an unmapped project keeps today's launch: $out"
+  assert_not_contains "$out" "profile=" "an unmapped project means no single profile"
+
+  new_mate mate-none "$id" ""
+  out=$(spawn_mate "$id" --harness pi --model "$SONNET"); rc=$?
+  expect_code 0 "$rc" "a mate with no projects keeps today's launch: $out"
+  assert_not_contains "$out" "profile=" "a mate with no projects must report no profile"
+  assert_no_grep "profile=" "$HOME_DIR/state/$id.meta" "a mate with no projects must record no profile"
+  pass "a mate with a mixed, partly unmapped, or empty scope keeps the launching home's pin and records no profile"
+}
+
+test_a_secondmate_whose_profile_store_is_missing_is_refused() {
+  local out rc id=sp-sm
+  new_mate mate-nostore "$id" "cappz-core"
+  rm -rf "$CASE/pi-personal"
+  out=$(spawn_mate "$id"); rc=$?
+  expect_code 1 "$rc" "a mate whose profile store is missing must refuse"
+  assert_contains "$out" "$CASE/pi-personal" "the refusal should name the missing store"
+  assert_absent "$HOME_DIR/state/$id.meta" "a refused mate launch must not publish a record"
+  [ ! -s "$CASE/launch.log" ] || fail "a refused mate launch must not start an agent"
+  [ ! -e "$CASE/pi-checks" ] || ! grep -q "$CASE/pi-work" "$CASE/pi-checks" || fail "the refusal must not fall back to the work store"
+
+  mkdir -p "$CASE/pi-personal"
+  out=$(spawn_mate "$id"); rc=$?
+  expect_code 1 "$rc" "a mate whose profile store is signed out must refuse"
+  assert_absent "$HOME_DIR/state/$id.meta" "a signed-out store must not publish a record"
+  [ ! -s "$CASE/launch.log" ] || fail "a signed-out store must not start an agent"
+  pass "a mate whose profile store is missing or signed out is refused rather than launched on another store"
+}
+
+test_a_secondmate_follows_the_pi_account_and_override_rules() {
+  local out rc id=sp-sm
+  new_mate mate-guards "$id" "cappz-core"
+  printf '%s\nopenrouter\n' "$CASE/pi-work" > "$HOME_DIR/config/pi-account"
+  out=$(spawn_mate "$id"); rc=$?
+  expect_code 1 "$rc" "a pi-account that disagrees with the mate's profile must refuse"
+  assert_contains "$out" "for secondmate '$id' declares $CASE/pi-personal" "the refusal should name the mate and its store"
+  rm "$HOME_DIR/config/pi-account"
+
+  out=$(spawn_mate "$id" --profile work); rc=$?
+  expect_code 1 "$rc" "--profile without the captain's words must refuse"
+  out=$(spawn_mate "$id" --profile work --captain-override "put this mate on the work key"); rc=$?
+  expect_code 0 "$rc" "a captain override may place a mate on another profile: $out"
+  assert_contains "$out" "profile=work" "the override profile should be reported"
+  assert_grep "profile=work" "$HOME_DIR/state/$id.meta" "the record should carry the override profile"
+  assert_grep "captain_override=put this mate on the work key" "$HOME_DIR/state/$id.meta" "the record should carry the captain's words"
+  assert_grep "model=$SONNET" "$HOME_DIR/state/$id.meta" "the override profile's default model should apply"
+  assert_grep "account=$CASE/pi-work" "$HOME_DIR/state/$id.meta" "the override profile's store should apply"
+  pass "a mate keeps the pi-account agreement guard, and an explicit captain override names its profile"
+}
+
+test_a_legacy_dispatch_file_leaves_a_secondmate_unchanged() {
+  local out rc id=sp-sm
+  new_mate mate-legacy "$id" "cappz-core"
+  printf '{ "rules": [], "default": { "harness": "pi", "model": "%s" } }\n' "$SONNET" > "$HOME_DIR/config/crew-dispatch.json"
+  out=$(spawn_mate "$id" --harness pi --model "$SONNET"); rc=$?
+  expect_code 0 "$rc" "a legacy dispatch file must not change a mate launch: $out"
+  assert_not_contains "$out" "profile=" "a legacy file records no profile"
+  assert_no_grep "account=" "$HOME_DIR/state/$id.meta" "a legacy file records no account"
+  pass "a dispatch file without spend_profiles leaves a secondmate spawn unchanged"
 }
 
 test_the_day_one_example_reproduces_todays_routing() {
@@ -367,7 +482,11 @@ test_an_unmapped_project_is_refused
 test_a_captain_override_is_explicit_and_recorded
 test_a_harness_without_an_account_pin_is_refused
 test_malformed_spend_profiles_refuse_before_launch
-test_a_secondmate_spawn_is_exempt
+test_a_single_profile_secondmate_launches_on_that_profile
+test_a_mixed_or_empty_scope_keeps_the_launching_homes_pin
+test_a_secondmate_whose_profile_store_is_missing_is_refused
+test_a_secondmate_follows_the_pi_account_and_override_rules
+test_a_legacy_dispatch_file_leaves_a_secondmate_unchanged
 test_the_day_one_example_reproduces_todays_routing
 
 echo "# all fm-spend-profile tests passed"

@@ -1066,6 +1066,109 @@ test_secondmate_relaunch_ignores_invalid_configured_effort_before_stop() {
   pass "fm-control relaunch: invalid configured effort is ignored before stop"
 }
 
+# add_scoped_secondmate <case-dir> <id> <projects-csv> [recorded-profile]: a
+# running Pi secondmate registered with the given scope projects, in a home with
+# the two spend profiles of add_spend_profile_task (proj and other map to
+# personal and work), and a configured secondmate pin that names codex.
+add_scoped_secondmate() {
+  local dir=$1 id=$2 projects=$3 recorded=${4:-} home="$1/home"
+  add_spend_profile_task "$dir" "$id-seed" personal
+  rm -f "$home/state/$id-seed.meta"
+  sed -i 's/"proj": "personal"/"proj": "personal", "other": "work"/' "$home/config/crew-dispatch.json"
+  printf 'codex some-model high\n' > "$home/config/secondmate-harness"
+  mkdir -p "$home/data/$id"
+  printf '# secondmate brief\n' > "$home/data/$id/brief.md"
+  git -C "$dir/proj" worktree add --quiet --detach "$dir/smhome-$id" HEAD
+  mkdir -p "$dir/smhome-$id/state" "$dir/smhome-$id/data" "$dir/smhome-$id/bin"
+  printf '%s\n' "$id" > "$dir/smhome-$id/.fm-secondmate-home"
+  printf '# agents\n' > "$dir/smhome-$id/AGENTS.md"
+  printf -- '- %s - a test mate (home: %s; scope: test scope; projects: %s; added 2026-01-01)\n' \
+    "$id" "$dir/smhome-$id" "$projects" > "$home/data/secondmates.md"
+  {
+    echo "window=fmses:fm-$id"
+    echo "endpoint_task_id=$id"
+    echo "worktree=$dir/smhome-$id"
+    echo "project=$dir/smhome-$id"
+    echo "harness=pi"
+    echo "kind=secondmate"
+    echo "mode=secondmate"
+    echo "yolo=off"
+    echo "model=default"
+    echo "effort=default"
+    echo "home=$dir/smhome-$id"
+    [ -z "$recorded" ] || echo "profile=$recorded"
+  } > "$home/state/$id.meta"
+  printf '%s\n' "fm-$id" > "$dir/fake/windows"
+  printf '%s' "$dir/smhome-$id" > "$dir/fake/cwd"
+  printf 'pi' > "$dir/fake/command"
+  printf 'pi' > "$dir/fake/becomes"
+}
+
+test_secondmate_relaunch_follows_its_scope_profile() {
+  local dir out rc id=sm-scope
+  dir=$(new_case smscope "$id")
+  add_scoped_secondmate "$dir" "$id" "proj"
+  out=$(run_control "$dir" "$id" relaunch); rc=$?
+  expect_code 0 "$rc" "a mate whose scope is one profile should relaunch on it"$'\n'"$out"
+  [ "$(journal_field "$dir" "$id" to_harness)" = pi ] \
+    || fail "the profile's harness should replace the configured secondmate pin, got '$(journal_field "$dir" "$id" to_harness)'"
+  [ "$(journal_field "$dir" "$id" to_model)" = openrouter/deepseek/deepseek-v4.1-flash ] \
+    || fail "the profile's default model should replace the configured pin"
+  [ "$(meta_field "$dir" "$id" profile)" = personal ] || fail "the relaunched mate record should carry its profile"
+  [ "$(meta_field "$dir" "$id" account)" = "$dir/pi-personal" ] || fail "the relaunched mate record should carry the profile's store"
+  assert_contains "$(cat "$dir/fake/literal")" "PI_CODING_AGENT_DIR='$dir/pi-personal'" \
+    "the replacement mate should launch on the profile's store"
+  [ -s "$dir/pi-personal/checked" ] && [ ! -e "$dir/pi-work/checked" ] \
+    || fail "the relaunch sign-in check should ask only the personal store"
+
+  # A recorded profile survives a second relaunch, and an explicit model outside it refuses before the stop.
+  cp "$dir/home/state/$id.meta" "$dir/meta-before"
+  : > "$dir/fake/literal"
+  out=$(run_control "$dir" "$id" relaunch --model openrouter/anthropic/claude-opus-5.5); rc=$?
+  expect_code 1 "$rc" "an explicit model outside the mate's profile must refuse"
+  assert_contains "$out" "spend profile 'personal' does not allow harness 'pi' with model 'openrouter/anthropic/claude-opus-5.5' for secondmate '$id'" \
+    "the refusal should name the profile, model, and mate"
+  [ "$(cat "$dir/fake/command")" = pi ] && [ ! -s "$dir/fake/literal" ] || fail "the refusal must come before the running mate stops"
+  cmp -s "$dir/meta-before" "$dir/home/state/$id.meta" || fail "a refused relaunch must leave the mate record untouched"
+  pass "fm-control relaunch: a secondmate relaunches on its registered scope's profile and holds explicit choices to it"
+}
+
+test_secondmate_relaunch_with_a_mixed_scope_keeps_the_configured_pin() {
+  local dir out rc id=sm-mixed
+  dir=$(new_case smmixed "$id")
+  add_scoped_secondmate "$dir" "$id" "proj, other"
+  printf 'codex' > "$dir/fake/becomes"
+  out=$(run_control "$dir" "$id" relaunch); rc=$?
+  expect_code 0 "$rc" "a mate spanning two profiles should relaunch as before"$'\n'"$out"
+  [ "$(journal_field "$dir" "$id" to_harness)" = codex ] \
+    || fail "a mixed scope must keep the configured secondmate pin"
+  assert_no_grep "profile=" "$dir/home/state/$id.meta" "a mixed scope records no profile"
+  assert_not_contains "$(cat "$dir/fake/literal")" "PI_CODING_AGENT_DIR" "a mixed scope launches on no pinned store"
+  pass "fm-control relaunch: a mixed-scope secondmate keeps the configured pin and no profile"
+}
+
+test_secondmate_relaunch_refuses_before_stop_when_its_store_or_scope_is_wrong() {
+  local dir out rc id=sm-bad
+  dir=$(new_case smbad "$id")
+  add_scoped_secondmate "$dir" "$id" "proj"
+  rm -rf "$dir/pi-personal"
+  cp "$dir/home/state/$id.meta" "$dir/meta-before"
+  out=$(run_control "$dir" "$id" relaunch); rc=$?
+  expect_code 1 "$rc" "a mate whose profile store is missing must refuse"
+  assert_contains "$out" "$dir/pi-personal" "the refusal should name the missing store"
+  [ "$(cat "$dir/fake/command")" = pi ] && [ ! -s "$dir/fake/literal" ] || fail "the refusal must come before the running mate stops"
+  cmp -s "$dir/meta-before" "$dir/home/state/$id.meta" || fail "a refused relaunch must leave the mate record untouched"
+
+  dir=$(new_case smmoved sm-moved)
+  add_scoped_secondmate "$dir" sm-moved "other" personal
+  out=$(run_control "$dir" sm-moved relaunch); rc=$?
+  expect_code 1 "$rc" "a mate recorded under personal whose scope now maps to work must refuse"
+  assert_contains "$out" "now maps to 'work'; refusing to relaunch it on a different account" \
+    "the refusal should say the scope moved profiles"
+  [ "$(cat "$dir/fake/command")" = pi ] && [ ! -s "$dir/fake/literal" ] || fail "the refusal must come before the running mate stops"
+  pass "fm-control relaunch: a mate never moves to another account, and a missing store refuses before the stop"
+}
+
 # muse is a verified adapter, but only for crewmates and scouts: it has no
 # primary supervision protocol, so bin/fm-spawn.sh refuses it for a secondmate.
 # That refusal alone is not enough here, because the launch owner is reached
@@ -2512,6 +2615,9 @@ test_prior_harness_turnend_registry_entry_is_cleared
 test_wiring_removal_failure_refuses_before_replacement_arm
 test_turnend_auth_paths_are_owned_by_the_control_adapter
 test_secondmate_relaunch_picks_up_the_configured_harness_pin
+test_secondmate_relaunch_follows_its_scope_profile
+test_secondmate_relaunch_with_a_mixed_scope_keeps_the_configured_pin
+test_secondmate_relaunch_refuses_before_stop_when_its_store_or_scope_is_wrong
 test_secondmate_relaunch_ignores_invalid_configured_effort_before_stop
 test_secondmate_relaunch_onto_a_crewmate_only_adapter_refuses_before_stop
 test_explicit_secondmate_harness_ignores_configured_profile_axes

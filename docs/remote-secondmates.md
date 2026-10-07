@@ -629,6 +629,7 @@ It passes them explicitly because `config/secondmate-harness` is not inherited i
 Letting the far side re-resolve it would silently move the mate onto another runtime.
 SSH exit 255 leaves completion unknown and the route preserved, exactly as every other verb here.
 Move a live remote second mate onto a newly pinned harness, model, or effort with [`bin/fm-remote-secondmate-relaunch.sh`](../bin/fm-remote-secondmate-relaunch.sh) rather than calling `relaunch` through `fm-on.sh` directly: the host-local relaunch it drives can only rewrite the host's own endpoint record, so this wrapper reads the confirmed identity back from that record afterward and republishes the primary's own route metadata to match, the same way launch already records a fresh route.
+When the mate's registered scope maps to one [spend profile](configuration.md#spend-profiles-spend_profiles-in-configcrew-dispatchjson), the primary resolves it, because the host holds no registry, and the host launches or relaunches on that profile's store at the same absolute root path and reports the profile it ran, which the primary records; the restart pass passes it as the wrapper's optional fifth argument.
 
 ### Firstmate code convergence
 

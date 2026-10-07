@@ -94,6 +94,10 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-secondmate-nudge-lib.sh"
 # shellcheck source=bin/fm-pending-reply-lib.sh
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
+# shellcheck source=bin/fm-spend-profile-lib.sh
+. "$SCRIPT_DIR/fm-spend-profile-lib.sh"
+CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 PERSIST_WAIT=${FM_SECONDMATE_PERSIST_WAIT:-900}
 PERSIST_POLL=${FM_SECONDMATE_PERSIST_POLL:-5}
@@ -128,6 +132,7 @@ HOST=()
 HARNESS=()
 MODEL=()
 EFFORT=()
+SCOPE_PROFILE=()
 RESTART_PID=()
 RESTART_RESULT=()
 
@@ -168,7 +173,7 @@ restart_mate() {  # <array-index>
   if [ "${PLACEMENT[i]}" = remote ]; then
     restart_out=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
       "$SCRIPT_DIR/fm-remote-secondmate-relaunch.sh" \
-      "$id" "${HARNESS[i]}" "${MODEL[i]:-default}" "${EFFORT[i]:-default}" < /dev/null 2>&1)
+      "$id" "${HARNESS[i]}" "${MODEL[i]:-default}" "${EFFORT[i]:-default}" "${SCOPE_PROFILE[i]:-}" < /dev/null 2>&1)
     restart_rc=$?
   else
     restart_out=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
@@ -259,6 +264,7 @@ while [ "$i" -lt "${#IDS[@]}" ]; do
   HARNESS[i]=""
   MODEL[i]=""
   EFFORT[i]=""
+  SCOPE_PROFILE[i]=""
   if ! fm_secondmate_restart_capable "$STATE/$id.meta"; then
     REASON[i]=$FM_SECONDMATE_RESTART_REASON
     i=$((i + 1))
@@ -282,6 +288,24 @@ while [ "$i" -lt "${#IDS[@]}" ]; do
       ''|low|medium|high|xhigh|max|ultra) ;;
       *) EFFORT[i]="" ;;
     esac
+    # The mate's registered scope may map to one spend profile, whose default
+    # harness, model, and effort replace that pin and whose account store the
+    # host applies. Only this parent holds the registry, so resolve it here and
+    # hand the profile over; a mate recorded under a profile its scope no longer
+    # maps to refuses before anything is stopped.
+    if ! plan_out=$(fm_spend_profile_secondmate_plan "$CONFIG" "$id" \
+      "$(fm_spend_profile_registered_scope "$CONFIG" "$DATA" "$id")" "" "" \
+      "$(fm_meta_get "$STATE/$id.meta" profile)" "$(fm_meta_get "$STATE/$id.meta" captain_override)" 2>&1); then
+      REASON[i]="its spend profile cannot be resolved: $(first_reported_line "$plan_out")"
+      i=$((i + 1))
+      continue
+    fi
+    if [ -n "$plan_out" ]; then
+      SCOPE_PROFILE[i]=$(printf '%s' "$plan_out" | cut -f1)
+      HARNESS[i]=$(printf '%s' "$plan_out" | cut -f2)
+      MODEL[i]=$(printf '%s' "$plan_out" | cut -f3)
+      EFFORT[i]=$(printf '%s' "$plan_out" | cut -f4)
+    fi
     if [ "${EFFORT[i]}" = ultra ] && ! "$SCRIPT_DIR/fm-harness.sh" validate-native-effort "${HARNESS[i]}" "${MODEL[i]}" "${EFFORT[i]}"; then
       REASON[i]="the configured Ultra profile does not select native Codex through Pi"
       i=$((i + 1))

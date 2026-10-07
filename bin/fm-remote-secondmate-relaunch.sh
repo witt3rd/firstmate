@@ -2,7 +2,7 @@
 # Relaunch a REMOTE secondmate onto a new harness, model, or effort, then
 # republish this parent's own route record to match what the host confirmed.
 #
-# Usage: fm-remote-secondmate-relaunch.sh <id> <harness> <model|default|-> <effort|default|->
+# Usage: fm-remote-secondmate-relaunch.sh <id> <harness> <model|default|-> <effort|default|-> [<scope-profile>]
 #
 # bin/fm-remote-secondmate-control.sh's relaunch verb runs entirely on the
 # secondmate's own host and can only rewrite that host's own endpoint record;
@@ -18,6 +18,13 @@
 # already uses when it first records a remote route - and republishes this
 # home's own metadata to match. A failed or refused relaunch leaves this
 # parent's record untouched.
+#
+# <scope-profile> is the spend profile (bin/fm-spend-profile-lib.sh) the mate's
+# registered scope maps to, which only this parent can resolve because the host
+# holds no registry. It is handed to the host's relaunch, and the profile,
+# account, and provider the host confirms are republished here with the
+# harness, model, and effort, so this record never claims a store the endpoint
+# does not run on.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,11 +40,13 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '2,4p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
-[ "$#" -eq 4 ] || usage
+[ "$#" -ge 4 ] && [ "$#" -le 5 ] || usage
 ID=$1
 HARNESS=$2
 MODEL=$3
 EFFORT=$4
+SCOPE_PROFILE=${5:-}
+case "$SCOPE_PROFILE" in *[!a-z0-9-]*) die "invalid scope profile: $SCOPE_PROFILE" ;; esac
 case "$ID" in ''|*[!A-Za-z0-9._-]*) die "invalid secondmate id: $ID" ;; esac
 
 META="$STATE/$ID.meta"
@@ -46,8 +55,16 @@ REMOTE_HOST=$(fm_meta_get "$META" remote_host)
 [ -n "$REMOTE_HOST" ] \
   || die "task $ID is not a remotely placed secondmate; use bin/fm-control.sh $ID relaunch instead"
 
+RECORDED_PROFILE=$(fm_meta_get "$META" profile)
+RECORDED_OVERRIDE=$(fm_meta_get "$META" captain_override)
+if [ -z "$SCOPE_PROFILE" ] && [ -n "$RECORDED_PROFILE" ] && [ -z "$RECORDED_OVERRIDE" ]; then
+  die "secondmate $ID is recorded under spend profile '$RECORDED_PROFILE', but its registered scope no longer maps to a single profile; refusing to relaunch it on a different account"
+fi
+
+RELAUNCH_ARGS=("$ID" "$HARNESS" "$MODEL" "$EFFORT")
+[ -z "$SCOPE_PROFILE" ] || RELAUNCH_ARGS+=("--scope-profile=$SCOPE_PROFILE")
 RELAUNCH_OUT=$("$SCRIPT_DIR/fm-on.sh" "$ID" fm-remote-secondmate-control.sh \
-  relaunch "$ID" "$HARNESS" "$MODEL" "$EFFORT" </dev/null 2>&1) || {
+  relaunch "${RELAUNCH_ARGS[@]}" </dev/null 2>&1) || {
   rc=$?
   printf '%s\n' "$RELAUNCH_OUT" >&2
   exit "$rc"
@@ -66,6 +83,11 @@ NEW_HARNESS=$(printf '%s\n' "$RELAUNCH_OUT" | sed -n 's/^harness=//p' | tail -1)
 NEW_MODEL=$(printf '%s\n' "$RELAUNCH_OUT" | sed -n 's/^model=//p' | tail -1)
 NEW_EFFORT=$(printf '%s\n' "$RELAUNCH_OUT" | sed -n 's/^effort=//p' | tail -1)
 [ -n "$NEW_HARNESS" ] || die "the host's route confirmation carried no harness to record"
+NEW_PROFILE=$(printf '%s\n' "$RELAUNCH_OUT" | sed -n 's/^profile=//p' | tail -1)
+NEW_ACCOUNT=$(printf '%s\n' "$RELAUNCH_OUT" | sed -n 's/^account=//p' | tail -1)
+NEW_ACCOUNT_PROVIDER=$(printf '%s\n' "$RELAUNCH_OUT" | sed -n 's/^account_provider=//p' | tail -1)
+[ -n "$RECORDED_OVERRIDE" ] || [ "$NEW_PROFILE" = "$SCOPE_PROFILE" ] \
+  || die "the host relaunched $ID under spend profile '${NEW_PROFILE:-none}', but its registered scope resolves to '${SCOPE_PROFILE:-none}'; the route record is left as it was, so reconcile the host before another relaunch"
 
 META_LOCK=$(fm_meta_lock_path "$META") || die "metadata lock path is invalid for $ID"
 fm_lock_acquire_wait "$META_LOCK"
@@ -77,6 +99,9 @@ META_TMP=$(mktemp "$STATE/.fm-remote-relaunch-meta.XXXXXX") || {
   printf 'harness=%s\n' "$NEW_HARNESS"
   printf 'model=%s\n' "$NEW_MODEL"
   printf 'effort=%s\n' "$NEW_EFFORT"
+  [ -z "$NEW_ACCOUNT" ] || printf 'account=%s\n' "$NEW_ACCOUNT"
+  [ -z "$NEW_PROFILE" ] || printf 'profile=%s\n' "$NEW_PROFILE"
+  [ -z "$NEW_ACCOUNT_PROVIDER" ] || printf 'account_provider=%s\n' "$NEW_ACCOUNT_PROVIDER"
 } >> "$META_TMP"
 # Every other line is preserved in its original relative order after the
 # refreshed harness/model/effort. A pr= line's own identity block (pr_head=
@@ -86,7 +111,7 @@ META_TMP=$(mktemp "$STATE/.fm-remote-relaunch-meta.XXXXXX") || {
 # a task that already had one armed.
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
-    harness=*|model=*|effort=*) ;;
+    harness=*|model=*|effort=*|account=*|profile=*|account_provider=*) ;;
     *) printf '%s\n' "$line" >> "$META_TMP" ;;
   esac
 done < "$META"
