@@ -1,0 +1,33 @@
+== fm-spend-profile
+ok - a mate keeps the pi-account agreement guard, and an explicit captain override names its profile
+ok - a dispatch file without spend_profiles leaves a secondmate spawn unchanged
+ok - the day-one example maps work, personal, and unmapped projects as today's routing requires
+# all fm-spend-profile tests passed
+== fm-remote-secondmate-spend-profile
+rm: cannot remove '/tmp/fm-remote-spend-profile.v18ltC/remote-home/state/parent-route/ios.git-hooks/post-applypatch': Permission denied
+rm: cannot remove '/tmp/fm-remote-spend-profile.v18ltC/remote-home/state/parent-route/ios.git-hooks/pre-applypatch': Permission denied
+rm: cannot remove '/tmp/fm-remote-spend-profile.v18ltC/remote-home/state/parent-route/ios.git-hooks/applypatch-msg': Permission denied
+rm: cannot remove '/tmp/fm-remote-spend-profile.v18ltC/remote-home/state/parent-route/ios.git-hooks/commit-msg': Permission denied
+== fm-remote-secondmate-relaunch
+ok - a refused remote relaunch leaves the parent's record untouched
+ok - a local secondmate is refused by the remote relaunch tool
+ok - a remote relaunch keeps an already-armed PR poll authenticating
+ALL TESTS PASSED
+== fm-control-relaunch
+rm: cannot remove '/tmp/fm-control-relaunch.I1EGDM/same-27311/home/state/rl1.git-hooks/post-applypatch': Permission denied
+rm: cannot remove '/tmp/fm-control-relaunch.I1EGDM/same-27311/home/state/rl1.git-hooks/pre-applypatch': Permission denied
+rm: cannot remove '/tmp/fm-control-relaunch.I1EGDM/same-27311/home/state/rl1.git-hooks/applypatch-msg': Permission denied
+rm: cannot remove '/tmp/fm-control-relaunch.I1EGDM/same-27311/home/state/rl1.git-hooks/commit-msg': Permission denied
+== fm-secondmate-restart
+rm: cannot remove '/tmp/fm-secondmate-restart.zGZNQE/order-31773/home/state/sm1.git-hooks/post-applypatch': Permission denied
+rm: cannot remove '/tmp/fm-secondmate-restart.zGZNQE/order-31773/home/state/sm1.git-hooks/pre-applypatch': Permission denied
+rm: cannot remove '/tmp/fm-secondmate-restart.zGZNQE/order-31773/home/state/sm1.git-hooks/applypatch-msg': Permission denied
+rm: cannot remove '/tmp/fm-secondmate-restart.zGZNQE/order-31773/home/state/sm1.git-hooks/commit-msg': Permission denied
+== fm-remote-secondmate-spend-profile
+rc=0
+ALL TESTS PASSED
+== fm-control-relaunch
+rc=0
+== fm-secondmate-restart
+rc=0
+# all fm-secondmate-restart tests passed
