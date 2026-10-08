@@ -1,0 +1,2 @@
+fm-crew-state: ignoring inherited FM_CREW_STATE_META_OVERRIDE/FM_CREW_STATE_STATUS_OVERRIDE (no FM_CREW_STATE_OVERRIDE_CALL=a marker); reading live state for a
+state: unknown · source: none · worktree gone (torn down?)
