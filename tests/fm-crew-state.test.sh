@@ -2394,10 +2394,44 @@ test_merged_pr_reads_done_under_captured_meta() {
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" merged
-  out=$(FM_CREW_STATE_META_OVERRIDE="$d/captured/merged.meta" run_crew_state "$d" merged)
+  out=$(FM_CREW_STATE_OVERRIDE_CALL=merged FM_CREW_STATE_META_OVERRIDE="$d/captured/merged.meta" run_crew_state "$d" merged)
   assert_contains "$out" "state: done" "recorded merged PR must read done under a captured meta"
   assert_not_contains "$out" "state: blocked" "merge marker must be read from the live state dir"
   pass "recorded merged PR reads done under the fleet snapshot's captured meta"
+}
+
+# The capture overrides are call-scoped. A copy inherited without the
+# FM_CREW_STATE_OVERRIDE_CALL marker for the asked task (the leak seen in
+# long-lived server and agent shells) must never make crew-state answer for the
+# task the capture belongs to: it is ignored loudly and live state is read.
+test_inherited_capture_override_is_ignored_loudly() {
+  reset_fakes
+  local d out err
+  d=$(new_case leaked-override)
+  make_repo_on_branch "$d/wt-mine" fm/mine
+  make_repo_on_branch "$d/wt-other" fm/other
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/mine.meta" "window=fm:fm-mine" "worktree=$d/wt-mine" "kind=ship" "harness=claude"
+  printf 'blocked: mine is the task that was asked for\n' > "$d/state/mine.status"
+  fm_write_meta "$d/state/other.meta" "window=fm:fm-other" "worktree=$d/wt-other" "kind=ship" "harness=claude"
+  printf 'paused: other is another task entirely\n' > "$d/state/other.status"
+  mkdir -p "$d/captured"
+  cp "$d/state/other.meta" "$d/captured/other.meta"
+  cp "$d/state/other.status" "$d/captured/other.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" mine
+  err="$d/stderr"
+  out=$(FM_CREW_STATE_META_OVERRIDE="$d/captured/other.meta" FM_CREW_STATE_STATUS_OVERRIDE="$d/captured/other.status" \
+    run_crew_state "$d" mine 2>"$err")
+  assert_contains "$out" "state: blocked" "an inherited override must not make crew-state answer for the other task"
+  assert_not_contains "$out" "state: paused" "the leaked capture's task must not be reported"
+  assert_contains "$(cat "$err")" "ignoring inherited FM_CREW_STATE_META_OVERRIDE" "ignoring the override must be loud"
+  # A marker naming a different task is no authorisation either.
+  out=$(FM_CREW_STATE_OVERRIDE_CALL=other FM_CREW_STATE_META_OVERRIDE="$d/captured/other.meta" \
+    FM_CREW_STATE_STATUS_OVERRIDE="$d/captured/other.status" run_crew_state "$d" mine 2>/dev/null)
+  assert_contains "$out" "state: blocked" "a marker for another task does not authorise the override"
+  pass "an inherited capture override is ignored loudly and live state answers"
 }
 
 test_no_mistakes_prevalidation_done_stays_done() {
@@ -5576,6 +5610,7 @@ test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status
 test_other_branch_run_ignored
 test_unpushed_ship_done_is_blocked
 test_merged_pr_reads_done_under_captured_meta
+test_inherited_capture_override_is_ignored_loudly
 test_no_mistakes_prevalidation_done_stays_done
 test_moved_remote_branch_without_named_head_is_blocked
 test_no_run_busy_pane

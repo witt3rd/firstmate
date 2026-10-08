@@ -329,6 +329,7 @@ crew_state_json() {  # <id> [<captured-meta>] [<captured-status>]
       env FM_ROOT_OVERRIDE="$FM_ROOT" \
       FM_HOME="$FM_HOME" \
       FM_STATE_OVERRIDE="$STATE" \
+      FM_CREW_STATE_OVERRIDE_CALL="$id" \
       FM_CREW_STATE_META_OVERRIDE="$captured_meta" \
       FM_CREW_STATE_STATUS_OVERRIDE="$captured_status" \
       FM_DATA_OVERRIDE="$DATA" \

@@ -189,8 +189,23 @@ ID=${1:-}
 
 # Fleet snapshot composition supplies its captured metadata path here so every
 # state read resolves the same task generation selected by that snapshot.
-META=${FM_CREW_STATE_META_OVERRIDE:-"$STATE/$ID.meta"}
-LOG=${FM_CREW_STATE_STATUS_OVERRIDE:-"$STATE/$ID.status"}
+# The override applies only to a call that names its own task in
+# FM_CREW_STATE_OVERRIDE_CALL (bin/fm-fleet-snapshot.sh sets it per call).
+# An override inherited without that marker - for example from a long-lived
+# server or shell that once ran a snapshot - would silently answer for another
+# task, so it is ignored loudly and the live state/<id>.* records are read.
+META="$STATE/$ID.meta"
+LOG="$STATE/$ID.status"
+if [ -n "${FM_CREW_STATE_META_OVERRIDE:-}${FM_CREW_STATE_STATUS_OVERRIDE:-}" ]; then
+  if [ "${FM_CREW_STATE_OVERRIDE_CALL:-}" = "$ID" ]; then
+    META=${FM_CREW_STATE_META_OVERRIDE:-$META}
+    LOG=${FM_CREW_STATE_STATUS_OVERRIDE:-$LOG}
+  else
+    echo "fm-crew-state: ignoring inherited FM_CREW_STATE_META_OVERRIDE/FM_CREW_STATE_STATUS_OVERRIDE (no FM_CREW_STATE_OVERRIDE_CALL=$ID marker); reading live state for $ID" >&2
+  fi
+fi
+# Never pass the capture selection on to the helpers this script launches.
+unset FM_CREW_STATE_META_OVERRIDE FM_CREW_STATE_STATUS_OVERRIDE FM_CREW_STATE_OVERRIDE_CALL
 NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
 case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
 # How many of the most recent `no-mistakes runs` rows each ledger read
