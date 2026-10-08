@@ -613,7 +613,7 @@ EOF
 # outcomes a later drain would present again.
 print_branch_outcomes_section() {
   local config rows through captain routine line seq task task_line target i
-  local text='' used=0 shown=0 held=0 bytes item_bytes=600 captain_bytes=4000 routine_bytes=2000
+  local text='' used=0 shown=0 held=0 bytes captain_bytes=4000 routine_bytes=2000
   local routine_lines='' routine_count=0 routine_shown=0
   local -a captain_tasks=() captain_lines=() captain_line_bytes=()
   [ "$ACTOR" = main ] || return 0
@@ -651,12 +651,12 @@ print_branch_outcomes_section() {
       held=$((held + 1))
       continue
     fi
-    cap_outcome_line "$task_line" $((item_bytes - 1))
+    fold_outcome_line "$task_line"
     i=0
     while [ "$i" -lt "$shown" ] && [ "${captain_tasks[$i]}" != "$task" ]; do i=$((i + 1)); done
     bytes=$(( used + OUTCOME_LINE_BYTES + 1 ))
     [ "$i" -eq "$shown" ] || bytes=$(( bytes - captain_line_bytes[i] - 1 ))
-    if [ "$bytes" -gt "$captain_bytes" ]; then
+    if [ "$bytes" -gt "$captain_bytes" ] && [ "$shown" -gt 0 ]; then
       held=1
       continue
     fi
@@ -692,7 +692,7 @@ ROWS
   # Newest first against the cap, printed oldest first.
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    cap_outcome_line "$line" $((item_bytes - 1))
+    fold_outcome_line "$line"
     bytes=$(( OUTCOME_LINE_BYTES + 1 ))
     [ $((used + bytes)) -le "$routine_bytes" ] || break
     routine_lines="$OUTCOME_LINE
@@ -719,31 +719,13 @@ ROWS
   fi
 }
 
-# BRANCH OUTCOMES' per-item cut: the shared digest marker in place of the
-# tail once the line passes <max> bytes, cut bytewise whatever the caller's
-# locale and backed off to the last whole UTF-8 character, so a multibyte
-# summary keeps the section inside its byte budgets and stays valid text. Sets
-# OUTCOME_LINE and OUTCOME_LINE_BYTES.
-cap_outcome_line() {  # <line> <max-bytes>
-  local LC_ALL=C line=$1 max=$2 keep body tail rest need
-  if [ "${#line}" -le "$max" ]; then
-    OUTCOME_LINE=$line
-    OUTCOME_LINE_BYTES=${#line}
-    return 0
-  fi
-  keep=$((max - ${#FM_LINE_CAP_SUFFIX}))
-  [ "$keep" -ge 0 ] || keep=0
-  body=${line:0:keep}
-  tail=${body##*[!$'\x80'-$'\xbf']}
-  rest=${body%"$tail"}
-  case "${rest: -1}" in
-    [$'\xc0'-$'\xdf']) need=1 ;;
-    [$'\xe0'-$'\xef']) need=2 ;;
-    [$'\xf0'-$'\xf7']) need=3 ;;
-    *) need=0 ;;
-  esac
-  [ "${#tail}" -ge "$need" ] || body=${rest%?}
-  OUTCOME_LINE=$body$FM_LINE_CAP_SUFFIX
+# BRANCH OUTCOMES' per-item rendering: the line is folded, never clipped, so
+# only the section's byte budgets bound it. Sets OUTCOME_LINE and
+# OUTCOME_LINE_BYTES (bytes, whatever the caller's locale).
+fold_outcome_line() {  # <line>
+  fm_fold_line_var "$1"
+  local LC_ALL=C
+  OUTCOME_LINE=$FM_FOLD_LINE
   OUTCOME_LINE_BYTES=${#OUTCOME_LINE}
 }
 
