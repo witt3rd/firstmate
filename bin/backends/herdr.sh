@@ -1652,7 +1652,7 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
 # call. The server outlives its launcher and passes its startup environment to
 # every later pane, so remove home, harness identity, and supervision selection
 # inherited from whichever agent happened to start it, including a snapshot's
-# FM_CREW_STATE_* and FM_SNAPSHOT_* selections. Bounded poll for the
+# crew-state capture overrides. Bounded poll for the
 # server to report running.
 fm_backend_herdr_server_ensure() {  # <session>
   local session=$1 running out i
@@ -1662,10 +1662,8 @@ fm_backend_herdr_server_ensure() {  # <session>
     unset FM_HOME FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE \
       CURSOR_AGENT CURSOR_INVOKED_AS CLAUDECODE PI_CODING_AGENT FM_PI_HARNESS GROK_AGENT FM_SUPERVISION_MODEL
     # A snapshot-driven crew-state read (the Bridge) can be the first caller; its
-    # per-call capture selection and bounds must not become every pane's environment.
-    for name in $(compgen -e); do
-      case "$name" in FM_CREW_STATE_*|FM_SNAPSHOT_*) unset "$name" ;; esac
-    done
+    # per-call capture selection must not become every pane's environment.
+    unset FM_CREW_STATE_META_OVERRIDE FM_CREW_STATE_STATUS_OVERRIDE FM_CREW_STATE_OVERRIDE_CALL
     fm_backend_herdr_cli "$session" server >/dev/null 2>&1 &
   ) || return 1
   for i in $(seq 1 20); do

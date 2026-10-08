@@ -1210,9 +1210,11 @@ test_server_ensure_scrubs_home_and_harness_identity() {
   output=$(cat "$log")
   for name in FM_HOME FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE \
     CURSOR_AGENT CURSOR_INVOKED_AS CLAUDECODE PI_CODING_AGENT FM_PI_HARNESS GROK_AGENT FM_SUPERVISION_MODEL \
-    FM_CREW_STATE_META_OVERRIDE FM_CREW_STATE_STATUS_OVERRIDE FM_CREW_STATE_OVERRIDE_CALL FM_CREW_STATE_NO_FORGE FM_SNAPSHOT_CACHE_DIR; do
+    FM_CREW_STATE_META_OVERRIDE FM_CREW_STATE_STATUS_OVERRIDE FM_CREW_STATE_OVERRIDE_CALL; do
     assert_contains "$output" "$name=<unset>" "server_ensure leaked $name into the long-lived Herdr server"
   done
+  assert_contains "$output" "FM_CREW_STATE_NO_FORGE=1" "server_ensure removed an operator tunable"
+  assert_contains "$output" "FM_SNAPSHOT_CACHE_DIR=/tmp/wrong-cache" "server_ensure removed the snapshot cache directory"
   assert_contains "$output" "FM_HERDR_SENTINEL=kept" "server_ensure removed an unrelated environment variable"
   assert_contains "$output" "HERDR_SESSION=fmtest" "server_ensure lost explicit Herdr session routing"
   assert_contains "$output" "args=server --session fmtest" "server_ensure lost the trailing Herdr session flag"
