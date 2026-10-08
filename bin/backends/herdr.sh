@@ -1653,11 +1653,37 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
 # every later pane, so remove home, harness identity, and supervision selection
 # inherited from whichever agent happened to start it. Bounded poll for the
 # server to report running.
+#
+# The default session is served by the systemd user unit herdr-server.service
+# (override: FM_BACKEND_HERDR_SERVER_UNIT). When that unit exists the server is
+# started through `systemctl --user start`, never as a child of this shell: a
+# bare server inherits the caller's NoNewPrivs=1 (an agent pane), and every pane
+# it later spawns then fails sudo. Without the unit the bare start is a loud
+# fallback: it warns when this shell has NoNewPrivs set. Named sessions have no
+# unit and keep the bare start. FM_BACKEND_HERDR_PROC_STATUS overrides
+# /proc/self/status for tests.
 fm_backend_herdr_server_ensure() {  # <session>
-  local session=$1 running out i
+  local session=$1 running out i via_unit=0 unit nnp
+  unit=${FM_BACKEND_HERDR_SERVER_UNIT:-herdr-server.service}
   running=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null)
   [ "$running" = "true" ] && return 0
-  (
+  if [ "$session" = default ] && command -v systemctl >/dev/null 2>&1 \
+    && systemctl --user cat "$unit" >/dev/null 2>&1; then
+    systemctl --user start "$unit" >/dev/null 2>&1 || {
+      echo "error: 'systemctl --user start $unit' failed; refusing a bare herdr server, which would inherit this shell's NoNewPrivs and break sudo in every pane" >&2
+      return 1
+    }
+    via_unit=1
+  fi
+  if [ "$via_unit" -eq 0 ]; then
+    if [ "$session" = default ]; then
+      nnp=$(awk '/^NoNewPrivs:/ {print $2}' "${FM_BACKEND_HERDR_PROC_STATUS:-/proc/self/status}" 2>/dev/null)
+      if [ "$nnp" != 0 ]; then
+        echo "warning: starting the default herdr server from this shell (no $unit systemd user unit; NoNewPrivs=${nnp:-unknown}): the server and every pane it spawns inherit it and sudo will fail. Install the unit and start it with 'systemctl --user start $unit'." >&2
+      fi
+    fi
+  fi
+  [ "$via_unit" -eq 1 ] || (
     unset FM_HOME FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE \
       CURSOR_AGENT CURSOR_INVOKED_AS CLAUDECODE PI_CODING_AGENT FM_PI_HARNESS GROK_AGENT FM_SUPERVISION_MODEL
     fm_backend_herdr_cli "$session" server >/dev/null 2>&1 &

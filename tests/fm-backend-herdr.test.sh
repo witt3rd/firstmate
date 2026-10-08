@@ -1216,6 +1216,50 @@ test_server_ensure_scrubs_home_and_harness_identity() {
   pass "fm_backend_herdr_server_ensure: scrubs home and harness identity without disturbing unrelated environment or session routing"
 }
 
+test_server_ensure_default_session_uses_systemd_unit() {
+  local dir fb log marker out rc
+  dir="$TMP_ROOT/server-unit"; mkdir -p "$dir"; log="$dir/env"; marker="$dir/running"
+  fb=$(make_herdr_server_env_fakebin "$dir")
+  # systemctl stub: `cat` succeeds (unit exists), `start` records the call and
+  # marks the server running; a bare `herdr server` would write $log instead.
+  cat > "$fb/systemctl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_SYSTEMCTL_LOG"
+case "$2" in
+  cat) exit "${FM_TEST_UNIT_EXISTS:-0}" ;;
+  start) [ "${FM_TEST_START_FAILS:-0}" = 0 ] || exit 1; : > "$FM_HERDR_SERVER_MARKER" ;;
+esac
+SH
+  chmod +x "$fb/systemctl"
+  printf 'NoNewPrivs:\t1\n' > "$dir/proc-nnp1"; printf 'NoNewPrivs:\t0\n' > "$dir/proc-nnp0"
+  run_ensure() {  # extra env assignments via "$@"
+    rm -f "$marker" "$log" "$dir/sc"
+    # shellcheck disable=SC2016 # $0 must expand in the inner bash, not here
+    env PATH="$fb:$PATH" FM_HERDR_SERVER_ENV_LOG="$log" FM_HERDR_SERVER_MARKER="$marker" \
+      FM_TEST_SYSTEMCTL_LOG="$dir/sc" HERDR_SESSION=default "$@" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_server_ensure default' "$ROOT" 2>&1
+  }
+  out=$(run_ensure FM_BACKEND_HERDR_PROC_STATUS="$dir/proc-nnp1"); rc=$?
+  expect_code 0 "$rc" "server_ensure should start via the unit"
+  assert_contains "$(cat "$dir/sc")" "--user start herdr-server.service" "server_ensure did not start the unit"
+  [ ! -e "$log" ] || fail "server_ensure launched a bare server although the unit exists"
+  assert_not_contains "$out" "warning" "unit start should not warn"
+
+  out=$(run_ensure FM_TEST_START_FAILS=1 FM_BACKEND_HERDR_PROC_STATUS="$dir/proc-nnp1"); rc=$?
+  expect_code 1 "$rc" "server_ensure should refuse when the unit start fails"
+  [ ! -e "$log" ] || fail "server_ensure fell back to a bare server after the unit start failed"
+  assert_contains "$out" "refusing a bare herdr server" "unit start failure was not reported loudly"
+
+  out=$(run_ensure FM_TEST_UNIT_EXISTS=1 FM_BACKEND_HERDR_PROC_STATUS="$dir/proc-nnp1"); rc=$?
+  expect_code 0 "$rc" "no-unit fallback should still start a bare server"
+  assert_contains "$out" "NoNewPrivs=1" "bare fallback under NoNewPrivs=1 did not warn loudly"
+  [ -e "$log" ] || fail "no-unit fallback did not start a bare server"
+
+  out=$(run_ensure FM_TEST_UNIT_EXISTS=1 FM_BACKEND_HERDR_PROC_STATUS="$dir/proc-nnp0"); rc=$?
+  assert_not_contains "$out" "warning" "bare fallback without NoNewPrivs should not warn"
+  pass "fm_backend_herdr_server_ensure: default session starts via the systemd unit, refuses a bare start on unit failure, warns on the no-unit fallback"
+}
+
 test_container_ensure_reuses_existing_workspace() {
   local dir log resp fb out
   dir="$TMP_ROOT/container-reuse"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -5825,6 +5869,7 @@ test_workspace_ensure_other_home_ignores_the_launcher_identity
 test_container_ensure_refuses_an_ambiguous_home_label
 test_container_ensure_starts_server_and_workspace
 test_server_ensure_scrubs_home_and_harness_identity
+test_server_ensure_default_session_uses_systemd_unit
 test_container_ensure_reuses_existing_workspace
 test_container_ensure_creates_with_no_focus_flag
 test_container_ensure_uses_secondmate_home_label
