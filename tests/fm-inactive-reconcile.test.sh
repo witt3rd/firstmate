@@ -288,6 +288,41 @@ test_unchanged_ledgers_are_skipped_on_later_polls() {
   pass "unchanged ledgers are skipped and unreachable done: rechecks are throttled"
 }
 
+# The settled per-poll cost is a constant number of subprocesses: no stat, grep,
+# tail, or cut per child, including for a persistent secondmate child that owes
+# no ledger delivery. A poll over a few children and over many must fork alike.
+count_warm_poll_forks() { # <world-name> <children>
+  local name=$1 n=$2 i tool real
+  make_world "$name"; bind_secondmate local
+  for i in $(seq 1 "$n"); do
+    case $((i % 3)) in
+      0) write_child "$MATE" "w$i" 'working: busy' ;;
+      1) write_child "$MATE" "d$i" 'done: PR https://example.test/owner/repo/pull/3 checks green' ;;
+      2) write_child "$MATE" "m$i" 'working: delegated'
+         sed -i.bak 's/^kind=ship$/kind=secondmate/' "$MATE/state/m$i.meta"; rm -f "$MATE/state/m$i.meta.bak"
+         age "$MATE/state/m$i.meta" ;;
+    esac
+  done
+  for tool in stat grep tail cut; do
+    real=$(command -v "$tool")
+    printf '#!/usr/bin/env bash\nprintf "%s\\n" >> %q\nexec %q "$@"\n' "$tool" "$WORLD/forks.log" "$real" > "$WORLD/fakebin/$tool"
+    chmod +x "$WORLD/fakebin/$tool"
+  done
+  FM_FAKE_CREW_STATE='unknown' run_reconcile "$MATE"
+  : > "$WORLD/forks.log"
+  FM_FAKE_CREW_STATE='unknown' run_reconcile "$MATE"
+  wc -l < "$WORLD/forks.log" | tr -d ' '
+}
+
+test_warm_poll_fork_count_is_independent_of_child_count() {
+  local small large
+  small=$(count_warm_poll_forks poll-forks-small 6)
+  large=$(count_warm_poll_forks poll-forks-large 30)
+  [ "$small" -le 4 ] || fail "a warm poll over 6 children forked $small stat/grep/tail/cut processes"
+  [ "$small" = "$large" ] || fail "warm poll forks grew with children: 6 children forked $small, 30 forked $large"
+  pass "a warm poll forks a constant number of processes however many children exist"
+}
+
 # A secondmate delivers a child's terminal ledger line to the parent on the
 # very next poll, from the ledger alone: no current-state read, no inactive
 # cadence, and no line appended by the mate model. The delivery carries the
@@ -1073,6 +1108,7 @@ test_branch_ack_retires_inactive_outcome_receipt
 test_unpushed_ci_ready_done_is_not_published
 test_delivered_ledger_done_skips_git_gate
 test_unchanged_ledgers_are_skipped_on_later_polls
+test_warm_poll_fork_count_is_independent_of_child_count
 test_local_secondmate_delivers_terminal_ledger_line
 test_secondmate_multiline_terminal_outcome_is_delivered_once
 test_secondmate_unterminated_prose_reports_run_outcome
