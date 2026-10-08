@@ -474,12 +474,46 @@ report_child_ledger_locked() { # <id> <meta>
   return 1
 }
 
-# A cheap identity of the ledger inputs, with no subprocess beyond one stat.
+# A cheap identity of the ledger inputs. One stat process covers every child
+# of a poll, so the per-poll cost does not fork a process per child.
 if [ "$(uname)" = Darwin ]; then
-  ledger_sig() { /usr/bin/stat -f '%i:%m:%z' "$1" "$2" 2>/dev/null; }
+  ledger_stat_all() { /usr/bin/stat -f '%N|%i:%m:%z' "$@" 2>/dev/null; }
 else
-  ledger_sig() { stat -c '%i:%y:%s' "$1" "$2" 2>/dev/null; }
+  ledger_stat_all() { stat -c '%n|%i:%y:%s' "$@" 2>/dev/null; }
 fi
+
+# Each line lands in a variable named for its file, holding `path|identity`.
+# An unset variable means the file was absent from the poll's stat; a name
+# collision fails the path check in ledger_stat_of and falls back to a single
+# stat, so a lookup is never answered with another file's identity.
+ledger_stat_load() {
+  local name rest key
+  while IFS='|' read -r name rest; do
+    [ -n "$name" ] || continue
+    key=${name##*/}
+    printf -v "LEDGER_STAT_${key//[!A-Za-z0-9]/_}" '%s' "$name|$rest"
+  done < <(ledger_stat_all "$STATE"/*.meta "$STATE"/*.status)
+}
+
+ledger_stat_of() { # <path>; sets LEDGER_STAT, empty when the file is absent
+  local key=${1##*/} var line
+  var="LEDGER_STAT_${key//[!A-Za-z0-9]/_}"
+  line=${!var:-}
+  LEDGER_STAT=
+  case "$line" in
+    '') ;;
+    "$1|"*) LEDGER_STAT=${line#*|} ;;
+    *) LEDGER_STAT=$(ledger_stat_all "$1"); LEDGER_STAT=${LEDGER_STAT#*|} ;;
+  esac
+}
+
+ledger_sig() { # <meta> <status>; sets LEDGER_SIG, empty when neither file was statted
+  local a b
+  ledger_stat_of "$1"; a=$LEDGER_STAT
+  ledger_stat_of "$2"; b=$LEDGER_STAT
+  LEDGER_SIG=
+  [ -z "$a$b" ] || LEDGER_SIG="$a|$b"
+}
 
 # Per-child record of the last ledger evaluation: line 1 is the input identity,
 # line 2 the epoch before which an unchanged identity may be skipped (0 means
@@ -526,17 +560,22 @@ ledger_seen_record() { # <id> <sig> <settle> <now>
 ledger_pass() {
   local meta id lock sig now seen
   now=$(reconcile_now)
+  ledger_stat_load
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
     id=${meta##*/}
     id=${id%.meta}
     valid_id "$id" || continue
-    sig=$(ledger_sig "$meta" "$STATE/$id.status")
-    sig=${sig//$'\n'/|}
+    ledger_sig "$meta" "$STATE/$id.status"
+    sig=$LEDGER_SIG
     if [ -n "$sig" ] && ledger_seen_fresh "$id" "$sig" "$now"; then
       continue
     fi
-    [ "$(meta_field "$meta" kind)" != secondmate ] || continue
+    if [ "$(meta_field "$meta" kind)" = secondmate ]; then
+      # Owed nothing until the meta changes, which changes the identity.
+      ledger_seen_record "$id" "$sig" settled "$now"
+      continue
+    fi
     lock=$(fm_meta_lock_path "$meta") || continue
     fm_lock_try_acquire "$lock" || continue
     if [ ! -f "$meta" ] || [ -L "$meta" ] \
