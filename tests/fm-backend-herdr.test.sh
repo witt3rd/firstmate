@@ -1234,6 +1234,7 @@ SH
   printf 'NoNewPrivs:\t1\n' > "$dir/proc-nnp1"; printf 'NoNewPrivs:\t0\n' > "$dir/proc-nnp0"
   run_ensure() {  # extra env assignments via "$@"
     rm -f "$marker" "$log" "$dir/sc"
+    # shellcheck disable=SC2016 # $0 must expand in the inner bash, not here
     env PATH="$fb:$PATH" FM_HERDR_SERVER_ENV_LOG="$log" FM_HERDR_SERVER_MARKER="$marker" \
       FM_TEST_SYSTEMCTL_LOG="$dir/sc" HERDR_SESSION=default "$@" \
       bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_server_ensure default' "$ROOT" 2>&1
