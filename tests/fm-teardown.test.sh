@@ -4185,6 +4185,81 @@ EOF
   pass "the run abort and the leaked-process reap both complete before the destructive worktree return"
 }
 
+# Fix 4: the task's docker lane is torn down through the fleet docker guard's
+# sanctioned cleanup. A stub records its argv so the call is proven, not inferred.
+add_lane_clean_stub() {  # <case-dir> [exit-code]
+  local case_dir=$1 code=${2:-0}
+  cat > "$case_dir/fakebin/fleet-docker-lane-clean" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$case_dir/lane-clean.log"
+exit $code
+SH
+  chmod +x "$case_dir/fakebin/fleet-docker-lane-clean"
+  : > "$case_dir/lane-clean.log"
+}
+
+test_ship_teardown_cleans_docker_lane() {
+  local case_dir rc
+  case_dir=$(make_case lane-clean-ship)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  add_lane_clean_stub "$case_dir"
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "lane-clean-ship: teardown should succeed"
+  [ "$(cat "$case_dir/lane-clean.log")" = "task-x1 --apply --done" ] \
+    || fail "lane-clean-ship: lane clean not called once with the task id: $(cat "$case_dir/lane-clean.log")"
+  pass "an ordinary ship teardown cleans the task's docker lane exactly once"
+}
+
+test_refused_lane_clean_never_breaks_teardown() {
+  local case_dir rc
+  case_dir=$(make_case lane-clean-refused)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  add_lane_clean_stub "$case_dir" 3
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "lane-clean-refused: a refused lane clean must not break teardown"
+  [ -s "$case_dir/lane-clean.log" ] || fail "lane-clean-refused: lane clean was never called"
+  assert_absent "$case_dir/state/task-x1.meta" "lane-clean-refused: teardown did not finish"
+  pass "a refused lane clean never breaks teardown"
+}
+
+test_secondmate_teardown_skips_docker_lane() {
+  local case_dir rc home
+  case_dir=$(make_case lane-clean-secondmate)
+  write_meta "$case_dir" local-only secondmate
+  home="$case_dir/secondmate-home"
+  mkdir -p "$home/state" "$home/data" "$home/config" "$home/projects"
+  printf '%s\n' task-x1 > "$home/.fm-secondmate-home"
+  printf '%s\n' "home=$home" >> "$case_dir/state/task-x1.meta"
+  add_lane_clean_stub "$case_dir"
+  rc=0
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "lane-clean-secondmate: secondmate teardown did not complete (rc=$rc): $(cat "$case_dir/stderr")"
+  [ ! -s "$case_dir/lane-clean.log" ] \
+    || fail "lane-clean-secondmate: lane clean ran for a secondmate: $(cat "$case_dir/lane-clean.log")"
+  pass "a secondmate teardown never runs the docker lane clean"
+}
+
+test_absent_lane_clean_tool_is_tolerated() {
+  local case_dir rc path_without_lsof
+  case_dir=$(make_case lane-clean-absent)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  path_without_lsof=$(make_path_without_lsof "$case_dir")
+  PATH="$path_without_lsof" command -v fleet-docker-lane-clean >/dev/null 2>&1 \
+    && fail "lane-clean-absent: fixture path unexpectedly exposes the tool"
+  rc=0
+  FM_TEARDOWN_TEST_PATH="$path_without_lsof" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "lane-clean-absent: teardown should succeed without the tool: $(cat "$case_dir/stderr")"
+  assert_absent "$case_dir/state/task-x1.meta" "lane-clean-absent: teardown did not finish"
+  pass "a missing lane clean tool never breaks teardown"
+}
+
 # Copy the public teardown script tree, then drop or blank one required file.
 # Symlinks keep the copy cheap; an unreadable case replaces one link with a
 # real mode-000 file so the probe is of the file itself.
@@ -4465,3 +4540,7 @@ test_process_spawned_during_grace_is_reaped_on_later_pass
 test_persistent_scan_refuses_after_bounded_retries
 test_process_exit_during_identity_lookup_does_not_refuse
 test_run_abort_precedes_process_reap_precedes_worktree_removal
+test_ship_teardown_cleans_docker_lane
+test_refused_lane_clean_never_breaks_teardown
+test_secondmate_teardown_skips_docker_lane
+test_absent_lane_clean_tool_is_tolerated

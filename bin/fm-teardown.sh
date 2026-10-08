@@ -292,6 +292,18 @@
 #     root still exists, so the account's healthy LaunchAgent worker and every
 #     live remote secondmate worker are out of scope. Best effort: a sweep
 #     failure never blocks this teardown.
+#   Fix 4 - tear down the task's docker lane. A finished worker's containers
+#     (labelled com.fleet.lane=<task id> by the fleet docker guard) otherwise
+#     outlive it with nobody left to remove them (observed: 70 abandoned
+#     Postgres containers, 2,210 stray containers and 1.0 TB of images).
+#     `fleet-docker-lane-clean <id> --apply --done` is the guard's sanctioned
+#     cleanup and owns every safety rule (refuses running containers, never
+#     removes volumes or fleet-owned stacks); teardown is exactly the moment
+#     the lane is finished, so it passes --done. --image-prefix is deliberately
+#     not passed: the prefix only qualifies images named with --image/--images-file,
+#     and teardown names none, so it would be inert. Not for kind=secondmate.
+#     Best effort: an absent tool, a refusal, or a docker failure never blocks
+#     this teardown.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -3606,6 +3618,11 @@ fi
 # Fix 3 (see script header): sweep remote job workers abandoned by an already
 # pruned code root. Best effort - a sweep failure never blocks this teardown.
 "$SCRIPT_DIR/fm-remote-job-reap-orphans.sh" >&2 || true
+
+# Fix 4 (see script header): tear down this task's docker lane. Best effort.
+if [ "$KIND" != secondmate ] && command -v fleet-docker-lane-clean >/dev/null 2>&1; then
+  fleet-docker-lane-clean "$ID" --apply --done >/dev/null 2>&1 || true
+fi
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
