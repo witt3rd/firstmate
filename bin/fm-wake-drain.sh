@@ -327,7 +327,7 @@ EOF
 
 print_status_outcome_backstop_section() {  # <task-and-endpoint-snapshot>
   local snapshot=$1 task endpoint ident event event_endpoint line verb key receipt store lock ready
-  local output='' used=0 shown=0 omitted=0 bytes item_bytes=220 global_bytes=4000 rc=0
+  local output='' used=0 shown=0 omitted=0 bytes global_bytes=4000 rc=0
   [ "$ACTOR" = main ] || return 0
 
   store="$STATE/branch-outcomes.jsonl"
@@ -386,10 +386,10 @@ print_status_outcome_backstop_section() {  # <task-and-endpoint-snapshot>
     fi
 
     line="$task $event"
-    fm_cap_line_var "$line" $((item_bytes - 1))
-    line=$FM_LINE_CAP_LINE
+    fm_fold_line_var "$line"
+    line=$FM_FOLD_LINE
     bytes=$(( ${#line} + 1 ))
-    if [ $((used + bytes)) -gt "$global_bytes" ]; then
+    if [ "$used" -gt 0 ] && [ $((used + bytes)) -gt "$global_bytes" ]; then
       omitted=$((omitted + 1))
       continue
     fi
@@ -466,7 +466,7 @@ EOF
 # Bounded and silent: prints nothing when no decision is open, which is the
 # common case.
 print_open_decisions_section() {
-  local snapshot=${1:-} open task key verb note line item_bytes=220 global_bytes=4000
+  local snapshot=${1:-} open task key verb note line global_bytes=4000
   local output='' used=0 shown=0 omitted=0 bytes
 
   if [ -n "$snapshot" ]; then
@@ -481,13 +481,12 @@ print_open_decisions_section() {
     line="$task"
     [ "$key" = default ] || line="$line [key=$key]"
     line="$line $verb: $note"
-    # The shared cut counts the item's own characters; the trailing newline this
-    # section's global budget also pays for is this caller's, so the per-item
-    # allowance passed down is one short of the cap.
-    fm_cap_line_var "$line" $((item_bytes - 1))
-    line=$FM_LINE_CAP_LINE
+    # An item is folded across lines, never cut; the global budget drops whole
+    # items with a disclosed count, and the first item is always shown in full.
+    fm_fold_line_var "$line"
+    line=$FM_FOLD_LINE
     bytes=$(( ${#line} + 1 ))
-    if [ $((used + bytes)) -gt "$global_bytes" ]; then
+    if [ "$used" -gt 0 ] && [ $((used + bytes)) -gt "$global_bytes" ]; then
       omitted=$((omitted + 1))
       continue
     fi
@@ -527,7 +526,7 @@ EOF
 # its wakes when the backlog tool is having a bad day.
 print_record_divergence_section() {
   local diverged task origin key title line shown=0 omitted=0 bound
-  local output='' used=0 bytes item_bytes=220 global_bytes=2000
+  local output='' used=0 bytes global_bytes=2000
 
   # A non-positive bound is not a bound (bin/fm-timeout-lib.sh), so a bad
   # override falls back to the default rather than disabling the deadline.
@@ -544,10 +543,10 @@ print_record_divergence_section() {
     [ -n "$task" ] || continue
     line="$task [key=$key] reads resolved in $origin's status log but is still held for the captain"
     [ -z "$title" ] || line="$line: $title"
-    fm_cap_line_var "$line" $((item_bytes - 1))
-    line=$FM_LINE_CAP_LINE
+    fm_fold_line_var "$line"
+    line=$FM_FOLD_LINE
     bytes=$(( ${#line} + 1 ))
-    if [ $((used + bytes)) -gt "$global_bytes" ]; then
+    if [ "$used" -gt 0 ] && [ $((used + bytes)) -gt "$global_bytes" ]; then
       omitted=$((omitted + 1))
       continue
     fi
