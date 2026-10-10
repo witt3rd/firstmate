@@ -223,7 +223,14 @@ set -u
   done
   printf '\n'
 } >> "$TREEHOUSE_CALL_LOG"
+# While armed, the pool leases one fixed path (the project's primary checkout,
+# which the spawn's isolation check refuses after the endpoint exists) and a
+# return is swallowed, so the armed spawns abort AFTER their endpoint was created.
 if [ -d "$POST_CREATE_ABORT_CONTROL" ] && [ "${1:-}" = get ]; then
+  cat "$POST_CREATE_ABORT_CONTROL/lease-path"
+  exit 0
+fi
+if [ -d "$POST_CREATE_ABORT_CONTROL" ] && [ "${1:-}" = return ]; then
   exit 0
 fi
 # Treehouse's pool allocator is outside the Herdr concurrency contract under
@@ -865,6 +872,7 @@ assert_no_ordering_lifecycle_calls_since "$FAIL_START" "failed presentation orde
 pass "real Herdr lab: forced workspace.move failure leaves a successful worker in default order with a warning and no cleanup"
 
 mkdir -p "$POST_CREATE_ABORT_CONTROL"
+printf '%s\n' "$PROJECT_DIR" > "$POST_CREATE_ABORT_CONTROL/lease-path"
 ABORT_START=$(log_line_count)
 ABORT_FOCUS_START=$(focus_audit_line_count)
 spawn_task abort-a "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/abort-a.out" 2> "$TMP_ROOT/abort-a.err" &
@@ -875,11 +883,12 @@ if wait "$ABORT_A_PID"; then ABORT_A_STATUS=0; else ABORT_A_STATUS=$?; fi
 if wait "$ABORT_B_PID"; then ABORT_B_STATUS=0; else ABORT_B_STATUS=$?; fi
 finish_concurrent_expected_abort abort-a "$ABORT_A_STATUS" "$TMP_ROOT/abort-a.out" "$TMP_ROOT/abort-a.err"
 finish_concurrent_expected_abort abort-b "$ABORT_B_STATUS" "$TMP_ROOT/abort-b.out" "$TMP_ROOT/abort-b.err"
-# The armed treehouse stub leases no worktree (it exits 0 without a path), so the
-# armed failure is the spawn refusing to launch without a leased worktree.
-grep -E "did not report a worktree path|not its recorded worktree" "$TMP_ROOT/abort-a.err" >/dev/null 2>&1 \
+# The armed treehouse stub leases the primary checkout, so the armed failure is
+# the spawn refusing a leased path that is not an isolated worktree, which is
+# only checked once the task endpoint already exists.
+grep -F "did not yield an isolated worktree" "$TMP_ROOT/abort-a.err" >/dev/null 2>&1 \
   || fail "post-create abort fixture A did not reach the armed validation failure"
-grep -E "did not report a worktree path|not its recorded worktree" "$TMP_ROOT/abort-b.err" >/dev/null 2>&1 \
+grep -F "did not yield an isolated worktree" "$TMP_ROOT/abort-b.err" >/dev/null 2>&1 \
   || fail "post-create abort fixture B did not reach the armed validation failure"
 ABORT_A_PANE=$(cat "$POST_CREATE_ABORT_CONTROL/abort-a/task-pane")
 ABORT_B_PANE=$(cat "$POST_CREATE_ABORT_CONTROL/abort-b/task-pane")
@@ -912,6 +921,47 @@ done
 rm -rf "$POST_CREATE_ABORT_CONTROL"
 rm -f "$HOME_DIR/state/abort-a.herdr-presentation" "$HOME_DIR/state/abort-b.herdr-presentation"
 pass "real Herdr lab: concurrent post-create abort cleanup stays serialized with exact focus restoration"
+
+# Pool exhaustion arrives instantly, and it arrives BEFORE the task endpoint is
+# created, so the refused spawn has nothing to tear down and cannot move the
+# active workspace or tab. This runs against the real Treehouse pool: a project
+# capped at one tree is filled by a live worker, and a second spawn is refused
+# with Treehouse's own limit message.
+EXHAUST_PROJECT_DIR="$TMP_ROOT/exhaust-project"
+make_project "$EXHAUST_PROJECT_DIR"
+printf 'max_trees = 1\n' > "$EXHAUST_PROJECT_DIR/treehouse.toml"
+git -C "$EXHAUST_PROJECT_DIR" add treehouse.toml
+git -C "$EXHAUST_PROJECT_DIR" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm 'cap the pool at one tree'
+mkdir -p "$HOME_DIR/data/exhaust-hold" "$HOME_DIR/data/exhaust-refused"
+write_ship_brief "$HOME_DIR" exhaust-hold 'Pool exhaustion fixture holding the only tree.'
+write_ship_brief "$HOME_DIR" exhaust-refused 'Pool exhaustion fixture refused instantly.'
+spawn_task exhaust-hold "$HOME_DIR" "$EXHAUST_PROJECT_DIR" > "$TMP_ROOT/exhaust-hold.out" 2> "$TMP_ROOT/exhaust-hold.err" \
+  || fail "pool exhaustion fixture could not take the only tree: $(cat "$TMP_ROOT/exhaust-hold.err")"
+remember_meta_worktree "$HOME_DIR/state/exhaust-hold.meta" >/dev/null
+assert_focus_is "$CAPTAIN_FOCUS" "pool exhaustion holder spawn"
+EXHAUST_LOG_START=$(log_line_count)
+EXHAUST_FOCUS_START=$(focus_audit_line_count)
+EXHAUST_BEGAN=$(date +%s)
+if SPAWN_DEADLINE_SECONDS=120 spawn_task exhaust-refused "$HOME_DIR" "$EXHAUST_PROJECT_DIR" > "$TMP_ROOT/exhaust-refused.out" 2> "$TMP_ROOT/exhaust-refused.err"; then
+  fail "a spawn against an exhausted pool succeeded"
+fi
+EXHAUST_ELAPSED=$(( $(date +%s) - EXHAUST_BEGAN ))
+[ "$EXHAUST_ELAPSED" -lt 60 ] \
+  || fail "exhausted pool took ${EXHAUST_ELAPSED}s to refuse; it must not wait out the isolation window"
+grep -F "max_trees = 1" "$TMP_ROOT/exhaust-refused.err" >/dev/null 2>&1 \
+  || fail "exhausted pool refusal did not carry Treehouse's own limit message: $(cat "$TMP_ROOT/exhaust-refused.err")"
+grep -F "no worker endpoint was created" "$TMP_ROOT/exhaust-refused.err" >/dev/null 2>&1 \
+  || fail "exhausted pool refusal did not say nothing was launched"
+assert_focus_is "$CAPTAIN_FOCUS" "instant pool exhaustion refusal"
+assert_no_projection_mutation_since "$EXHAUST_LOG_START" "instant pool exhaustion refusal"
+[ "$(focus_audit_line_count)" = "$EXHAUST_FOCUS_START" ] \
+  || fail "instant pool exhaustion refusal drove a Herdr create, close, move, or focus call"
+[ ! -e "$HOME_DIR/state/exhaust-refused.meta" ] && [ ! -e "$HOME_DIR/state/exhaust-refused.herdr-presentation" ] \
+  || fail "instant pool exhaustion refusal left task records behind"
+teardown_task exhaust-hold "$HOME_DIR" > "$TMP_ROOT/exhaust-hold-teardown.out" 2> "$TMP_ROOT/exhaust-hold-teardown.err" \
+  || fail "pool exhaustion holder teardown failed: $(cat "$TMP_ROOT/exhaust-hold-teardown.err")"
+assert_focus_is "$CAPTAIN_FOCUS" "pool exhaustion holder teardown"
+pass "real Herdr lab: an instant pool-exhaustion refusal creates and tears down nothing and never moves the active workspace or tab"
 
 SHAPE_CLEANUP_AUDIT_START=$(focus_audit_line_count)
 teardown_task shape "$HOME_DIR" > "$TMP_ROOT/on-teardown.out" 2> "$TMP_ROOT/on-teardown.err" \
