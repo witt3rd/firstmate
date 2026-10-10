@@ -73,8 +73,9 @@
 # Author the subsection body and later relays as the actual words, without
 # adding speaker labels or direct address: the heading supplies provenance and
 # is not part of --intent. The brief stays local; what the worker passes as
-# --intent, and all other published text, is a sanitized paraphrase, never verbatim. A legacy mixed Task instead marks each captain line
-# with `[captain] `; the selector returns its words, not that metadata prefix.
+# --intent, and all other published text, is a sanitized paraphrase, never
+# verbatim. A legacy mixed Task instead marks each captain line with
+# `[captain] `; the selector returns its words, not that metadata prefix.
 # That selector skips fenced blocks and indented examples like the heading
 # reader, so a quoted `Captain:` sample is never authorized intent.
 # Previously stored speaker labels remain readable for compatibility only.
