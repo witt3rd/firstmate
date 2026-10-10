@@ -252,6 +252,13 @@ case "${1:-} ${2:-}" in
         cat "$note_file"
         exit 0
         ;;
+      *" repos/"*"/actions/jobs/"*)
+        job_all="$*"
+        job_file="$FM_TEST_GH_JOBS/${job_all##*/actions/jobs/}.json"
+        [ -f "$job_file" ] || exit 1
+        cat "$job_file"
+        exit 0
+        ;;
       *" repos/"*"/commits/"*"/check-runs"*)
         case "$*" in
           *"/commits/$(cat "$FM_TEST_GH_HEAD")/check-runs"*) ;;
@@ -473,6 +480,7 @@ run_pr_merge() {
   FM_TEST_GH_HEAD="$case_dir/github-head" \
   FM_TEST_GH_RUNS="$case_dir/github-runs.json" \
   FM_TEST_GH_ANNOTATIONS="$case_dir/annotations" \
+  FM_TEST_GH_JOBS="$case_dir/jobs" \
   FM_TEST_GH_MERGE_RC_FILE="$case_dir/github-merge-rc" \
   FM_TEST_GH_MERGE_OUTPUT="$(cat "$case_dir/github-merge-output" 2>/dev/null || true)" \
   FM_TEST_GH_GRAPHQL_FAIL="$case_dir/github-graphql-fail" \
@@ -2371,10 +2379,18 @@ test_secondmate_without_parent_binding_is_loud() {
 # run with a numeric id; the annotations of run <id> live in annotations/<id>.json.
 BILLING_TEXT='The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the '"'"'Billing & plans'"'"' section in your settings'
 
-# One check-runs entry. Args: id name head conclusion [app_id]
+# One check-runs entry in GitHub's real shape. Args: id name head conclusion [app_id [app_slug]]
 billing_run() {
-  printf '{"id":%s,"name":"%s","head_sha":"%s","status":"completed","conclusion":"%s","app":{"id":%s}}' \
-    "$1" "$2" "$3" "$4" "${5:-15368}"
+  printf '{"id":%s,"name":"%s","head_sha":"%s","status":"completed","conclusion":"%s","html_url":"https://github.com/example/repo/actions/runs/777/job/%s","app":{"id":%s,"slug":"%s"}}' \
+    "$1" "$2" "$3" "$4" "$1" "${5:-15368}" "${6:-github-actions}"
+}
+
+# The Actions job read for a run. Args: case_dir id head steps-json runner-name
+write_billing_job() {
+  mkdir -p "$1/jobs"
+  jq -n --argjson id "$2" --arg head "$3" --argjson steps "$4" --arg runner "$5" \
+    '{id:$id, head_sha:$head, status:"completed", conclusion:"failure", steps:$steps,
+      runner_id:(if $runner == "" then 0 else 9 end), runner_name:$runner}' > "$1/jobs/$2.json"
 }
 
 # Write the check-runs page for the head. Args: case_dir run-json...
@@ -2383,6 +2399,9 @@ write_billing_runs() {
   shift
   for run in "$@"; do runs="${runs:+$runs,}$run"; done
   printf '{"total_count":%s,"check_runs":[%s]}\n' "$#" "$runs" > "$case_dir/github-runs.json"
+  for run in "$@"; do
+    write_billing_job "$case_dir" "$(printf '%s' "$run" | jq -r .id)" "$(printf '%s' "$run" | jq -r .head_sha)" '[]' ''
+  done
 }
 
 # Annotations for one run. Args: case_dir id message
@@ -2467,6 +2486,46 @@ test_waive_billing_block_waives_only_billing_annotated_failures() {
   assert_grep "check 'lint' is not green" "$case_dir/stderr" "billing-near-miss: the check was not named"
   assert_no_grep 'pr merge' "$case_dir/gh.log" "billing-near-miss: gh pr merge ran"
   pass "fm-pr-merge --waive-billing-block waives only checks whose annotation is GitHub's exact billing text"
+}
+
+test_waive_billing_block_requires_a_job_that_never_started() {
+  local case_dir rc head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa url=https://github.com/example/repo/pull/95
+  local bare=${BILLING_TEXT%%. Please*}
+  local steps='[{"name":"Run tests","number":1,"conclusion":"failure"}]'
+
+  case_dir=$(make_billing_case billing-bare "$head" lint)
+  write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure)"
+  write_billing_annotation "$case_dir" 11 "$bare"
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "billing-bare: the bare sentence on a zero-step job should merge"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 95 example/repo --squash
+
+  local label
+  for label in forged-steps trailing prefix wrong-case wrong-app runner unreadable-job; do
+    case_dir=$(make_billing_case "billing-$label" "$head" lint)
+    write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure)"
+    write_billing_annotation "$case_dir" 11 "$BILLING_TEXT"
+    case "$label" in
+      forged-steps) write_billing_job "$case_dir" 11 "$head" "$steps" runner-1 ;;
+      trailing) write_billing_annotation "$case_dir" 11 "$BILLING_TEXT now" ;;
+      prefix) write_billing_annotation "$case_dir" 11 "Error: $BILLING_TEXT" ;;
+      wrong-case) write_billing_annotation "$case_dir" 11 "$(printf '%s' "$BILLING_TEXT" | tr '[:upper:]' '[:lower:]')" ;;
+      wrong-app) write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure 12345 other-app)" ;;
+      runner) write_billing_job "$case_dir" 11 "$head" '[]' runner-1 ;;
+      unreadable-job) rm "$case_dir/jobs/11.json" ;;
+    esac
+    set +e
+    run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+    expect_code 1 "$rc" "billing-$label: must refuse"
+    assert_no_grep 'pr merge' "$case_dir/gh.log" "billing-$label: gh pr merge ran"
+    if [ "$label" != unreadable-job ]; then
+      assert_grep "check 'lint' is not green" "$case_dir/stderr" "billing-$label: the check was not named"
+    fi
+  done
+  pass "fm-pr-merge --waive-billing-block never waives a job that ran, a forged text, or another producer"
 }
 
 test_waive_billing_block_requires_the_verified_head() {
@@ -4210,6 +4269,7 @@ test_large_check_run_data_keeps_the_merge_verdict
 test_required_partial_reads_report_all_failures
 
 test_waive_billing_block_waives_only_billing_annotated_failures
+test_waive_billing_block_requires_a_job_that_never_started
 test_waive_billing_block_requires_the_verified_head
 test_waive_billing_block_waives_missing_only_when_billing_blocked
 test_waive_billing_block_is_attended_and_mergeable_only

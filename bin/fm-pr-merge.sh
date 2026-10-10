@@ -55,11 +55,20 @@
 # check whose only fault is GitHub's refusal to start the job for billing:
 # github_read_billing_blocked below reads each non-green check run at the
 # verified head and counts a check as billing-blocked only when every one of its
-# runs there completed with a failure whose annotations all read exactly "the job
-# was not started because recent account payments have failed or your spending
-# limit needs to be increased" (ignoring case, with an optional trailing period
-# and sentence). A failing check without that annotation, a status context, an
-# unfinished run, and a run at any other head stays a refusal naming the check.
+# runs there is a job GitHub never started, and an unreadable job or annotation
+# read refuses. Never started means all of: the run was produced by the GitHub
+# Actions app (id 15368), completed with a failure at the verified head, and
+# links to its own job; the job read at that head shows a completed failure
+# with zero steps and no runner; and every annotation, trimmed, equals exactly
+# GitHub's message "The job was not started because recent account payments
+# have failed or your spending limit needs to be increased. Please check the
+# 'Billing & plans' section in your settings" or that message's bare first
+# sentence without the period. GitHub always appends the second sentence, so
+# exact whole-string equality to the observed text is the faithful reading.
+# No prefix, trailing text, case folding or wildcard is accepted, so a
+# workflow that ran and printed the text itself is never waived. A failing
+# check without that, a status context, an unfinished run, and a run at any
+# other head stays a refusal naming the check.
 # A required check that never reported is waived only when a check run of that
 # name (and producer app, when the requirement binds one) at the verified head is
 # billing-blocked in that same way; one that never reported for any other reason
@@ -764,14 +773,22 @@ FM_PR_BILLING_BLOCKED='[]'
 github_annotations_are_billing_only() {
   jq -se '
     [ .[] | if type == "array" then .[] else error("invalid annotations") end ] as $notes
+    | "The job was not started because recent account payments have failed or your spending limit needs to be increased" as $bare
+    | ($bare + ". Please check the '"'"'Billing & plans'"'"' section in your settings") as $full
     | ($notes | length) > 0
     and all($notes[]; (.message | type) == "string"
-      and (.message | gsub("^\\s+|\\s+$"; "") | ascii_downcase
-        | test("^the job was not started because recent account payments have failed or your spending limit needs to be increased(\\.(\\s.*)?)?$"; "s")))' \
+      and (.message | gsub("^\\s+|\\s+$"; "") | . == $bare or . == $full))' \
     >/dev/null 2>&1
 }
+github_job_never_started() {
+  jq -se --arg head "$2" --argjson id "$1" '
+    .[0] | .id == $id and .head_sha == $head and .status == "completed" and .conclusion == "failure"
+    and (.steps | type) == "array" and (.steps | length) == 0
+    and (.runner_id == null or .runner_id == 0)
+    and (.runner_name == null or .runner_name == "")' >/dev/null 2>&1
+}
 github_read_billing_blocked() {
-  local head=$1 runs nongreen notes ids='[]' id candidates=0
+  local head=$1 runs nongreen notes job ids='[]' id candidates=0
   FM_PR_BILLING_BLOCKED='[]'
   if ! runs=$(gh api --paginate "repos/$PR_OWNER/$PR_REPO/commits/$head/check-runs" 2>/dev/null) \
     || [ -z "$runs" ] \
@@ -779,7 +796,11 @@ github_read_billing_blocked() {
       [ .[] | if (.check_runs | type) == "array" then .check_runs[] else error("invalid check runs") end
         | select(.head_sha == $head)
         | select(.status != "completed" or ((.conclusion // "") | IN("success", "neutral", "skipped") | not))
-        | {id, name, app: (.app.id // null), candidate: (.status == "completed" and .conclusion == "failure")} ]' 2>/dev/null); then
+        | (.id | tostring) as $rid
+        | {id, name, app: (.app.id // null),
+           candidate: (.status == "completed" and .conclusion == "failure"
+             and .app.id == 15368 and .app.slug == "github-actions"
+             and ((.html_url // "") | test("/actions/runs/[0-9]+/job/" + $rid + "$")))} ]' 2>/dev/null); then
     return 1
   fi
   while IFS= read -r id; do
@@ -787,7 +808,9 @@ github_read_billing_blocked() {
     candidates=$((candidates + 1))
     [ "$candidates" -le 25 ] || return 1
     notes=$(gh api --paginate "repos/$PR_OWNER/$PR_REPO/check-runs/$id/annotations" 2>/dev/null) || return 1
-    if printf '%s\n' "$notes" | github_annotations_are_billing_only; then
+    job=$(gh api "repos/$PR_OWNER/$PR_REPO/actions/jobs/$id" 2>/dev/null) || return 1
+    if printf '%s\n' "$notes" | github_annotations_are_billing_only \
+      && printf '%s\n' "$job" | github_job_never_started "$id" "$head"; then
       ids=$(printf '%s\n%s\n' "$ids" "$id" | jq -sc '.[0] + [.[1]]') || return 1
     fi
   done <<EOT
