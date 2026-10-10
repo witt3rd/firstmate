@@ -169,9 +169,9 @@
 # truly needed.
 #
 # STATUS TAILS: FM_SESSION_START_STATUS_TAIL bounds how many lines each task's
-# tail prints, and bin/fm-line-cap-lib.sh bounds how long each of those lines
-# may be. Both bounds are safe because the section prints every task's full
-# status log path, and AGENTS.md section 8 treats a status line as a wake EVENT
+# tail prints, and bin/fm-line-cap-lib.sh folds each long line across lines
+# without clipping any of it. The section also prints every task's full status
+# log path, and AGENTS.md section 8 treats a status line as a wake EVENT
 # rather than current state - bin/fm-crew-state.sh owns current state.
 #
 # RUNTIME BOUND: the digest is now executed through a native session-open
@@ -561,14 +561,13 @@ print_backlog_compact() {
 
 print_status_tail() {
   local status=$1 line
-  printf 'status tail (last %s line(s), each capped at %s characters, wake-EVENT history, not current state; full log: %s):\n' \
-    "$STATUS_TAIL" "$FM_LINE_CAP_DEFAULT" "$status"
+  printf 'status tail (last %s line(s), long lines folded at %s characters with a "%s" continuation prefix, nothing clipped, wake-EVENT history, not current state; full log: %s):\n' \
+    "$STATUS_TAIL" "$FM_FOLD_WIDTH" "$FM_FOLD_CONT_PREFIX" "$status"
   # A crewmate writes its own status lines, so their length is unbounded: one
-  # observed line ran 865 characters. Cap each one the way the wake digest's
-  # OPEN DECISIONS section does; the lede carries the state word and the key,
-  # and the full log path above reaches the rest.
+  # observed line ran 865 characters. Text written for diagnosis is never
+  # clipped, so each line is folded across physical lines instead.
   while IFS= read -r line || [ -n "$line" ]; do
-    fm_cap_line "$line"
+    fm_fold_line "$line"
   done < <(tail -n "$STATUS_TAIL" "$status")
 }
 

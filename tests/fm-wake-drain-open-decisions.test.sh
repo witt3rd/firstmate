@@ -178,45 +178,33 @@ test_status_symlink_is_not_followed() {
   pass "the fleet-wide decision scan does not follow status symlinks"
 }
 
-# The per-item cut now comes from bin/fm-line-cap-lib.sh, shared with the
-# session-start digest's status tails so one truncation marker means the same
-# thing wherever an agent meets it. This pins the drain's own end of that
-# contract: the lede survives, the marker appears, and the item still fits the
-# section's per-item budget including the newline it is charged for.
-test_over_long_decision_note_is_capped_with_a_marker() {
-  local dir state out line longest
+# Text written for diagnosis is never clipped: an over-long decision note is
+# folded across lines by bin/fm-line-cap-lib.sh and rejoins to the original.
+test_over_long_decision_note_is_folded_not_clipped() {
+  local dir state out original note rejoined
   dir=$(make_case long-note)
   state="$dir/state"
   out="$dir/drain.out"
-  {
-    printf 'needs-decision [key=api-shape]: pick REST or RPC'
-    awk 'BEGIN { while (i++ < 200) printf " and-then-some" }'
-    printf '\n'
-  } > "$state/task-long.status"
+  note="pick REST or RPC$(awk 'BEGIN { while (i++ < 200) printf " and-then-some" }') END-MARKER"
+  original="task-long [key=api-shape] needs-decision: $note"
+  printf 'needs-decision [key=api-shape]: %s\n' "$note" > "$state/task-long.status"
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on an over-long decision note"
 
-  line=$(grep -F 'task-long' "$out")
-  case "$line" in
-    'task-long [key=api-shape] needs-decision: pick REST or RPC'*' [truncated]') : ;;
-    *) fail "an over-long decision note was not capped with its lede intact: $line" ;;
-  esac
-  longest=${#line}
-  [ "$longest" -le 219 ] || fail "a capped decision item ran $longest characters past its per-item budget"
+  if grep -F '[truncated]' "$out" >/dev/null; then fail "an open decision still carries a truncation marker"; fi
+  rejoined=$(awk '/^task-long / { on = 1; printf "%s", $0; next } on && /^  [|] / { sub(/^  [|] /, ""); printf "%s", $0; next } { on = 0 }' "$out")
+  [ "$rejoined" = "$original" ] || fail "the folded decision did not rejoin to its full text: $rejoined"
 
   printf 'needs-decision [key=short]: brief enough to keep whole\n' > "$state/task-short.status"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on a short decision note"
   grep -F 'task-short [key=short] needs-decision: brief enough to keep whole' "$out" >/dev/null \
-    || fail "a decision note already under the cap was altered"
-  if grep -F 'brief enough to keep whole [truncated]' "$out" >/dev/null; then
-    fail "a decision note already under the cap was marked truncated"
-  fi
+    || fail "a short decision note was altered"
 
-  pass "an over-long open decision is cut to its per-item budget with the shared truncation marker"
+  pass "an over-long open decision is folded across lines with no text lost"
 }
 
 test_buried_decision_still_surfaces
-test_over_long_decision_note_is_capped_with_a_marker
+test_over_long_decision_note_is_folded_not_clipped
 test_explicit_resolution_closes_it
 test_later_unrelated_terminal_line_does_not_close_it
 test_reserved_key_namespace_is_owned_by_its_library

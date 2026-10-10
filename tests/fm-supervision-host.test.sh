@@ -547,7 +547,7 @@ test_branch_outcomes_collapse_repeated_captain_outcomes_per_task() {
   drained=$(FM_HOME="$home" "$FAKE_CLAUDE" -c '"$0" 2>&1' "$ROOT/bin/fm-wake-drain.sh")
   assert_contains "$drained" "BRANCH OUTCOMES: 3 newer captain outcome(s) are held back (byte cap); they follow on the next drain once these are acknowledged" \
     "the section must count every held-back captain row"
-  assert_contains "$drained" "[seq 5, recorded 0m ago] task-1: task-1 $pad" "the first task must show its newest outcome the acknowledgement covers"
+  assert_contains "$(printf '%s\n' "$drained" | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n  | //g')" "[seq 5, recorded 0m ago] task-1: task-1 $pad" "the first task must show its newest outcome the acknowledgement covers"
   assert_not_contains "$drained" "task-1 changed again" "a row after a held-back one must wait, since the acknowledgement cannot cover it"
   assert_not_contains "$drained" "task-7:" "the cap must hold back the rows past the contiguous run"
   assert_contains "$drained" "mark-processed --through 10;" "the acknowledgement must cover exactly the presented run"
@@ -597,7 +597,7 @@ test_branch_outcomes_present_a_long_away_window_once() {
   assert_contains "$drained" "[seq 44, recorded 0m ago] beta: beta ready to merge" "another task's captain outcome must keep its own line"
   assert_re '^\([0-9]+ earlier routine outcome\(s\) not shown; bin/fm-branch-outcome.sh list keeps them\)$' <(printf '%s\n' "$drained") \
     "the window's routine overflow must collapse into one count"
-  assert_contains "$drained" "routine 40 $pad" "the newest routine outcome must be listed"
+  assert_contains "$(printf '%s\n' "$drained" | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n  | //g')" "routine 40 $pad" "the newest routine outcome must be listed"
   assert_not_contains "$drained" "routine 1 $pad" "the oldest routine outcome must collapse into the count"
   [ "${#drained}" -lt 8000 ] || fail "a long away window must cost one short drain, got ${#drained} bytes"
   target=$(printf '%s\n' "$drained" | sed -n 's/.*mark-processed --through \([0-9]*\);.*/\1/p')
@@ -609,10 +609,10 @@ test_branch_outcomes_present_a_long_away_window_once() {
   pass "drain: a long away window costs one short drain, captain outcomes collapsed per task and routine overflow counted, and nothing from it is shown again"
 }
 
-# The section's budgets count bytes: a multibyte summary is cut by whole
-# characters so each item and the routine list stay inside their byte caps.
+# The section's budgets count bytes: a multibyte summary is counted in
+# bytes, and a long item is folded whole rather than clipped.
 test_branch_outcomes_budgets_count_bytes() {
-  local home drained wide n routine_block locale
+  local home drained wide n routine_block locale rejoined
   wide=$(awk 'BEGIN { for (i = 0; i < 300; i++) printf "\342\234\223" }')
   for locale in '' C; do
     home="$TMP_ROOT/drain-bytes-${locale:-inherited}"
@@ -626,19 +626,18 @@ test_branch_outcomes_budgets_count_bytes() {
       || fail "fixture: could not record the captain outcome"
     drained=$(LC_ALL=$locale FM_HOME="$home" "$FAKE_CLAUDE" -c '"$0" 2>&1' "$ROOT/bin/fm-wake-drain.sh")
     assert_contains "$drained" "wide-cap: " "the captain outcome must be presented (locale '$locale')"
-    printf '%s\n' "$drained" | LC_ALL=C awk '/^\[seq [0-9]+[^]]*\] wide-/ && length($0) > 599 { bad = 1 } END { exit bad }' \
-      || fail "an item exceeded its 599-byte cap (locale '$locale'): $drained"
-    printf '%s\n' "$drained" | grep '^\[seq [0-9]*[^]]*\] wide-' | grep -qv ' \[truncated\]$' \
-      && fail "an over-long multibyte item was not cut with the truncation marker (locale '$locale'): $drained"
-    printf '%s\n' "$drained" | grep '^\[seq [0-9]*[^]]*\] wide-' | perl -ne 'utf8::decode($_) or exit 1' \
-      || fail "an item was cut inside a character (locale '$locale')"
+    rejoined=$(printf '%s\n' "$drained" | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n  | //g')
+    assert_contains "$rejoined" "wide-cap: $wide" "a long captain outcome must survive whole, folded not clipped (locale '$locale')"
+    assert_not_contains "$drained" "[truncated]" "no outcome line may carry a truncation marker (locale '$locale')"
+    printf '%s\n' "$rejoined" | perl -ne 'utf8::decode($_) or exit 1' \
+      || fail "an item was damaged (locale '$locale')"
     routine_block=$(printf '%s\n' "$drained" | sed -n '/^BRANCH OUTCOMES, ROUTINE/,$p' | grep '^\[seq [0-9]*\] wide-[0-9]')
     [ "$(printf '%s\n' "$routine_block" | LC_ALL=C wc -c | tr -d ' ')" -le 2000 ] \
       || fail "the routine list exceeded its 2000-byte budget (locale '$locale'): $routine_block"
     assert_re '^\([0-9]+ earlier routine outcome\(s\) not shown; bin/fm-branch-outcome.sh list keeps them\)$' <(printf '%s\n' "$drained") \
       "the routine rows past the byte budget must collapse into a count (locale '$locale')"
   done
-  pass "drain: the BRANCH OUTCOMES budgets count bytes, cutting multibyte summaries by whole characters in any locale"
+  pass "drain: the BRANCH OUTCOMES budgets count bytes, folding long multibyte summaries intact in any locale"
 }
 
 # A drain whose projection of the store fails has rendered nothing it can

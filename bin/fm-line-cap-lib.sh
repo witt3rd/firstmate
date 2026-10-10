@@ -2,9 +2,11 @@
 # Shared per-line cap for agent-facing digest lines.
 # Usage: . bin/fm-line-cap-lib.sh; fm_cap_line "<line>" [<max>]
 #
-# ONE OWNER for the bounded-line shape both digests use. The wake digest's
-# OPEN DECISIONS section (bin/fm-wake-drain.sh) and the session-start digest's
-# per-task status tails (bin/fm-session-start.sh) render the same kind of
+# Status and decision text (the wake digest's OPEN DECISIONS section and the
+# session-start digest's status tails) is never clipped: fm_fold_line_var below
+# folds it. The per-line cap that follows remains for non-status report lines
+# (mail, tool updates) and status-record writers. The cap's original rationale:
+# the two digests render the same kind of
 # content - an agent-written status line, which AGENTS.md section 8 treats as a
 # wake EVENT rather than current state - into a size-bounded view. An agent
 # reading both must recognize one truncation marker, and the two caps must not
@@ -48,4 +50,39 @@ fm_cap_line_var() {
 fm_cap_line() {
   fm_cap_line_var "$@"
   printf '%s\n' "$FM_LINE_CAP_LINE"
+}
+
+# Display-time folding for status and decision text. Text written for diagnosis
+# is never clipped: fm_fold_line_var splits a long line across physical lines
+# of at most FM_FOLD_WIDTH characters and loses nothing. Every continuation
+# line starts with FM_FOLD_CONT_PREFIX, so the split is explicit and a reader
+# (or a test) rejoins the pieces by dropping that prefix and the newline.
+# A line at or under the width is kept unchanged.
+FM_FOLD_WIDTH=200
+FM_FOLD_CONT_PREFIX='  | '
+
+# fm_fold_line_var <line> [<width>]: put the folded text in FM_FOLD_LINE (no
+# trailing newline). Assigns rather than prints for the same reason as
+# fm_cap_line_var.
+fm_fold_line_var() {
+  local line=$1 width=${2:-$FM_FOLD_WIDTH} out
+  case "$width" in ''|*[!0-9]*|0) width=$FM_FOLD_WIDTH ;; esac
+  if [ "${#line}" -le "$width" ]; then
+    FM_FOLD_LINE=$line
+    return 0
+  fi
+  out=${line:0:width}
+  line=${line:width}
+  while [ -n "$line" ]; do
+    out="$out
+$FM_FOLD_CONT_PREFIX${line:0:width}"
+    line=${line:width}
+  done
+  FM_FOLD_LINE=$out
+}
+
+# fm_fold_line <line> [<width>]: the same fold, printed with a trailing newline.
+fm_fold_line() {
+  fm_fold_line_var "$@"
+  printf '%s\n' "$FM_FOLD_LINE"
 }
