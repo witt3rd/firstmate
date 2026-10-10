@@ -100,6 +100,7 @@ EOF
 }
 
 # LEASE_PATH overrides the path the stub leases (default: the case's worktree).
+# GET_FAIL makes the stub pool report exhaustion.
 run_settle_spawn() {
   local id=$1
   FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
@@ -110,6 +111,7 @@ run_settle_spawn() {
     FM_FAKE_PANE_STALE_READS="$STALE_READS" FM_FAKE_PANE_COUNTFILE="$COUNTFILE" \
     FM_FAKE_TREEHOUSE_LOG="$TREEHOUSE_LOG" FM_FAKE_TMUX_LOG="$TMUX_LOG" \
     FM_FAKE_TREEHOUSE_PATH="${LEASE_PATH:-$WT_DIR}" \
+    FM_FAKE_TREEHOUSE_GET_FAIL="${GET_FAIL:-}" \
     PATH="$FAKEBIN_DIR:$PATH" \
     "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
 }
