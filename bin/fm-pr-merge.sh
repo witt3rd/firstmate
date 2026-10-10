@@ -50,8 +50,29 @@
 # requires every other required check to have reported and every check to be
 # green unless separately waived by --allow-red. It matches the required
 # context name even for an app-bound requirement, and never waives an unreadable
-# required source or producer read. Both are
-# refused while the away-posture record exists, and neither
+# required source or producer read. An attended --waive-billing-block, which
+# takes no value, waives every non-green check and every unreported required
+# check whose only fault is GitHub's refusal to start the job for billing:
+# github_read_billing_blocked below reads each non-green check run at the
+# verified head and counts a check as billing-blocked only when every one of its
+# runs there completed with a failure whose annotations all read exactly "the job
+# was not started because recent account payments have failed or your spending
+# limit needs to be increased" (ignoring case, with an optional trailing period
+# and sentence). A failing check without that annotation, a status context, an
+# unfinished run, and a run at any other head stays a refusal naming the check.
+# A required check that never reported is waived only when a check run of that
+# name (and producer app, when the requirement binds one) at the verified head is
+# billing-blocked in that same way; one that never reported for any other reason
+# stays a refusal. It waives nothing else: the head is still bound with
+# --match-head-commit, mergeable must still read MERGEABLE and conflict-free, and
+# an unreadable annotation read refuses. --allow-red and --allow-missing keep
+# their own exact-name scope beside it. It covers the CI requirement only, and
+# the review requirement is bypassed only by --attended-override -- --admin,
+# which this flag never implies and which never covers a non-billing red. A merge
+# that needs both a billing waiver and a review bypass passes
+# --waive-billing-block --attended-override -- --admin, and each does only its
+# own job. All of these waivers are refused while the away-posture record exists,
+# and none
 # applies on GitLab, where a merge already requires the head pipeline to have
 # succeeded. After gh returns success, GitHub's live state is read back and
 # accepted only when the pull request is merged or in the merge queue. gh's
@@ -135,7 +156,7 @@
 # explicit captain instruction and never skips the live green check, the
 # away-record read, or a captain hold.
 #
-# Usage: fm-pr-merge.sh <task-id> <pr-url> [--attended-override] [--allow-red <check-name>] [--allow-missing <check-name>] [-- <extra forge merge args>]
+# Usage: fm-pr-merge.sh <task-id> <pr-url> [--attended-override] [--allow-red <check-name>] [--allow-missing <check-name>] [--waive-billing-block] [-- <extra forge merge args>]
 #
 # On GitLab, this script confirms the MR is actually merged before reporting it;
 # an auto-merge-queued or unconfirmed request leaves the poll armed and records
@@ -196,6 +217,7 @@ shift 2
 ATTENDED_OVERRIDE=false
 ALLOW_RED=()
 ALLOW_MISSING=()
+WAIVE_BILLING=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --attended-override)
@@ -226,10 +248,22 @@ while [ "$#" -gt 0 ]; do
       echo "error: --allow-missing requires a separate check name argument" >&2
       exit 2
       ;;
+    --waive-billing-block)
+      WAIVE_BILLING=true
+      shift
+      ;;
+    --waive-billing-block=*)
+      echo "error: --waive-billing-block takes no value" >&2
+      exit 2
+      ;;
     --) shift; break ;;
     *) break ;;
   esac
 done
+if [ "$WAIVE_BILLING" = true ] && [ "$PROVIDER" = gitlab ]; then
+  echo "error: --waive-billing-block does not apply to GitLab, where a merge already requires the head pipeline to have succeeded" >&2
+  exit 2
+fi
 if [ "${#ALLOW_RED[@]}" -gt 0 ] && [ "$PROVIDER" = gitlab ]; then
   echo "error: --allow-red does not apply to GitLab, where a merge already requires the head pipeline to have succeeded" >&2
   exit 2
@@ -718,13 +752,75 @@ github_required_checks_missing() {
   ' 2>/dev/null || return 1
 }
 
+# The checks at the given head that GitHub refused to start for billing, as a
+# JSON array of {name, apps} in FM_PR_BILLING_BLOCKED, where apps lists the
+# producer app ids of that name's non-green runs. A name is listed only when
+# every non-green check run of that name at exactly this head completed with a
+# failure whose annotations all carry GitHub's billing text; a run of any other
+# head, an unfinished run, or any other failure keeps the name out. Returns
+# non-zero when a read fails, and then lists nothing, so an unreadable
+# annotation can never waive a check.
+FM_PR_BILLING_BLOCKED='[]'
+github_annotations_are_billing_only() {
+  jq -se '
+    [ .[] | if type == "array" then .[] else error("invalid annotations") end ] as $notes
+    | ($notes | length) > 0
+    and all($notes[]; (.message | type) == "string"
+      and (.message | gsub("^\\s+|\\s+$"; "") | ascii_downcase
+        | test("^the job was not started because recent account payments have failed or your spending limit needs to be increased(\\.(\\s.*)?)?$"; "s")))' \
+    >/dev/null 2>&1
+}
+github_read_billing_blocked() {
+  local head=$1 runs nongreen notes ids='[]' id candidates=0
+  FM_PR_BILLING_BLOCKED='[]'
+  if ! runs=$(gh api --paginate "repos/$PR_OWNER/$PR_REPO/commits/$head/check-runs" 2>/dev/null) \
+    || [ -z "$runs" ] \
+    || ! nongreen=$(printf '%s' "$runs" | jq -sc --arg head "$head" '
+      [ .[] | if (.check_runs | type) == "array" then .check_runs[] else error("invalid check runs") end
+        | select(.head_sha == $head)
+        | select(.status != "completed" or ((.conclusion // "") | IN("success", "neutral", "skipped") | not))
+        | {id, name, app: (.app.id // null), candidate: (.status == "completed" and .conclusion == "failure")} ]' 2>/dev/null); then
+    return 1
+  fi
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    candidates=$((candidates + 1))
+    [ "$candidates" -le 25 ] || return 1
+    notes=$(gh api --paginate "repos/$PR_OWNER/$PR_REPO/check-runs/$id/annotations" 2>/dev/null) || return 1
+    if printf '%s\n' "$notes" | github_annotations_are_billing_only; then
+      ids=$(printf '%s\n%s\n' "$ids" "$id" | jq -sc '.[0] + [.[1]]') || return 1
+    fi
+  done <<EOT
+$(printf '%s' "$nongreen" | jq -r '.[] | select(.candidate) | .id')
+EOT
+  FM_PR_BILLING_BLOCKED=$(printf '%s\n%s\n' "$nongreen" "$ids" | jq -sc '
+    .[0] as $runs | .[1] as $ok
+    | $runs | group_by(.name)
+    | map(select(all(.[]; .id as $i | any($ok[]; . == $i))) | {name: .[0].name, apps: map(.app)})') || {
+    FM_PR_BILLING_BLOCKED='[]'
+    return 1
+  }
+}
+
+# Whether the named required check is billing-blocked at the verified head: a
+# listed name whose runs include every producer app the requirement binds.
+github_required_is_billing_blocked() {
+  local name=$1
+  printf '%s\n%s\n' "$FM_PR_GITHUB_REQUIRED" "$FM_PR_BILLING_BLOCKED" | jq -se --arg n "$name" '
+    .[0] as $req | [ .[1][] | select(.name == $n) ] as $m
+    | ($m | length) > 0
+    and all($req[] | select(.context == $n and .app_id != null);
+      .app_id as $a | any($m[].apps[]; . == $a))' >/dev/null 2>&1
+}
+
 # Pre-merge conditions from a live PR view, base requirements, and head producers.
 # Sets FM_PR_MERGE_HEAD to the verified head on success. Returns 3, rather than
 # the usual 1, when mergeable=UNKNOWN is the only failing condition, so the
 # caller can retry a still-computing mergeability read instead of refusing.
 github_verify_mergeable() {
   local json fields line red name covered missing unreported producers runs
-  local total=0 named=0 refusals='' mergeable_refusal=''
+  local total=0 named=0 refusals='' mergeable_refusal='' billing_waived=''
+  local billing_read=false billing_ok=false
   local state='' draft='' mergeable='' merge_state='' live_head='' base=''
 
   if ! json=$(gh pr view "$URL" --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup 2>/dev/null) \
@@ -800,6 +896,22 @@ FIELDS
         [ "$check" = "$name" ] && covered=1
       done
     fi
+    if [ "$covered" -eq 0 ] && [ "$WAIVE_BILLING" = true ]; then
+      if [ "$billing_read" = false ]; then
+        billing_read=true
+        if github_read_billing_blocked "$live_head"; then
+          billing_ok=true
+        else
+          refusals="$refusals  - the billing annotations of the failing check runs at head $live_head could not be read
+"
+        fi
+      fi
+      if [ "$billing_ok" = true ] \
+        && printf '%s' "$FM_PR_BILLING_BLOCKED" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null 2>&1; then
+        covered=1
+        billing_waived="${billing_waived:+$billing_waived, }$name"
+      fi
+    fi
     [ "$covered" -eq 1 ] || {
       refusals="$refusals  - check '$name' is not green
 "
@@ -838,6 +950,21 @@ EOF
     while IFS= read -r name; do
       [ -n "$name" ] || continue
       [ "${#ALLOW_MISSING[@]}" -gt 0 ] && [ "${ALLOW_MISSING[0]}" = "$name" ] && continue
+      if [ "$WAIVE_BILLING" = true ]; then
+        if [ "$billing_read" = false ]; then
+          billing_read=true
+          if github_read_billing_blocked "$live_head"; then
+            billing_ok=true
+          else
+            refusals="$refusals  - the billing annotations of the check runs at head $live_head could not be read
+"
+          fi
+        fi
+        if [ "$billing_ok" = true ] && github_required_is_billing_blocked "$name"; then
+          billing_waived="${billing_waived:+$billing_waived, }$name"
+          continue
+        fi
+      fi
       refusals="$refusals  - required check '$name' has not reported at head $live_head
 "
       unreported="${unreported:+$unreported, }$name"
@@ -862,6 +989,8 @@ EOF
   fi
   printf 'verified: %s is open and mergeable, with every unwaived required check reported and every unwaived check green at head %s\n' \
     "$URL" "$live_head" >&2
+  [ -z "$billing_waived" ] \
+    || printf 'notice: waived billing-blocked checks at head %s: %s\n' "$live_head" "$billing_waived" >&2
   FM_PR_MERGE_HEAD=$live_head
   FM_PR_GITHUB_BASE=$base
 }
@@ -1143,6 +1272,10 @@ require_current_away_authority() {
   fi
   if [ "$FM_PR_AWAY_POSTURE" = true ] && [ "${#ALLOW_MISSING[@]}" -gt 0 ]; then
     echo "error: --allow-missing is attended-only; while the away-posture record exists every required check must report" >&2
+    return 2
+  fi
+  if [ "$FM_PR_AWAY_POSTURE" = true ] && [ "$WAIVE_BILLING" = true ]; then
+    echo "error: --waive-billing-block is attended-only; while the away-posture record exists the green check is absolute" >&2
     return 2
   fi
 }
