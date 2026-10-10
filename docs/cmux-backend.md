@@ -88,7 +88,7 @@ Target readiness therefore uses the structural `list-panes` response instead of 
 Capture remains bounded and locally trimmed after `read-screen` becomes available.
 
 `current_directory` follows a top-level shell `cd` but not the foreground subshell opened by `treehouse get`.
-Spawn-time worktree discovery sends begin and end markers around `pwd`, captures the marked block, and joins wrapped path lines.
+The spawn-time launch-boundary isolation check sends begin and end markers around `pwd`, captures the marked block, and joins wrapped path lines.
 
 An ordinary metadata-routed `fm-send.sh` text steer becomes a durable steering-inbox record, and only its best-effort constant doorbell passes through cmux's submit machinery.
 On the typed plane, literal send and Enter are separate calls.

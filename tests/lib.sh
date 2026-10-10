@@ -468,7 +468,10 @@ SH
 # appended to $FM_FAKE_TREEHOUSE_LOG (when set) as one line of arguments.
 #   get --lease ...  prints $FM_FAKE_TREEHOUSE_PATH, else [leased-path], else
 #                    $FM_FAKE_PANE_PATH, as the leased worktree path (nothing
-#                    when all are unset)
+#                    when all are unset), or
+#                    fails with a pool-exhausted message when
+#                    $FM_FAKE_TREEHOUSE_GET_FAIL is set (the value, when it is
+#                    not just "1", replaces that message on stderr)
 #   return ...       exits $FM_FAKE_TREEHOUSE_RETURN_RC (default 0)
 #   anything else    exits 0
 fm_fake_treehouse() {
@@ -479,6 +482,14 @@ fm_fake_treehouse() {
 [ -z "${FM_FAKE_TREEHOUSE_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TREEHOUSE_LOG"
 case "${1:-}" in
   get)
+    if [ -n "${FM_FAKE_TREEHOUSE_GET_FAIL:-}" ]; then
+      if [ "$FM_FAKE_TREEHOUSE_GET_FAIL" = 1 ]; then
+        echo "all 8 worktrees are in use or dirty (max_trees = 8)" >&2
+      else
+        echo "$FM_FAKE_TREEHOUSE_GET_FAIL" >&2
+      fi
+      exit 1
+    fi
     case " $* " in
       *" --lease "*) printf '%s\n' "${FM_FAKE_TREEHOUSE_PATH:-$(cat "$(dirname "$0")/.treehouse-leased-path" 2>/dev/null || printf '%s' "${FM_FAKE_PANE_PATH:-}")}" | sed '/^$/d' ;;
     esac

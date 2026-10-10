@@ -273,8 +273,11 @@
 #   primary checkout, including when the spawning project is a linked worktree.
 #   The worktree is acquired non-interactively with the durable lease form
 #   `treehouse get --lease --lease-holder <task-id>`, which prints the path and
-#   records the task as the lease holder in Treehouse's persistent state; the
-#   pane is then moved into it. A lease is released (`treehouse return`) by this
+#   records the task as the lease holder in Treehouse's persistent state. That
+#   call runs before the task endpoint is created, so a pool that cannot hand
+#   out a tree (its max_trees limit reached, or every slot in use) refuses the
+#   spawn at once with Treehouse's own message and no endpoint is ever created.
+#   After a successful lease the pane is moved into the worktree. A lease is released (`treehouse return`) by this
 #   script when the spawn aborts before its task record exists and by
 #   bin/fm-teardown.sh otherwise, so a finished worker's slot always returns to
 #   the pool (docs/treehouse-pool.md owns the lifecycle and pool sizing). After
@@ -1517,6 +1520,59 @@ parse_orca_worktree_result() {
     ORCA_TERMINAL=${rest#*$'\t'}
   else
     ORCA_TERMINAL=
+  fi
+}
+
+# Acquire the task's worktree with Treehouse's durable lease, the same
+# non-interactive form bin/fm-home-seed.sh uses for secondmate homes. It prints
+# only the path, reserves the slot under this task's id in Treehouse's persistent
+# state, and holds it until `treehouse return`, so the slot stays attributable
+# after the worker exits. The interactive form opens a subshell whose process
+# lease lapses with the worker, which left finished tasks' slots unattributable
+# and exhausted the pool (docs/treehouse-pool.md). It runs from the project so
+# Treehouse resolves the right pool.
+#
+# This runs BEFORE the task endpoint is created, under the Treehouse project lock.
+# A pool that cannot hand a slot out - every tree held or dirty, up to max_trees -
+# makes the call fail at once, and the spawn then refuses at once carrying
+# Treehouse's own message, with no pane, tab, or workspace ever created. Nothing
+# has to be torn down afterwards, so a refusal that arrives instantly cannot race
+# the backend's presentation steps or move the active workspace or tab. Any other
+# failure is refused the same way, naming the tool's message.
+spawn_acquire_treehouse_lease() {
+  local lease_out lease_msg lease_exhausted SPAWN_LEASE_ERR_FILE
+  SPAWN_LEASE_ERR_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-lease-err.XXXXXX") || {
+    echo "error: could not create a scratch file to capture treehouse get's message for task $ID" >&2
+    exit 1
+  }
+  if ! lease_out=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "$ID" 2>"$SPAWN_LEASE_ERR_FILE"); then
+    # The limit message is a single line; keep just that line so the update and
+    # setup banners Treehouse prints around it do not bury it.
+    lease_msg=$(grep -E 'worktrees are in use|max_trees' "$SPAWN_LEASE_ERR_FILE" | tr '\n' ' ')
+    lease_exhausted=0
+    [ -z "$lease_msg" ] || lease_exhausted=1
+    [ "$lease_exhausted" = 1 ] || lease_msg=$(grep -v -e 'new version of treehouse' -e '^Run "treehouse update"' -e 'Setting up worktree' "$SPAWN_LEASE_ERR_FILE" | awk 'NF' | tr '\n' ' ')
+    lease_msg=${lease_msg% }
+    rm -f "$SPAWN_LEASE_ERR_FILE"
+    if [ "$lease_exhausted" = 1 ]; then
+      echo "error: the Treehouse pool for '$PROJ_ABS' cannot hand out a worktree for task $ID: ${lease_msg:-no message from treehouse}; return finished tasks' slots or raise max_trees in treehouse.toml (docs/treehouse-pool.md); no worker endpoint was created" >&2
+    else
+      echo "error: treehouse get --lease failed for task $ID (spawning project '$PROJ_ABS'): ${lease_msg:-no message from treehouse}; no worker endpoint was created" >&2
+    fi
+    exit 1
+  fi
+  rm -f "$SPAWN_LEASE_ERR_FILE"
+  WT=$(printf '%s\n' "$lease_out" | awk 'NF { line = $0 } END { print line }')
+  if [ -z "$WT" ]; then
+    echo "error: treehouse get --lease did not report a worktree path for task $ID (spawning project '$PROJ_ABS')" >&2
+    exit 1
+  fi
+  # The lease is held from here on; the abort path returns it unless a task
+  # record takes over, and teardown returns it after that.
+  SPAWN_LEASE_HELD=1
+  if [ ! -d "$WT" ]; then
+    echo "error: treehouse get --lease reported '$WT' for task $ID, which is not a directory; refusing to launch" >&2
+    exit 1
   fi
 }
 
@@ -4097,6 +4153,9 @@ EOF
     WT_TARGET=$T
   fi
 else
+  if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+    spawn_acquire_treehouse_lease
+  fi
   case "$BACKEND" in
   tmux)
     SES=$(fm_backend_tmux_container_ensure)
@@ -4749,28 +4808,9 @@ elif [ "$RELAUNCH" -eq 1 ]; then
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  # Acquire the worktree with Treehouse's durable lease, the same non-interactive
-  # form bin/fm-home-seed.sh uses for secondmate homes. It prints only the path,
-  # reserves the slot under this task's id in Treehouse's persistent state, and
-  # holds it until `treehouse return`, so the slot stays attributable after the
-  # worker exits. The interactive form sent to the pane opens a subshell whose
-  # process lease lapses with the worker, which left finished tasks' slots
-  # unattributable and exhausted the pool (docs/treehouse-pool.md). Run from the
-  # project so Treehouse resolves the right pool; banners go to stderr.
-  spawn_lease_out=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "$ID")
-  WT=$(printf '%s\n' "$spawn_lease_out" | awk 'NF { line = $0 } END { print line }')
-  if [ -z "$WT" ]; then
-    echo "error: treehouse get --lease did not report a worktree path for task $ID (spawning project '$PROJ_ABS')" >&2
-    exit 1
-  fi
-  # The lease is held from here on; the abort path returns it unless a task
-  # record takes over, and teardown returns it after that.
-  SPAWN_LEASE_HELD=1
-  if [ ! -d "$WT" ]; then
-    echo "error: treehouse get --lease reported '$WT' for task $ID, which is not a directory; refusing to launch" >&2
-    exit 1
-  fi
-
+  # The worktree was leased before this endpoint existed (spawn_acquire_treehouse_lease,
+  # called ahead of the endpoint creation above), so what remains is to prove it
+  # is isolated and to claim it. Both refusals are cheap and name the endpoint.
   validate_spawn_worktree "treehouse get --lease" "$T"
 
   # Claim the pool slot for this task. The durable lease above already names the

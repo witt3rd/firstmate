@@ -11,6 +11,7 @@ A task's worktree is held by a durable Treehouse lease named after the task, fro
 1. `bin/fm-spawn.sh` runs `treehouse get --lease --lease-holder <task-id>` from the spawning project.
    The non-interactive form prints only the worktree path and records the task as the lease holder in the pool's persistent state.
    Later `treehouse get` calls never hand that slot out and `treehouse prune` never removes it, even with no process running inside it.
+   The lease is taken before the task's endpoint exists, so a refusal there leaves nothing behind (see "Fast failure on exhaustion").
 2. The spawn checks that the path is an isolated worktree, claims the slot for the task, moves the task's pane into it with a `cd`, and only then starts the worker.
 3. `bin/fm-teardown.sh` runs `treehouse return --force <path>` when the task is cleaned up, which releases the lease and puts the slot back in the pool.
 4. A spawn that fails or is interrupted after the lease was taken, and before a task record exists, returns the lease itself with `treehouse return --force --if-lease-holder <task-id> <path>`.
@@ -37,6 +38,15 @@ On Herdr that is `foreground_cwd`, not `cwd`; `tests/fm-backend-herdr.test.sh` p
 
 `max_trees` in the repository's `treehouse.toml` is the limit that paces concurrent workers on a host.
 Every task holds one slot for its whole life, so a project can run at most `max_trees` workers at once, counting secondmate homes and any slot that is dirty or leased by something else.
+When the pool is full, `treehouse get --lease` fails with a message of the form `all N worktrees are in use or dirty (max_trees = M)`.
+
+### Fast failure on exhaustion
+
+The spawn takes its lease before it creates the worker's endpoint, so a pool that cannot hand out a tree is reported at once.
+It recognises Treehouse's limit message (any line that names `worktrees are in use` or `max_trees`), stops, and prints that message with a pointer to this page.
+No window, tab, pane, or workspace is ever created for the refused spawn, so there is no sixty-second wait, no leftover endpoint, and nothing to clean up that could move the active workspace or tab.
+Any other `treehouse get --lease` failure is refused at the same point with the tool's own message.
+`tests/fm-spawn-worktree-settle.test.sh` pins both refusals against a stub pool, and `tests/fm-backend-herdr-presentation-e2e.test.sh` pins the focus guarantee against a real pool in an isolated Herdr lab.
 
 Size it for the most workers you intend to run at once on that host, plus headroom for secondmate homes and for a slot that is briefly held while a task is cleaned up.
 A lane-heavy host needs `max_trees` raised ahead of time rather than discovering the limit as a failed spawn.
