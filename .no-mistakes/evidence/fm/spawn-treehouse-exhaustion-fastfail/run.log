@@ -1,0 +1,90 @@
+== fm-spawn-worktree-settle
+ok - worktree acquisition passes --lease --lease-holder <task-id> and keeps the lease on success
+ok - an exhausted pool refuses immediately with its own message before any window exists
+ok - a non-exhaustion lease failure also refuses before any window exists, with the tool's message
+ok - a leased path that is not isolated is refused and its lease returned
+ok - a transient stale cwd read at the launch boundary is retried, not recorded
+ok - a pane outside the worktree refuses at the launch boundary and the lease is returned
+# all fm-spawn-worktree-settle tests passed
+== fm-backend-herdr-presentation-e2e
+ok - real Herdr lab: concurrent post-create abort cleanup stays serialized with exact focus restoration
+ok - real Herdr lab: an instant pool-exhaustion refusal creates and tears down nothing and never moves the active workspace or tab
+ok - real Herdr lab: Treehouse commands and metadata shape are byte-identical except for endpoint IDs and spawn incarnation
+ok - real Herdr lab: exact task-pane close removes the projected workspace with no unrestored wrong-focus interval
+ok - real Herdr lab: concurrent projected cleanup is serialized and leaves active workspace/tab unchanged
+ok - real Herdr lab: three repeated concurrent create/order/cleanup waves have zero active workspace or tab drift
+ok - real Herdr lab: the primary presentation setting inherits into real secondmate homes
+ok - real Herdr lab: primary and two secondmate homes each own a top-level contiguous child block
+ok - real Herdr lab: concurrent primary/A/B spawns preserve parent order and exact focus
+ok - real Herdr lab: session lock contention from a secondmate home falls back flat with no journal
+ok - real Herdr lab: Hi Bit and Wheelhouse-style same-identity restarts reclaim one nested space with exact focus and idempotence
+ok - real Herdr lab: secondmate restart binding and reclaim stay isolated to the exact child home and parent
+ok - real Herdr lab: concurrent cross-home recoveries replace exact husks under one session lock with no focus drift
+ok - real Herdr lab: default resumed identity refuses session lock contention
+ok - real Herdr lab: --herdr-resume-lock-wait waits out session lock contention instead of refusing
+ok - real Herdr lab: legacy projection labels and flat secondmate tabs are left unmigrated
+ok - real Herdr lab: multi-home exact-pane teardowns restore captain focus without workspace close authority
+warning: no exact herdr presentation token match for missing1; leaving any stale space untouched and spawning flat
+warning: no exact herdr presentation token match for renamed1; leaving any stale space untouched and spawning flat
+warning: 2 exact herdr presentation token matches for duplicate1 are quarantined; inspecting only for duplicate-agent risk
+warning: quarantined herdr presentation for duplicate1 is dead or agent-free; exact bound reclaim may proceed, otherwise spawning flat
+warning: 2 exact herdr presentation token matches for duplicate1 are quarantined; inspecting only for duplicate-agent risk
+error: quarantined herdr presentation for duplicate1 has a stale-agent pane; refusing duplicate launch
+ok - real Herdr lab: missing, renamed, and duplicate tokens trigger zero destructive or adoptive calls, and live duplicate risk refuses launch
+ok - real Herdr lab validation completed on Herdr 0.9.3 with the default-session tripwire intact
+rm: cannot remove '/tmp/fm-herdr-presentation.CZXKWC/home/state/anchor.git-hooks/sendemail-validate': Permission denied
+rm: cannot remove '/tmp/fm-herdr-presentation.CZXKWC/home/state/anchor.git-hooks/pre-auto-gc': Permission denied
+rm: cannot remove '/tmp/fm-herdr-presentation.CZXKWC/home/state/anchor.git-hooks/post-rewrite': Permission denied
+rm: cannot remove '/tmp/fm-herdr-presentation.CZXKWC/home/state/anchor.git-hooks/pre-push': Permission denied
+rm: cannot remove '/tmp/fm-herdr-presentation.CZXKWC/home/state/anchor.git-hooks/post-merge': Permission denied
+rm: cannot remove '/tmp/fm-herdr-presentation.CZXKWC/home/state/anchor.git-hooks/post-checkout': Permission denied
+rm: cannot remove '/tmp/fm-herdr-presentation.CZXKWC/home/state/anchor.git-hooks/pre-rebase': Permission denied
+rm: cannot remove '/tmp/fm-herdr-presentation.CZXKWC/home/state/anchor.git-hooks/post-commit': Permission denied
+rm: cannot remove '/tmp/fm-herdr-presentation.CZXKWC/home/state/anchor.git-hooks/prepare-commit-msg': Permission denied
+rm: cannot remove '/tmp/fm-herdr-presentation.CZXKWC/home/state/anchor.git-hooks/pre-merge-commit': Permission denied
+rm: cannot remove '/tmp/fm-herdr-presentation.CZXKWC/home/state/anchor.git-hooks/pre-commit': Permission denied
+rm: cannot remove '/tmp/fm-herdr-presentation.CZXKWC/home/state/anchor.git-hooks/post-applypatch': Permission denied
+rm: cannot remove '/tmp/fm-herdr-presentation.CZXKWC/home/state/anchor.git-hooks/pre-applypatch': Permission denied
+rm: cannot remove '/tmp/fm-herdr-presentation.CZXKWC/home/state/anchor.git-hooks/applypatch-msg': Permission denied
+rm: cannot remove '/tmp/fm-herdr-presentation.CZXKWC/home/state/anchor.git-hooks/commit-msg': Permission denied
+== fm-teardown
+ok - fractional legacy retry wait remains supported without arithmetic
+ok - teardown records the task's pipeline spend before removing its branch and record
+ok - teardown skips all pipeline-spend recording when the home has not opted in
+ok - teardown records unavailable pipeline spend for an owned ship task whose copy is gone
+ok - a task's own parked no-mistakes run is aborted, not orphaned, before the worker is removed
+ok - a run that lands on passed-with-override after abort is still recognized as terminal
+ok - a run that lands on passed-with-skips after abort is still recognized as terminal
+ok - a parked run the pipeline advanced past the task copy is still concluded from the runs ledger, not orphaned
+ok - a ledger row for a different head never authorizes a parked-run abort
+ok - a malformed ledger row never authorizes a parked-run abort
+ok - an impossible ledger date never authorizes a parked-run abort
+ok - a terminal status with a stale gate never reaches ledger cleanup
+ok - an advanced head present locally aborts through the strict rule alone - the ledger fallback stays dormant
+ok - an unresolvable active row with no same-branch anchor is never concluded (conservative refusal)
+ok - an ancestor-only anchor never binds an advanced parked run to this task
+ok - a terminal unfetched-head row is stale history and never concludes a run
+ok - a terminal newest row anchored at this worktree's head never authorizes an abort
+ok - a resolvable diverged newer same-branch row makes every older row stale history; no run is concluded
+ok - consecutive unresolvable rows are ambiguous and never conclude a run
+ok - a ledger-proven continuation is still left alone while the run is autonomously active
+ok - teardown refuses before reap or removal when a task-owned run remains parked
+ok - a different run cannot confirm the targeted abort
+ok - empty post-abort status is not accepted as confirmation
+ok - the CLI's exact run-not-found signal confirms completion
+ok - a parked run on another branch is never aborted by this task's teardown (ownership is precise)
+ok - a task-owned autonomous running step is left alone rather than aborted
+ok - a leaked descendant process rooted under the task's worktree is reaped by teardown, not left surviving
+ok - a leaked descendant process rooted under the task's per-task tasktmp is reaped by teardown too
+ok - missing lsof falls back to reaping the tmux pane process group
+ok - an erroring lsof scan refuses teardown and preserves the task
+ok - a reused pid with a different start time is never force-killed
+ok - an exec change preserves birth identity and the process is reaped
+ok - a process spawned during grace is reaped on a later pass
+ok - persistent leaked processes refuse teardown after bounded retries
+ok - a process exiting during identity lookup does not block teardown
+ok - the run abort and the leaked-process reap both complete before the destructive worktree return
+ok - an ordinary ship teardown cleans the task's docker lane exactly once
+ok - a refused lane clean never breaks teardown
+ok - a secondmate teardown never runs the docker lane clean
+ok - a missing lane clean tool never breaks teardown
