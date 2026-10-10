@@ -1173,6 +1173,40 @@ SH
   pass "worktree whose content already landed in the default branch is torn down (content fallback)"
 }
 
+# A spawn leases the task's worktree durably (treehouse get --lease), so cleanup
+# must release that lease: a finished task's slot has to come back to the pool or
+# the pool drains one task at a time. The release is `treehouse return` naming
+# the recorded worktree, and it must happen before the task record is dropped.
+test_teardown_returns_the_worktree_lease() {
+  local case_dir rc wt
+  case_dir=$(make_case lease-return)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  land_on_origin_main "$case_dir" feature.txt hello
+  wt=$(cd "$case_dir/wt" && pwd -P)
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FM_TEST_TREEHOUSE_LOG:?}"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+
+  set +e
+  FM_TEST_TREEHOUSE_LOG="$case_dir/treehouse.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "lease-return: teardown should succeed"
+  assert_present "$case_dir/treehouse.log" "lease-return: teardown never returned the worktree"
+  [ "$(grep -c '^return ' "$case_dir/treehouse.log")" -eq 1 ] \
+    || fail "lease-return: teardown should return the worktree exactly once: $(cat "$case_dir/treehouse.log")"
+  assert_grep "return --force $wt" "$case_dir/treehouse.log" \
+    "lease-return: teardown did not return the task's leased worktree"
+  assert_absent "$case_dir/state/task-x1.meta" "lease-return: teardown left task metadata after the return"
+  pass "teardown returns the task's leased worktree to the pool"
+}
+
 # A task recording base_branch= landed when its content reached that branch, not
 # the default branch: a squash merge into the base branch is the landing.
 test_content_fallback_uses_recorded_base_branch() {
@@ -4759,6 +4793,7 @@ test_squash_merged_stale_local_refuses_when_forge_unreachable
 test_pr_check_does_not_refresh_stale_pr_head
 test_pr_check_records_remote_head_when_local_lags
 test_content_in_default_fallback_allows
+test_teardown_returns_the_worktree_lease
 test_content_fallback_uses_recorded_base_branch
 test_content_fallback_refreshes_stale_origin_ref
 test_dirty_worktree_refuses

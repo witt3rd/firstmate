@@ -451,12 +451,50 @@ fm_fake_exit0() {
   local fakebin=$1 tool
   shift
   for tool in "$@"; do
+    if [ "$tool" = treehouse ]; then
+      fm_fake_treehouse "$fakebin"
+      continue
+    fi
     cat > "$fakebin/$tool" <<'SH'
 #!/usr/bin/env bash
 exit 0
 SH
     chmod +x "$fakebin/$tool"
   done
+}
+
+# fm_fake_treehouse <fakebin> [leased-path]
+# Drops a stub `treehouse` that never touches a real pool. Every call is
+# appended to $FM_FAKE_TREEHOUSE_LOG (when set) as one line of arguments.
+#   get --lease ...  prints $FM_FAKE_TREEHOUSE_PATH, else [leased-path], else
+#                    $FM_FAKE_PANE_PATH, as the leased worktree path (nothing
+#                    when all are unset), or
+#                    fails with a pool-exhausted message when
+#                    $FM_FAKE_TREEHOUSE_GET_FAIL is set
+#   return ...       exits $FM_FAKE_TREEHOUSE_RETURN_RC (default 0)
+#   anything else    exits 0
+fm_fake_treehouse() {
+  local fakebin=$1
+  if [ -n "${2:-}" ]; then printf '%s\n' "$2" > "$fakebin/.treehouse-leased-path"; else rm -f "$fakebin/.treehouse-leased-path"; fi
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+[ -z "${FM_FAKE_TREEHOUSE_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TREEHOUSE_LOG"
+case "${1:-}" in
+  get)
+    if [ -n "${FM_FAKE_TREEHOUSE_GET_FAIL:-}" ]; then
+      echo "all 8 worktrees are in use or dirty (max_trees = 8)" >&2
+      exit 1
+    fi
+    case " $* " in
+      *" --lease "*) printf '%s\n' "${FM_FAKE_TREEHOUSE_PATH:-$(cat "$(dirname "$0")/.treehouse-leased-path" 2>/dev/null || printf '%s' "${FM_FAKE_PANE_PATH:-}")}" | sed '/^$/d' ;;
+    esac
+    exit 0
+    ;;
+  return) exit "${FM_FAKE_TREEHOUSE_RETURN_RC:-0}" ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
 }
 
 # fm_fake_crash_injector <fakebin>
