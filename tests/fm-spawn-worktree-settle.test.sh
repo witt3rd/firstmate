@@ -8,8 +8,6 @@
 # `treehouse` (tests/lib.sh fm_fake_treehouse) and a fake tmux, with no live
 # pool, and covers:
 #   - acquisition passes --lease and the task id, never the interactive form;
-#   - a pool that reports exhaustion refuses at once with Treehouse's message,
-#     takes no lease and closes the endpoint it just created;
 #   - a leased path that is the repository primary is refused and returned;
 #   - the launch-boundary read tolerates a transient stale cwd, but a pane that
 #     never reaches the worktree refuses and returns the lease;
@@ -98,8 +96,7 @@ EOF
   : > "$TMUX_LOG"
 }
 
-# LEASE_PATH overrides the path the stub leases (default: the case's worktree);
-# GET_FAIL makes the stub pool report exhaustion.
+# LEASE_PATH overrides the path the stub leases (default: the case's worktree).
 run_settle_spawn() {
   local id=$1
   FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
@@ -110,7 +107,6 @@ run_settle_spawn() {
     FM_FAKE_PANE_STALE_READS="$STALE_READS" FM_FAKE_PANE_COUNTFILE="$COUNTFILE" \
     FM_FAKE_TREEHOUSE_LOG="$TREEHOUSE_LOG" FM_FAKE_TMUX_LOG="$TMUX_LOG" \
     FM_FAKE_TREEHOUSE_PATH="${LEASE_PATH:-$WT_DIR}" \
-    FM_FAKE_TREEHOUSE_GET_FAIL="${GET_FAIL:-}" \
     PATH="$FAKEBIN_DIR:$PATH" \
     "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
 }
@@ -133,31 +129,6 @@ test_acquisition_leases_under_the_task_id() {
   assert_no_grep "return" "$TREEHOUSE_LOG" "a successful spawn must keep its lease for teardown to release"
   assert_no_grep "treehouse get" "$TMUX_LOG" "spawn typed the interactive treehouse get into the pane"
   pass "worktree acquisition passes --lease --lease-holder <task-id> and keeps the lease on success"
-}
-
-# A pool with no free tree answers at once with its own message. The spawn must
-# refuse immediately with that message, take no lease, publish nothing, and
-# close the endpoint it created instead of leaving the window to die.
-test_exhausted_pool_refuses_immediately_and_closes_the_endpoint() {
-  local rec id out status start elapsed
-  id=lease-exhausted-z2
-  rec=$(make_settle_case lease-exhausted "$id" 0)
-  read_settle_record "$rec"
-  GET_FAIL=1
-
-  start=$(date +%s)
-  out=$(run_settle_spawn "$id")
-  status=$?
-  elapsed=$(( $(date +%s) - start ))
-  GET_FAIL=
-  [ "$status" -ne 0 ] || fail "spawn succeeded against an exhausted pool"$'\n'"$out"
-  [ "$elapsed" -lt 30 ] || fail "exhausted pool took ${elapsed}s to refuse; it must not wait out a discovery timeout"
-  assert_contains "$out" "max_trees = 8" "refusal did not carry Treehouse's own exhaustion message"
-  assert_contains "$out" "docs/treehouse-pool.md" "refusal did not point at the pool sizing doc"
-  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "refused spawn published task metadata"
-  assert_no_grep "return" "$TREEHOUSE_LOG" "no lease was taken, so none may be returned"
-  assert_grep "kill-window" "$TMUX_LOG" "the endpoint created for the refused spawn was not closed"
-  pass "an exhausted pool refuses immediately with its own message and closes the new window"
 }
 
 # The leased path is screened by the isolation predicate: the repository's
@@ -222,7 +193,6 @@ test_pane_that_never_reaches_the_worktree_refuses_and_returns_the_lease() {
 }
 
 test_acquisition_leases_under_the_task_id
-test_exhausted_pool_refuses_immediately_and_closes_the_endpoint
 test_primary_checkout_lease_is_refused_and_returned
 test_transient_stale_cwd_at_the_launch_boundary_is_retried
 test_pane_that_never_reaches_the_worktree_refuses_and_returns_the_lease

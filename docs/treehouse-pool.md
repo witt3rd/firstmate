@@ -37,7 +37,6 @@ On Herdr that is `foreground_cwd`, not `cwd`; `tests/fm-backend-herdr.test.sh` p
 
 `max_trees` in the repository's `treehouse.toml` is the limit that paces concurrent workers on a host.
 Every task holds one slot for its whole life, so a project can run at most `max_trees` workers at once, counting secondmate homes and any slot that is dirty or leased by something else.
-When the pool is full, `treehouse get --lease` fails with a message of the form `all N worktrees are in use or dirty (max_trees = M)`, and the spawn stops with an error that names `max_trees` and this page.
 
 Size it for the most workers you intend to run at once on that host, plus headroom for secondmate homes and for a slot that is briefly held while a task is cleaned up.
 A lane-heavy host needs `max_trees` raised ahead of time rather than discovering the limit as a failed spawn.

@@ -4757,16 +4757,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # process lease lapses with the worker, which left finished tasks' slots
   # unattributable and exhausted the pool (docs/treehouse-pool.md). Run from the
   # project so Treehouse resolves the right pool; banners go to stderr.
-  #
-  # A pool that cannot hand a slot out - every tree held, up to max_trees - makes
-  # this call fail at once with Treehouse's own message (already on stderr), so
-  # the spawn refuses immediately instead of waiting out a discovery timeout. No
-  # lease exists then, so the only thing to undo is the endpoint just created.
-  spawn_lease_out=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "$ID") || {
-    echo "error: treehouse get --lease failed for task $ID (spawning project '$PROJ_ABS'); if the message above says every worktree is in use (max_trees), the pool is exhausted - raise max_trees in treehouse.toml or return finished tasks' slots (docs/treehouse-pool.md)" >&2
-    rovo_endpoint_cleanup
-    exit 1
-  }
+  spawn_lease_out=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "$ID")
   WT=$(printf '%s\n' "$spawn_lease_out" | awk 'NF { line = $0 } END { print line }')
   if [ -z "$WT" ]; then
     echo "error: treehouse get --lease did not report a worktree path for task $ID (spawning project '$PROJ_ABS')" >&2
