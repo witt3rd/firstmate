@@ -377,6 +377,12 @@ test_no_mistakes_dod_wording() {
     "no-mistakes DOD must require --intent to be the Captain's intent subsection"
   assert_grep "plus any later words the captain actually said" "$brief" \
     "no-mistakes DOD must allow later captain words in --intent"
+  assert_grep "pass a sanitized paraphrase of that requirement" "$brief" \
+    "no-mistakes DOD must require a paraphrased --intent"
+  assert_grep "Never copy the person's sentences, tone, profanity, or personal remarks" "$brief" \
+    "no-mistakes DOD must forbid copying the person's wording"
+  assert_grep "are all paraphrased, never verbatim" "$brief" \
+    "no-mistakes DOD must state published text is never verbatim"
   assert_grep "Do not include \`## Firstmate spec\`" "$brief" \
     "no-mistakes DOD must keep Firstmate spec out of --intent"
   assert_grep "or your own decisions and tradeoffs" "$brief" \

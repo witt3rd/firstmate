@@ -681,6 +681,9 @@ EOF
   assert_grep "plus any later words the captain actually supplied" \
     "$home/data/$id/launch-brief.md" \
     "migrated launch contract excluded later captain clarifications"
+  assert_grep "Pass a sanitized paraphrase of those words, never the words themselves" \
+    "$home/data/$id/launch-brief.md" \
+    "migrated launch contract did not require a paraphrased intent"
   assert_grep "The Definition of done's rule that \`--intent\` must be self-sufficient still governs" \
     "$home/data/$id/launch-brief.md" \
     "migrated launch contract's overlay dropped the self-sufficiency pointer"

@@ -72,7 +72,8 @@
 # `## Firstmate spec` and never the worker's own tradeoffs.
 # Author the subsection body and later relays as the actual words, without
 # adding speaker labels or direct address: the heading supplies provenance and
-# is not part of --intent. A legacy mixed Task instead marks each captain line
+# is not part of --intent. The brief stays local; what the worker passes as
+# --intent, and all other published text, is a sanitized paraphrase, never verbatim. A legacy mixed Task instead marks each captain line
 # with `[captain] `; the selector returns its words, not that metadata prefix.
 # That selector skips fenced blocks and indented examples like the heading
 # reader, so a quoted `Captain:` sample is never authorized intent.
@@ -271,7 +272,8 @@ fm_brief_intent_overlay() {  # <captain-intent>
 # Current no-mistakes intent contract
 This section supersedes every earlier brief instruction about constructing `--intent`, but not later clarifications actually supplied by the captain.
 Use everything under `## Captain intent authorized for --intent` through the end of this brief, including any nested subheadings but excluding that heading, plus any later words the captain actually supplied as `--intent`; never include Firstmate specification or other mixed Task content.
-Preserve those words without adding speaker labels or direct address.
+Pass a sanitized paraphrase of those words, never the words themselves: what is wanted and why, in plain words, with at most a short quoted product term, and none of the person's sentences, tone, profanity, or personal remarks, because the pipeline publishes it in the pull request.
+Add no speaker labels or direct address.
 Firstmate-authored constraints, acceptance criteria, implementation details, decisions, and tradeoffs are specification, not captain intent.
 The Definition of done's rule that `--intent` must be self-sufficient still governs the string you pass: resolve any report, decision, or PR the intent below refers to into its substance rather than passing the pointer.
 
@@ -356,7 +358,9 @@ ${pr_return_line}Whenever a drive call returns without a gate or an outcome - it
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, pass \`--intent\` as only this brief's \`## Captain's intent\` subsection body, not its heading, plus any later words the captain actually said.
-Preserve the actual words without adding speaker labels or direct address; the subsection heading supplies provenance outside the pipeline input.
+The pipeline prints \`--intent\` into the pull request description, a shared public artifact, so pass a sanitized paraphrase of that requirement: what is wanted and why, in plain words, with at most a short quoted product term.
+Never copy the person's sentences, tone, profanity, or personal remarks into \`--intent\`, and add no speaker labels or direct address.
+The brief's own \`## Captain's intent\` section is internal and local and is never published; the intent handed to the pipeline, the PR body, the issue text, and the commit messages are all paraphrased, never verbatim.
 For a legacy brief with no such subsection, include only words on lines marked \`[captain] \`, excluding that metadata prefix; never copy its mixed \`# Task\` wholesale.
 If it has no provenance-marked captain words, stop and ask firstmate instead of starting no-mistakes.
 Do not include \`## Firstmate spec\`, later Firstmate build constraints, or your own decisions and tradeoffs.
