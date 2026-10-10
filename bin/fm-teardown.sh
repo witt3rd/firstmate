@@ -2183,6 +2183,12 @@ task_pids_under_roots() {  # <dir>...
 $dir_pids"
   done
   TASK_PIDS=$(printf '%s\n' "$pids" | grep -E '^[0-9]+$' | sort -un || true)
+  # The endpoint's own shell is not a leak: the backend close below owns ending
+  # it. Reaping it first would kill the pane outside that close's focus-safe,
+  # locked removal, and Herdr would move the active workspace.
+  if [ -n "${TASK_REAP_SPARE_PID:-}" ]; then
+    TASK_PIDS=$(printf '%s\n' "$TASK_PIDS" | grep -vx "$TASK_REAP_SPARE_PID" || true)
+  fi
 }
 
 reap_task_backend_process_group() {  # <label>
@@ -3582,6 +3588,12 @@ fi
 # kind=secondmate: a secondmate home's own runtime lifecycle is owned by the
 # dedicated process-event and firstmate-home removal machinery further below,
 # not by task-worktree cleanup.
+TASK_REAP_SPARE_PID=
+if [ "$BACKEND" = herdr ] && [ -n "$TEARDOWN_HERDR_PANE" ]; then
+  TASK_REAP_SPARE_PID=$(fm_backend_herdr_cli "$TEARDOWN_HERDR_SESSION" pane process-info --pane "$TEARDOWN_HERDR_PANE" 2>/dev/null \
+    | jq -r '.result.process_info.shell_pid // empty' 2>/dev/null) || TASK_REAP_SPARE_PID=
+  case "$TASK_REAP_SPARE_PID" in *[!0-9]*) TASK_REAP_SPARE_PID= ;; esac
+fi
 if [ "$KIND" != secondmate ] && teardown_owns_worktree; then
   conclude_task_no_mistakes_run "$WT"
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
