@@ -401,8 +401,8 @@ fm_backend_zellij_target_ready() {  # <target> [expected-label]
 # (unlike herdr's `foreground_cwd`), so passive JSON polling cannot solve
 # this. Active probe instead: print the pane's `$PWD` with a unique marker
 # (atomically submitted, mirroring send_text_line), briefly settle, then capture
-# and read only that marker line. Scoped to fm-spawn.sh's own worktree-discovery
-# poll loop (the only caller of this op), where injecting a harmless extra
+# and read only that marker line. Scoped to fm-spawn.sh's own launch-boundary isolation check
+# (the only caller of this op), where injecting a harmless extra
 # command before the harness ever launches is an acceptable trade for a reliable
 # answer.
 fm_backend_zellij_current_path() {  # <target> [expected-label]

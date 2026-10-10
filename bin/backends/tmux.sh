@@ -107,7 +107,7 @@ fm_backend_tmux_create_task() {  # <session> <window-name> <proj-abs> -> prints 
 }
 
 # fm_backend_tmux_current_path: the live pane's current working directory, or
-# empty on any tmux error. Mirrors fm-spawn.sh's worktree-discovery poll:
+# empty on any tmux error. Mirrors fm-spawn.sh's launch-boundary isolation check:
 # `tmux display-message -p -t "$T" '#{pane_current_path}'`.
 fm_backend_tmux_current_path() {  # <target>
   tmux display-message -p -t "$1" '#{pane_current_path}' 2>/dev/null
