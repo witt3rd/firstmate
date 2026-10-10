@@ -923,6 +923,7 @@ Names present in the registry produce no report; unknown or unverified names do 
 Each relaunch installs a fresh worker extension with the home's current list, so the replacement performs the same check.
 
 [`bin/fm-exclude-tools-lib.sh`](../bin/fm-exclude-tools-lib.sh) implements parsing and pre-launch validation for this contract; [`bin/fm-spawn.sh`](../bin/fm-spawn.sh)'s header owns the launch-flag mechanics.
+
 ## GitHub identity per repository owner (config/gh-identities)
 
 A box that signs in to more than one GitHub account can run each `gh` call as the account that owns the repository the call targets, so the pipeline's pull-request step does not fail because the active account is the wrong one.
