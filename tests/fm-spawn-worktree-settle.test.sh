@@ -1,24 +1,20 @@
 #!/usr/bin/env bash
-# Regression test for the fm-spawn.sh treehouse-get worktree-detection settle
-# loop (bin/fm-spawn.sh, the `for _ in $(seq 1 60)` loop after `treehouse get`).
+# Regression test for how bin/fm-spawn.sh acquires and proves a task worktree.
 #
-# On some tmux/WSL setups a brand-new window's pane_current_path transiently
-# reports a stale, unrelated-but-real path on the very first poll, before the
-# pane actually settles into the worktree treehouse get moved it to. That stale
-# path still passes the loop's "differs from the project" check and
-# validate_spawn_worktree's "is a real, distinct worktree" check (it IS a real
-# git checkout, just the wrong one), so a naive single-read loop silently
-# records the wrong worktree= in state/<id>.meta. This test simulates that
-# transient-then-settled pane_current_path sequence with a fake tmux and
-# asserts the recorded worktree resolves to the real, settled worktree, never
-# the stale first read.
-#
-# The same loop has a second transient to survive: `treehouse get` reports the
-# REPOSITORY's primary checkout as its own cwd while it is still preparing a
-# slot. From a linked spawning home that path is not the project, so a poll
-# comparing only against the project adopted it and the isolation guard then
-# refused the launch. The cases below cover both the transient and the pane
-# that never leaves the primary at all.
+# A worker's worktree is leased non-interactively (`treehouse get --lease
+# --lease-holder <task-id>`), the pane is told to `cd` into it, and the launch
+# boundary then reads the pane's FOREGROUND process cwd and refuses to start a
+# worker anywhere else. This suite drives the real spawn against a stub
+# `treehouse` (tests/lib.sh fm_fake_treehouse) and a fake tmux, with no live
+# pool, and covers:
+#   - acquisition passes --lease and the task id, never the interactive form;
+#   - a leased path that is the repository primary is refused and returned;
+#   - the launch-boundary read tolerates a transient stale cwd, but a pane that
+#     never reaches the worktree refuses and returns the lease;
+#   - a spawn that succeeds keeps its lease (teardown owns the release).
+# The pane cwd read itself (herdr's foreground_cwd, never the frozen plain cwd)
+# is pinned in tests/fm-backend-herdr.test.sh, and teardown's release of the
+# lease in tests/fm-teardown.test.sh.
 set -u
 
 # shellcheck source=tests/fixtures.sh
@@ -30,13 +26,16 @@ TMP_ROOT=$(fm_test_tmproot fm-spawn-worktree-settle)
 # make_settle_fakebin <dir> builds a fake tmux whose `#{pane_current_path}`
 # query returns FM_FAKE_PANE_STALE for the first FM_FAKE_PANE_STALE_READS
 # calls, then FM_FAKE_PANE_PATH forever after - reproducing a pane that
-# transiently reports a stale cwd before settling into the real worktree.
+# transiently reports a stale cwd before settling into the real worktree. Every
+# call is recorded to FM_FAKE_TMUX_LOG so a case can assert what the spawn did
+# to the endpoint.
 make_settle_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
+[ -z "${FM_FAKE_TMUX_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
 case "$*" in
   *"#{pane_current_path}"*)
     countfile="${FM_FAKE_PANE_COUNTFILE:?FM_FAKE_PANE_COUNTFILE unset}"
@@ -61,15 +60,16 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
+  fm_fake_treehouse "$fakebin"
+  fm_test_fake_sleep_noop "$fakebin"
   printf '%s\n' "$fakebin"
 }
 
 # make_settle_case <name> <id> <stale_reads> builds a home, a primary project
-# with a real worktree (the eventual settled path), and a separate real git
-# repo standing in for the stale path (a real checkout of something else
+# with a real worktree (the path the stub treehouse leases), and a separate real
+# git repo standing in for a stale cwd (a real checkout of something else
 # entirely, distinct from both the project and the worktree - mirroring the
-# live incident where the stale read was another real firstmate home).
+# live incident where a stale read was another real firstmate home).
 make_settle_case() {
   local name=$1 id=$2 stale_reads=$3 case_dir home proj wt stale fakebin countfile
   case_dir="$TMP_ROOT/$name"
@@ -79,29 +79,24 @@ make_settle_case() {
   stale="$case_dir/stale-other-checkout"
   countfile="$case_dir/pane-call-count"
   fakebin=$(make_settle_fakebin "$case_dir/fake")
-  mkdir -p "$home/data" "$home/projects" "$home/state" "$home/config"
-  printf 'codex\n' > "$home/config/crew-harness"
+  fm_test_spawn_home "$home" codex
   fm_git_worktree "$proj" "$wt" "wt-$name"
   fm_git_init_commit "$stale"
-  mkdir -p "$home/data/$id"
-  cat > "$home/data/$id/brief.md" <<EOF
-# Task
-## Captain's intent
-Exercise settled-worktree detection for $id.
-
-## Firstmate spec
-Record only the pane's stable worktree.
-EOF
-  touch "$home/state/.last-watcher-beat"
+  fm_test_spawn_brief "$home" "$id" "Exercise worktree acquisition for $id."
   printf '%s\n' "$case_dir|$home|$proj|$wt|$stale|$fakebin|$countfile|$stale_reads"
 }
 
 read_settle_record() {
-  IFS='|' read -r _ HOME_DIR PROJ_DIR WT_DIR STALE_DIR FAKEBIN_DIR COUNTFILE STALE_READS <<EOF
+  IFS='|' read -r CASE_DIR HOME_DIR PROJ_DIR WT_DIR STALE_DIR FAKEBIN_DIR COUNTFILE STALE_READS <<EOF
 $1
 EOF
+  TREEHOUSE_LOG="$CASE_DIR/treehouse.log"
+  TMUX_LOG="$CASE_DIR/tmux.log"
+  : > "$TREEHOUSE_LOG"
+  : > "$TMUX_LOG"
 }
 
+# LEASE_PATH overrides the path the stub leases (default: the case's worktree).
 run_settle_spawn() {
   local id=$1
   FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
@@ -110,120 +105,96 @@ run_settle_spawn() {
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
     FM_FAKE_PANE_PATH="$WT_DIR" FM_FAKE_PANE_STALE="$STALE_DIR" \
     FM_FAKE_PANE_STALE_READS="$STALE_READS" FM_FAKE_PANE_COUNTFILE="$COUNTFILE" \
+    FM_FAKE_TREEHOUSE_LOG="$TREEHOUSE_LOG" FM_FAKE_TMUX_LOG="$TMUX_LOG" \
+    FM_FAKE_TREEHOUSE_PATH="${LEASE_PATH:-$WT_DIR}" \
     PATH="$FAKEBIN_DIR:$PATH" \
     "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
 }
 
-# A single stale first read (the exact incident) must not be accepted: the
-# loop should keep polling until two consecutive reads agree, landing on the
-# real settled worktree instead.
-test_single_stale_first_read_is_not_accepted() {
+# Acquisition takes the durable lease under the task's own id and never the
+# interactive form, so Treehouse can attribute the slot after the worker exits.
+test_acquisition_leases_under_the_task_id() {
   local rec id out status
-  id=settle-single-stale-z1
-  rec=$(make_settle_case settle-single "$id" 1)
+  id=lease-acquire-z1
+  rec=$(make_settle_case lease-acquire "$id" 0)
   read_settle_record "$rec"
 
   out=$(run_settle_spawn "$id")
   status=$?
-  expect_code 0 "$status" "spawn should succeed once the pane settles"
-  assert_contains "$out" "spawned $id" "spawn did not report success"
-  assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id.meta" \
-    "meta did not record the settled worktree"
+  expect_code 0 "$status" "spawn should succeed with a leased worktree"$'\n'"$out"
+  assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id.meta" "meta did not record the leased worktree"
+  assert_grep "get --lease --lease-holder $id" "$TREEHOUSE_LOG" \
+    "acquisition did not pass --lease with the task id as lease holder"
+  [ "$(grep -c '^get' "$TREEHOUSE_LOG")" -eq 1 ] || fail "spawn acquired more than one worktree"$'\n'"$(cat "$TREEHOUSE_LOG")"
+  assert_no_grep "return" "$TREEHOUSE_LOG" "a successful spawn must keep its lease for teardown to release"
+  assert_no_grep "treehouse get" "$TMUX_LOG" "spawn typed the interactive treehouse get into the pane"
+  pass "worktree acquisition passes --lease --lease-holder <task-id> and keeps the lease on success"
+}
+
+# The leased path is screened by the isolation predicate: the repository's
+# primary checkout is never a valid worker location. The refusal must name it
+# and the lease just taken must go back to the pool.
+test_primary_checkout_lease_is_refused_and_returned() {
+  local rec id out status primary
+  id=lease-primary-z3
+  rec=$(make_settle_case lease-primary "$id" 0)
+  read_settle_record "$rec"
+  primary=$(git -C "$PROJ_DIR" rev-parse --path-format=absolute --git-common-dir)
+  primary=$(dirname "$primary")
+  LEASE_PATH=$primary
+
+  out=$(run_settle_spawn "$id")
+  status=$?
+  LEASE_PATH=
+  [ "$status" -ne 0 ] || fail "spawn accepted a leased path that is not an isolated worktree"$'\n'"$out"
+  assert_contains "$out" "did not yield an isolated worktree" "refusal did not explain the isolation failure"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "refused spawn published task metadata"
+  assert_grep "return --force --if-lease-holder $id $primary" "$TREEHOUSE_LOG" \
+    "a refused spawn did not return its lease"
+  pass "a leased path that is not isolated is refused and its lease returned"
+}
+
+# The launch boundary reads the pane's foreground cwd after the explicit cd. A
+# transient stale read must neither fail the spawn nor be recorded, because the
+# read is retried until it agrees with the recorded worktree.
+test_transient_stale_cwd_at_the_launch_boundary_is_retried() {
+  local rec id out status
+  id=lease-stale-z4
+  rec=$(make_settle_case lease-stale "$id" 2)
+  read_settle_record "$rec"
+
+  out=$(run_settle_spawn "$id")
+  status=$?
+  expect_code 0 "$status" "spawn should succeed once the pane reaches the worktree"$'\n'"$out"
+  assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id.meta" "meta did not record the leased worktree"
   assert_no_grep "worktree=$STALE_DIR" "$HOME_DIR/state/$id.meta" \
     "meta wrongly recorded the transient stale path as the worktree"
-  pass "a single transient stale pane_current_path read is not accepted as the worktree"
+  [ "$(cat "$COUNTFILE")" -ge 3 ] || fail "launch-boundary check did not retry past the stale reads"
+  pass "a transient stale cwd read at the launch boundary is retried, not recorded"
 }
 
-# A pane that reports the real worktree from the very first read costs exactly
-# one confirming read - not a whole extra polling cycle on top of it. Counting
-# the pane reads measures the loop itself; wall-clock time would fold in every
-# other cost of a spawn (fetch, trust registration) and drift with the machine.
-test_already_settled_pane_costs_one_confirm_read() {
-  local rec id out status reads
-  id=settle-already-settled-z2
-  rec=$(make_settle_case settle-already-settled "$id" 0)
-  read_settle_record "$rec"
-
-  out=$(run_settle_spawn "$id")
-  status=$?
-  expect_code 0 "$status" "spawn should succeed when the pane is already settled"$'\n'"$out"
-  assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id.meta" \
-    "meta did not record the already-settled worktree"
-  reads=$(cat "$COUNTFILE")
-  [ "$reads" -eq 3 ] || fail "already-settled pane took $reads reads to confirm - expected the first read, one confirmation, and the launch-boundary cwd check"
-  pass "an already-settled pane confirms on the next read, not a whole extra cycle"
-}
-
-# make_primary_case <name> <id> <stale_reads> builds the linked-home shape: the
-# spawning project is itself a LINKED worktree of the repository, and the path
-# the pane transiently reports is that repository's PRIMARY checkout. `treehouse
-# get` reports the repository it is preparing a slot from as its own cwd while
-# it is still fetching and checking out, so the pane reads the primary for the
-# first seconds. The primary is not the spawning project, so a poll that only
-# compares against the project accepts it as the worktree, and the isolation
-# guard then refuses the launch even though treehouse went on to enter a real
-# slot. The settled path is a second linked worktree of the same repository.
-make_primary_case() {
-  local name=$1 id=$2 stale_reads=$3 case_dir home primary proj wt fakebin countfile
-  case_dir="$TMP_ROOT/$name"
-  home="$case_dir/home"
-  primary="$case_dir/primary"
-  proj="$case_dir/mate"
-  wt="$case_dir/slot"
-  countfile="$case_dir/pane-call-count"
-  fakebin=$(make_settle_fakebin "$case_dir/fake")
-  fm_test_spawn_home "$home" codex
-  fm_git_worktree "$primary" "$proj" "mate-$name"
-  git -C "$primary" worktree add --quiet -b "slot-$name" "$wt"
-  fm_test_spawn_brief "$home" "$id" "Exercise primary-checkout transient detection for $id."
-  printf '%s\n' "$case_dir|$home|$proj|$wt|$primary|$fakebin|$countfile|$stale_reads"
-}
-
-# The exact incident: the pane reports the repository primary for the first
-# reads, then settles into the slot treehouse actually created. The primary must
-# never be adopted as the worktree, so the spawn lands on the settled slot.
-test_transient_primary_checkout_is_not_accepted() {
+# A pane that never reaches the leased worktree must refuse before any worker
+# starts, and the lease taken for it must be returned rather than stranded.
+test_pane_that_never_reaches_the_worktree_refuses_and_returns_the_lease() {
   local rec id out status
-  id=settle-primary-transient-z3
-  rec=$(make_primary_case settle-primary-transient "$id" 3)
+  id=lease-never-z5
+  rec=$(make_settle_case lease-never "$id" 100000)
   read_settle_record "$rec"
-  fm_test_fake_sleep_noop "$FAKEBIN_DIR"
 
   out=$(run_settle_spawn "$id")
   status=$?
-  expect_code 0 "$status" "spawn should succeed once the pane leaves the primary checkout"$'\n'"$out"
-  assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id.meta" \
-    "meta did not record the settled worktree"
-  assert_no_grep "worktree=$STALE_DIR" "$HOME_DIR/state/$id.meta" \
-    "meta wrongly recorded the repository primary checkout as the worktree"
-  pass "a transient primary-checkout pane read is not accepted as the worktree"
-}
-
-# A pane that never leaves the primary checkout must still fail at the deadline
-# rather than waiting forever or recording the primary.
-test_primary_checkout_that_never_settles_fails_at_the_deadline() {
-  local rec id out status
-  id=settle-primary-stuck-z4
-  rec=$(make_primary_case settle-primary-stuck "$id" 100000)
-  read_settle_record "$rec"
-  fm_test_fake_sleep_noop "$FAKEBIN_DIR"
-
-  out=$(run_settle_spawn "$id")
-  status=$?
-  [ "$status" -ne 0 ] || fail "spawn accepted a pane that never left the primary checkout"$'\n'"$out"
-  assert_contains "$out" "did not enter an isolated worktree" \
-    "spawn did not explain that the pane never reached an isolated worktree"
-  assert_contains "$out" "$STALE_DIR" \
-    "the refusal did not name the path the pane kept reporting"
-  assert_contains "$out" "repository's primary checkout" \
-    "the refusal did not say why that path was rejected"
+  [ "$status" -ne 0 ] || fail "spawn launched a worker from a pane outside its worktree"$'\n'"$out"
+  assert_contains "$out" "not its recorded worktree" "refusal did not say the worker started outside its worktree"
+  assert_contains "$out" "$STALE_DIR" "refusal did not name the path the pane kept reporting"
   [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "refused spawn published task metadata"
-  pass "a pane stuck on the primary checkout fails loudly at the deadline"
+  assert_grep "return --force --if-lease-holder $id $WT_DIR" "$TREEHOUSE_LOG" \
+    "a failed spawn did not return its lease"
+  pass "a pane outside the worktree refuses at the launch boundary and the lease is returned"
 }
 
-test_single_stale_first_read_is_not_accepted
-test_already_settled_pane_costs_one_confirm_read
-test_transient_primary_checkout_is_not_accepted
-test_primary_checkout_that_never_settles_fails_at_the_deadline
+test_acquisition_leases_under_the_task_id
+test_primary_checkout_lease_is_refused_and_returned
+test_transient_stale_cwd_at_the_launch_boundary_is_retried
+test_pane_that_never_reaches_the_worktree_refuses_and_returns_the_lease
 
 echo "# all fm-spawn-worktree-settle tests passed"

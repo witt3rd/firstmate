@@ -1828,6 +1828,37 @@ cleanup_stale_lock_for_safety_check() {
   return "$TEARDOWN_TREEHOUSE_LOCK_REFUSED"
 }
 
+# Move a Herdr endpoint's own shell out of the task worktree before the worktree
+# is returned. `treehouse return` terminates every process whose working
+# directory is inside the slot, and spawn leaves the endpoint shell standing in
+# it (docs/treehouse-pool.md). Left there, the return would kill that shell and
+# Herdr would remove the pane through its own unguarded path, moving the active
+# workspace or tab before the backend close below gets to end it focus-safely.
+# The shell is spared from the process reap above for the same reason. Best
+# effort: when the shell cannot be moved the return proceeds as it always did.
+teardown_herdr_release_pane_cwd() {  # <worktree> <project>
+  local wt=$1 proj=$2 wt_real seen seen_real i quoted
+  [ "$BACKEND" = herdr ] && [ -n "${TASK_REAP_SPARE_PID:-}" ] || return 0
+  [ -d "$proj" ] || return 0
+  wt_real=$(cd -P "$wt" 2>/dev/null && pwd -P) || return 0
+  teardown_herdr_pane_in_worktree() {
+    seen=$(fm_backend_herdr_current_path "$T" 2>/dev/null || true)
+    [ -n "$seen" ] || return 1
+    seen_real=$(cd -P "$seen" 2>/dev/null && pwd -P) || seen_real=$seen
+    case "$seen_real" in "$wt_real" | "$wt_real"/*) return 0 ;; esac
+    return 1
+  }
+  teardown_herdr_pane_in_worktree || return 0
+  quoted=${proj//\'/\'\\\'\'}
+  fm_backend_herdr_send_text_line "$T" "cd -- '$quoted'" || return 0
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    teardown_herdr_pane_in_worktree || return 0
+    sleep 0.5
+  done
+  echo "warning: task $ID's Herdr endpoint shell did not leave its worktree before the return; the return may end it" >&2
+  return 0
+}
+
 # Return a worktree/home via `treehouse return --force`, tolerating a transient or
 # stale git index.lock left by a killed crew process. See the script header.
 teardown_treehouse_return() {
@@ -2183,6 +2214,12 @@ task_pids_under_roots() {  # <dir>...
 $dir_pids"
   done
   TASK_PIDS=$(printf '%s\n' "$pids" | grep -E '^[0-9]+$' | sort -un || true)
+  # The endpoint's own shell is not a leak: the backend close below owns ending
+  # it. Reaping it first would kill the pane outside that close's focus-safe,
+  # locked removal, and Herdr would move the active workspace.
+  if [ -n "${TASK_REAP_SPARE_PID:-}" ]; then
+    TASK_PIDS=$(printf '%s\n' "$TASK_PIDS" | grep -vx "$TASK_REAP_SPARE_PID" || true)
+  fi
 }
 
 reap_task_backend_process_group() {  # <label>
@@ -3582,6 +3619,12 @@ fi
 # kind=secondmate: a secondmate home's own runtime lifecycle is owned by the
 # dedicated process-event and firstmate-home removal machinery further below,
 # not by task-worktree cleanup.
+TASK_REAP_SPARE_PID=
+if [ "$BACKEND" = herdr ] && [ -n "$TEARDOWN_HERDR_PANE" ]; then
+  TASK_REAP_SPARE_PID=$(fm_backend_herdr_cli "$TEARDOWN_HERDR_SESSION" pane process-info --pane "$TEARDOWN_HERDR_PANE" 2>/dev/null \
+    | jq -r '.result.process_info.shell_pid // empty' 2>/dev/null) || TASK_REAP_SPARE_PID=
+  case "$TASK_REAP_SPARE_PID" in *[!0-9]*) TASK_REAP_SPARE_PID= ;; esac
+fi
 if [ "$KIND" != secondmate ] && teardown_owns_worktree; then
   conclude_task_no_mistakes_run "$WT"
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
@@ -3645,6 +3688,7 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   if [ "$FORCE" != "--force" ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ]; then
     post_lock_cleanup_check=validate_worktree_teardown_safety
   fi
+  teardown_herdr_release_pane_cwd "$WT" "$PROJ"
   teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" || {
     echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
     exit 1

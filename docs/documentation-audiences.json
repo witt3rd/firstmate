@@ -481,6 +481,10 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/treehouse-pool.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/turnend-guard.md",
       "audience": "operator-current"
     },

@@ -8,10 +8,10 @@
 # default (tmux, `backend=` absent) path stays byte-identical. Sourced only
 # through bin/fm-backend.sh's fm_backend_source, never directly.
 #
-# Worktree acquisition (running `treehouse get` inside the pane, and polling
-# its cwd) is unchanged by this extraction: P1 scopes only the session
-# provider, not the worktree provider, so fm-spawn.sh still drives that part
-# inline with these same send/current-path primitives.
+# Worktree acquisition (a durable `treehouse get --lease`, then a `cd` of the
+# pane into it checked by the pane's cwd) is unchanged by this extraction: P1
+# scopes only the session provider, not the worktree provider, so fm-spawn.sh
+# still drives that part inline with these same send/current-path primitives.
 #
 # The verified composer/busy-detection and verify-and-retry-submit primitives
 # already live in bin/fm-tmux-lib.sh, shared with the away-mode daemon
@@ -107,7 +107,7 @@ fm_backend_tmux_create_task() {  # <session> <window-name> <proj-abs> -> prints 
 }
 
 # fm_backend_tmux_current_path: the live pane's current working directory, or
-# empty on any tmux error. Mirrors fm-spawn.sh's worktree-discovery poll:
+# empty on any tmux error. Mirrors fm-spawn.sh's launch-boundary isolation check:
 # `tmux display-message -p -t "$T" '#{pane_current_path}'`.
 fm_backend_tmux_current_path() {  # <target>
   tmux display-message -p -t "$1" '#{pane_current_path}' 2>/dev/null

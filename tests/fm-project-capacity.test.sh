@@ -100,6 +100,8 @@ SH
   cat > "$fakebin/treehouse" <<'SH'
 #!/usr/bin/env bash
 printf 'treehouse %s\n' "$*" >> "$FM_FAKE_CALL_LOG"
+# A durable lease prints the worktree path the pane is then moved into.
+case " $* " in *" --lease "*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}" ;; esac
 exit 0
 SH
   chmod +x "$fakebin/tmux" "$fakebin/treehouse"
