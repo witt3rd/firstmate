@@ -1,0 +1,7 @@
+ok - fm-gh-owner-identity runs a personal repository's call as the owning login
+ok - fm-gh-owner-identity leaves an unmapped owner on the ambient account
+ok - fm-gh-owner-identity refuses plainly when the owning login has no token
+ok - fm-gh-owner-identity refuses a malformed identity map instead of guessing
+ok - fm-gh-owner-identity is a pass-through without a map and never overrides an explicit token
+ok - fm-gh-owner-identity never touches gh auth or gh config calls
+ok - fm-gh-owner-identity reads the owner from -R, GH_REPO, a URL, an api path, and the origin remote
