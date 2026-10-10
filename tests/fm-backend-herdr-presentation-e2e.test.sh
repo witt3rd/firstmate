@@ -189,12 +189,14 @@ fi
 # Cleanup ends a lone idle shell instead of calling pane close (Herdr's
 # focus-preserving removal path), so the pane's disappearance is the close
 # observable: record it as pane-gone for the armed abort fixtures.
-if [ "$status" -ne 0 ] && [ "${1:-} ${2:-}" = "pane get" ] && [ -d "$POST_CREATE_ABORT_CONTROL" ]; then
+if [ -d "$POST_CREATE_ABORT_CONTROL" ]; then
   for task_dir in "$POST_CREATE_ABORT_CONTROL"/abort-*; do
-    [ -d "$task_dir" ] || continue
-    [ "${3:-}" = "$(cat "$task_dir/task-pane" 2>/dev/null || true)" ] || continue
-    printf 'pane-gone\t-\t-\t%s\n' "${3:-}" >> "$FOCUS_AUDIT_LOG"
-    break
+    [ -f "$task_dir/task-pane" ] && [ ! -e "$task_dir/gone" ] || continue
+    gone_pane=$(cat "$task_dir/task-pane")
+    if ! env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" pane get "$gone_pane" >/dev/null 2>&1; then
+      : > "$task_dir/gone"
+      printf 'pane-gone\t-\t-\t%s\n' "$gone_pane" >> "$FOCUS_AUDIT_LOG"
+    fi
   done
 fi
 if [ -n "$mutation" ]; then
