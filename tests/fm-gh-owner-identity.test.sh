@@ -157,6 +157,31 @@ test_owner_is_read_from_every_target_form() {
   pass "fm-gh-owner-identity reads the owner from -R, GH_REPO, a URL, an api path, and the origin remote"
 }
 
+test_token_is_never_stored_or_printed() {
+  local case_dir secret=tok-witt3rd-secret out rc f
+  case_dir=$(make_case secrecy)
+  run_gh "$case_dir" "$case_dir" pr create -R witt3rd/firstmate > "$case_dir/ok.out" 2> "$case_dir/ok.err" \
+    || fail "secrecy: the mapped call should succeed"
+  printf '%s\n' 'witt3rd ghost' > "$case_dir/config/gh-identities"
+  set +e
+  run_gh "$case_dir" "$case_dir" pr create -R witt3rd/firstmate > "$case_dir/refuse.out" 2> "$case_dir/refuse.err"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "secrecy: the refusal path should refuse"
+  while IFS= read -r f; do
+    [ "$f" = "$case_dir/tokens" ] && continue
+    # The stub records the GH_TOKEN it ran with in its log's token= field, by design; only its argv is checked.
+    if [ "$f" = "$case_dir/gh.log" ]; then
+      out=$(sed 's/^token=[^ ]* //' "$f")
+    else
+      out=$(cat "$f")
+    fi
+    case "$out" in *"$secret"*) fail "secrecy: the token appeared in $f" ;; esac
+  done < <(find "$case_dir" -type f)
+  assert_no_grep "args=.*$secret" "$case_dir/gh.log" "secrecy: the real gh's argv contained the token"
+  pass "fm-gh-owner-identity never stores or prints the token"
+}
+
 test_personal_repo_runs_as_its_owner_identity
 test_enterprise_repo_keeps_its_own_identity
 test_missing_identity_refuses_plainly
@@ -164,3 +189,4 @@ test_malformed_map_refuses
 test_absent_map_and_explicit_token_pass_through
 test_auth_and_config_calls_are_never_touched
 test_owner_is_read_from_every_target_form
+test_token_is_never_stored_or_printed
