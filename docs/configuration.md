@@ -10,7 +10,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
 | Which models and account a project may spend | [Spend profiles](#spend-profiles-spend_profiles-in-configcrew-dispatchjson) |
-| Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), and [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist) |
+| Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [GitHub identity per repository owner](#github-identity-per-repository-owner-configgh-identities), and [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
@@ -923,6 +923,15 @@ Names present in the registry produce no report; unknown or unverified names do 
 Each relaunch installs a fresh worker extension with the home's current list, so the replacement performs the same check.
 
 [`bin/fm-exclude-tools-lib.sh`](../bin/fm-exclude-tools-lib.sh) implements parsing and pre-launch validation for this contract; [`bin/fm-spawn.sh`](../bin/fm-spawn.sh)'s header owns the launch-flag mechanics.
+
+## GitHub identity per repository owner (config/gh-identities)
+
+A box that signs in to more than one GitHub account can run each `gh` call as the account that owns the repository the call targets, so the pipeline's pull-request step does not fail because the active account is the wrong one.
+The file is local and gitignored, and it is opt-in: without it every `gh` call is unchanged.
+It holds one `<repo-owner> <gh-login>` pair per line, and an owner with no line keeps the ambient account.
+
+`bin/fm-gh-owner-identity.sh` owns the file format, how the target owner is read, the single-command token handling, and the refusals, and `tests/fm-gh-owner-identity.test.sh` pins them.
+Installing it as the `gh` that the no-mistakes daemon finds is a captain step, because that daemon is shared.
 
 ## Worker account pin (config/claude-account, config/pi-account)
 
