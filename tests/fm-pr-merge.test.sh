@@ -244,6 +244,21 @@ case "${1:-} ${2:-}" in
     # The required-check reads: the branch itself, and its rules read without
     # the merge-queue filter the queue reader below applies.
     case " $* " in
+      *" repos/"*"/check-runs/"*"/annotations"*)
+        note_all="$*"
+        note_tail=${note_all##*/check-runs/}
+        note_file="$FM_TEST_GH_ANNOTATIONS/${note_tail%%/*}.json"
+        [ -f "$note_file" ] || exit 1
+        cat "$note_file"
+        exit 0
+        ;;
+      *" repos/"*"/actions/jobs/"*)
+        job_all="$*"
+        job_file="$FM_TEST_GH_JOBS/${job_all##*/actions/jobs/}.json"
+        [ -f "$job_file" ] || exit 1
+        cat "$job_file"
+        exit 0
+        ;;
       *" repos/"*"/commits/"*"/check-runs"*)
         case "$*" in
           *"/commits/$(cat "$FM_TEST_GH_HEAD")/check-runs"*) ;;
@@ -464,6 +479,8 @@ run_pr_merge() {
   FM_TEST_GH_MERGEABLE_CALLS="$case_dir/mergeable-calls" \
   FM_TEST_GH_HEAD="$case_dir/github-head" \
   FM_TEST_GH_RUNS="$case_dir/github-runs.json" \
+  FM_TEST_GH_ANNOTATIONS="$case_dir/annotations" \
+  FM_TEST_GH_JOBS="$case_dir/jobs" \
   FM_TEST_GH_MERGE_RC_FILE="$case_dir/github-merge-rc" \
   FM_TEST_GH_MERGE_OUTPUT="$(cat "$case_dir/github-merge-output" 2>/dev/null || true)" \
   FM_TEST_GH_GRAPHQL_FAIL="$case_dir/github-graphql-fail" \
@@ -2358,6 +2375,328 @@ test_secondmate_without_parent_binding_is_loud() {
   pass "a secondmate home that cannot report upward says so instead of merging in silence"
 }
 
+# --waive-billing-block fixtures. The runs read at the head lists every check
+# run with a numeric id; the annotations of run <id> live in annotations/<id>.json.
+BILLING_TEXT='The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the '"'"'Billing & plans'"'"' section in your settings'
+
+# One check-runs entry in GitHub's real shape. Args: id name head conclusion [app_id [app_slug]]
+billing_run() {
+  printf '{"id":%s,"name":"%s","head_sha":"%s","status":"completed","conclusion":"%s","html_url":"https://github.com/example/repo/actions/runs/777/job/%s","app":{"id":%s,"slug":"%s"}}' \
+    "$1" "$2" "$3" "$4" "$1" "${5:-15368}" "${6:-github-actions}"
+}
+
+# The Actions job read for a run. Args: case_dir id head steps-json runner-name
+write_billing_job() {
+  mkdir -p "$1/jobs"
+  jq -n --argjson id "$2" --arg head "$3" --argjson steps "$4" --arg runner "$5" \
+    '{id:$id, head_sha:$head, status:"completed", conclusion:"failure", steps:$steps,
+      runner_id:(if $runner == "" then 0 else 9 end), runner_name:$runner}' > "$1/jobs/$2.json"
+}
+
+# Write the check-runs page for the head. Args: case_dir run-json...
+write_billing_runs() {
+  local case_dir=$1 runs='' run
+  shift
+  for run in "$@"; do runs="${runs:+$runs,}$run"; done
+  printf '{"total_count":%s,"check_runs":[%s]}\n' "$#" "$runs" > "$case_dir/github-runs.json"
+  for run in "$@"; do
+    write_billing_job "$case_dir" "$(printf '%s' "$run" | jq -r .id)" "$(printf '%s' "$run" | jq -r .head_sha)" '[]' ''
+  done
+}
+
+# Annotations for one run. Args: case_dir id message
+write_billing_annotation() {
+  mkdir -p "$1/annotations"
+  jq -n --arg m "$3" '[{"annotation_level":"failure","message":$m}]' > "$1/annotations/$2.json"
+}
+
+# A case whose head carries the given red checks. Args: name head check-name...
+make_billing_case() {
+  local name=$1 head=$2 case_dir entries='' n
+  shift 2
+  case_dir=$(make_case "$name")
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  for n in "$@"; do
+    entries="${entries:+$entries,}$(check_run "$n" COMPLETED FAILURE 2026-01-01T00:00:00Z)"
+  done
+  write_github_rollup_json "$case_dir" "$head" "$entries"
+  printf '%s\n' "$case_dir"
+}
+
+test_waive_billing_block_waives_only_billing_annotated_failures() {
+  local case_dir rc head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa url=https://github.com/example/repo/pull/90
+  # (1) every failure is billing-annotated: it merges, bound to the head.
+  case_dir=$(make_billing_case billing-all "$head" lint test)
+  write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure)" "$(billing_run 12 test "$head" failure)"
+  write_billing_annotation "$case_dir" 11 "$BILLING_TEXT"
+  write_billing_annotation "$case_dir" 12 "$BILLING_TEXT"
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "billing-all: every billing-annotated failure should merge"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 90 example/repo --squash
+  assert_grep 'waived billing-blocked checks' "$case_dir/stderr" "billing-all: the waiver was not reported"
+
+  # Without the flag the same head refuses.
+  case_dir=$(make_billing_case billing-no-flag "$head" lint)
+  write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure)"
+  write_billing_annotation "$case_dir" 11 "$BILLING_TEXT"
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "billing-no-flag: a red check must refuse without the flag"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" "billing-no-flag: gh pr merge ran"
+
+  # (2) one failure with a different annotation: refused, naming it.
+  case_dir=$(make_billing_case billing-mixed "$head" lint test)
+  write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure)" "$(billing_run 12 test "$head" failure)"
+  write_billing_annotation "$case_dir" 11 "$BILLING_TEXT"
+  write_billing_annotation "$case_dir" 12 "Process completed with exit code 1."
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "billing-mixed: a non-billing failure must refuse"
+  assert_grep "check 'test' is not green" "$case_dir/stderr" "billing-mixed: the non-billing check was not named"
+  assert_no_grep "check 'lint' is not green" "$case_dir/stderr" "billing-mixed: the billing check was named"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" "billing-mixed: gh pr merge ran"
+
+  # A failing check with no annotation at all, and a status context, are not billing.
+  case_dir=$(make_billing_case billing-no-annotation "$head" lint)
+  write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure)"
+  mkdir -p "$case_dir/annotations"
+  printf '[]\n' > "$case_dir/annotations/11.json"
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "billing-no-annotation: an unannotated failure must refuse"
+  assert_grep "check 'lint' is not green" "$case_dir/stderr" "billing-no-annotation: the check was not named"
+
+  # (6) near-miss wording is not waived.
+  case_dir=$(make_billing_case billing-near-miss "$head" lint)
+  write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure)"
+  write_billing_annotation "$case_dir" 11 "The job was not started because recent account payments have failed."
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "billing-near-miss: different wording must refuse"
+  assert_grep "check 'lint' is not green" "$case_dir/stderr" "billing-near-miss: the check was not named"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" "billing-near-miss: gh pr merge ran"
+  pass "fm-pr-merge --waive-billing-block waives only checks whose annotation is GitHub's exact billing text"
+}
+
+test_waive_billing_block_requires_a_job_that_never_started() {
+  local case_dir rc head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa url=https://github.com/example/repo/pull/95
+  local bare=${BILLING_TEXT%%. Please*}
+  local steps='[{"name":"Run tests","number":1,"conclusion":"failure"}]'
+
+  case_dir=$(make_billing_case billing-bare "$head" lint)
+  write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure)"
+  write_billing_annotation "$case_dir" 11 "$bare"
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "billing-bare: the bare sentence on a zero-step job should merge"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 95 example/repo --squash
+
+  local label
+  for label in forged-steps trailing prefix wrong-case wrong-app runner unreadable-job; do
+    case_dir=$(make_billing_case "billing-$label" "$head" lint)
+    write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure)"
+    write_billing_annotation "$case_dir" 11 "$BILLING_TEXT"
+    case "$label" in
+      forged-steps) write_billing_job "$case_dir" 11 "$head" "$steps" runner-1 ;;
+      trailing) write_billing_annotation "$case_dir" 11 "$BILLING_TEXT now" ;;
+      prefix) write_billing_annotation "$case_dir" 11 "Error: $BILLING_TEXT" ;;
+      wrong-case) write_billing_annotation "$case_dir" 11 "$(printf '%s' "$BILLING_TEXT" | tr '[:upper:]' '[:lower:]')" ;;
+      wrong-app) write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure 12345 other-app)" ;;
+      runner) write_billing_job "$case_dir" 11 "$head" '[]' runner-1 ;;
+      unreadable-job) rm "$case_dir/jobs/11.json" ;;
+    esac
+    set +e
+    run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+    expect_code 1 "$rc" "billing-$label: must refuse"
+    assert_no_grep 'pr merge' "$case_dir/gh.log" "billing-$label: gh pr merge ran"
+    if [ "$label" != unreadable-job ]; then
+      assert_grep "check 'lint' is not green" "$case_dir/stderr" "billing-$label: the check was not named"
+    fi
+  done
+  pass "fm-pr-merge --waive-billing-block never waives a job that ran, a forged text, or another producer"
+}
+
+test_waive_billing_block_requires_the_verified_head() {
+  local case_dir rc head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa other=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb url=https://github.com/example/repo/pull/91
+  # (7) the billing-annotated run belongs to another head: not waived.
+  case_dir=$(make_billing_case billing-other-head "$head" lint)
+  write_billing_runs "$case_dir" "$(billing_run 11 lint "$other" failure)"
+  write_billing_annotation "$case_dir" 11 "$BILLING_TEXT"
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "billing-other-head: a run at another head must not waive"
+  assert_grep "check 'lint' is not green" "$case_dir/stderr" "billing-other-head: the check was not named"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" "billing-other-head: gh pr merge ran"
+
+  # An unreadable annotation never waives.
+  case_dir=$(make_billing_case billing-unreadable "$head" lint)
+  write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure)"
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "billing-unreadable: an unreadable annotation must refuse"
+  assert_grep 'could not be read' "$case_dir/stderr" "billing-unreadable: the read failure was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" "billing-unreadable: gh pr merge ran"
+
+  # The merge itself is bound to the verified head: a head that moves after the
+  # read makes gh refuse, and the refusal propagates.
+  case_dir=$(make_billing_case billing-head-moves "$head" lint)
+  write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure)"
+  write_billing_annotation "$case_dir" 11 "$BILLING_TEXT"
+  printf '1\n' > "$case_dir/github-merge-rc"
+  printf 'error: head branch was modified\n' > "$case_dir/github-merge-output"
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "billing-head-moves: a refused bound merge must fail"
+  assert_logged_gh_merge "$case_dir" 91 example/repo --squash
+  pass "fm-pr-merge --waive-billing-block reads annotations at the verified head and keeps the merge bound to it"
+}
+
+test_waive_billing_block_waives_missing_only_when_billing_blocked() {
+  local case_dir rc head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa url=https://github.com/example/repo/pull/92
+  # (3) a required check that never reported, with no billing state: refused.
+  case_dir=$(make_case billing-missing-plain)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  write_github_required "$case_dir" classic:deploy
+  write_billing_runs "$case_dir" "$(billing_run 11 ci "$head" success)"
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "billing-missing-plain: a plainly missing required check must refuse"
+  assert_grep "required check 'deploy' has not reported" "$case_dir/stderr" "billing-missing-plain: the check was not named"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" "billing-missing-plain: gh pr merge ran"
+
+  # A required check missing from the rollup but billing-blocked in the runs read: waived.
+  case_dir=$(make_case billing-missing-blocked)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  write_github_required "$case_dir" classic:deploy
+  write_billing_runs "$case_dir" "$(billing_run 11 ci "$head" success)" "$(billing_run 12 deploy "$head" failure)"
+  write_billing_annotation "$case_dir" 12 "$BILLING_TEXT"
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "billing-missing-blocked: a billing-blocked required check should merge"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 92 example/repo --squash
+
+  # The same missing check with a non-billing failure run: refused.
+  case_dir=$(make_case billing-missing-other)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  write_github_required "$case_dir" classic:deploy
+  write_billing_runs "$case_dir" "$(billing_run 12 deploy "$head" failure)"
+  write_billing_annotation "$case_dir" 12 "Process completed with exit code 1."
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "billing-missing-other: a missing check with another failure must refuse"
+  assert_grep "required check 'deploy' has not reported" "$case_dir/stderr" "billing-missing-other: the check was not named"
+  pass "fm-pr-merge --waive-billing-block waives a missing required check only in the billing-blocked state"
+}
+
+test_waive_billing_block_is_attended_and_mergeable_only() {
+  local case_dir rc head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa url=https://github.com/example/repo/pull/93
+  # (4) the away record exists: refused, nothing merged.
+  case_dir=$(make_billing_case billing-away "$head" lint)
+  write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure)"
+  write_billing_annotation "$case_dir" 11 "$BILLING_TEXT"
+  write_away_record "$case_dir" --words 'merge what is green'
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "billing-away: the waiver must be refused while away"
+  assert_grep '--waive-billing-block is attended-only' "$case_dir/stderr" "billing-away: refusal did not name attended-only"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" "billing-away: gh pr merge ran while away"
+
+  # (5) conflicting or not mergeable: refused even when every failure is billing.
+  case_dir=$(make_billing_case billing-conflict "$head" lint)
+  write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure)"
+  write_billing_annotation "$case_dir" 11 "$BILLING_TEXT"
+  jq -c '.mergeable = "CONFLICTING" | .mergeStateStatus = "DIRTY"' "$case_dir/github-view.json" > "$case_dir/view.tmp"
+  mv "$case_dir/view.tmp" "$case_dir/github-view.json"
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "billing-conflict: a conflicting PR must refuse"
+  assert_grep 'not MERGEABLE' "$case_dir/stderr" "billing-conflict: mergeability was not named"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" "billing-conflict: gh pr merge ran"
+
+  # The flag takes no value and does not apply to GitLab.
+  case_dir=$(make_billing_case billing-value "$head" lint)
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block=yes > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "billing-value: a value must be refused"
+  case_dir=$(make_gitlab_case billing-gitlab)
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" --waive-billing-block > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "billing-gitlab: GitLab must refuse the flag"
+  assert_grep 'does not apply to GitLab' "$case_dir/stderr" "billing-gitlab: refusal did not name GitLab"
+  [ ! -s "$case_dir/glab.log" ] || fail "billing-gitlab: glab ran"
+  pass "fm-pr-merge --waive-billing-block is attended-only, never waives mergeability, and is GitHub-only"
+}
+
+test_waive_billing_block_composes_with_admin_for_the_review_requirement_only() {
+  local case_dir rc head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa url=https://github.com/example/repo/pull/94
+  # (8) --admin alone is still refused beside the waiver: it needs --attended-override.
+  case_dir=$(make_billing_case billing-admin-refused "$head" lint)
+  write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure)"
+  write_billing_annotation "$case_dir" 11 "$BILLING_TEXT"
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block -- --admin > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "billing-admin-refused: --admin without --attended-override must refuse"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" "billing-admin-refused: gh pr merge ran"
+
+  # The full composition merges, passing --admin through for the review requirement.
+  case_dir=$(make_billing_case billing-admin "$head" lint)
+  write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure)"
+  write_billing_annotation "$case_dir" 11 "$BILLING_TEXT"
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block --attended-override -- --admin \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "billing-admin: the composed flags should merge"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 94 example/repo --squash --admin
+
+  # --admin never covers a non-billing red: the waiver stays scoped to billing.
+  case_dir=$(make_billing_case billing-admin-red "$head" lint)
+  write_billing_runs "$case_dir" "$(billing_run 11 lint "$head" failure)"
+  write_billing_annotation "$case_dir" 11 "Process completed with exit code 1."
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" --waive-billing-block --attended-override -- --admin \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "billing-admin-red: --admin must not cover a non-billing red"
+  assert_grep "check 'lint' is not green" "$case_dir/stderr" "billing-admin-red: the check was not named"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" "billing-admin-red: gh pr merge ran"
+  pass "fm-pr-merge --waive-billing-block composes with --attended-override -- --admin for the review requirement only"
+}
+
 test_github_zero_exit_queue_required_refuses_with_exact_retry
 test_github_closed_unqueued_outcome_omits_retry_flags
 test_github_agreeing_queue_rules_keep_retry_guidance
@@ -3928,3 +4267,10 @@ test_required_producer_identity
 test_app_bound_required_status_context_matches_by_name
 test_large_check_run_data_keeps_the_merge_verdict
 test_required_partial_reads_report_all_failures
+
+test_waive_billing_block_waives_only_billing_annotated_failures
+test_waive_billing_block_requires_a_job_that_never_started
+test_waive_billing_block_requires_the_verified_head
+test_waive_billing_block_waives_missing_only_when_billing_blocked
+test_waive_billing_block_is_attended_and_mergeable_only
+test_waive_billing_block_composes_with_admin_for_the_review_requirement_only
