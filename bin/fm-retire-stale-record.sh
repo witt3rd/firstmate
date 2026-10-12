@@ -75,17 +75,19 @@ usage() {
   awk '/^# PROOFS/ { exit } NR > 1 && /^#/ { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
 }
 
-# Sourced libraries may create the state folder, so refuse a wrong home first:
-# nothing here (dry run included) may create a folder, file or lock.
-case " $* " in
-  *" -h "*|*" --help "*) ;;
-  *)
-    if [ ! -d "$STATE" ] || [ -L "$STATE" ]; then
-      echo "error: retire refused: no state folder at $STATE (check FM_HOME); nothing was changed" >&2
-      exit 1
-    fi
-    ;;
-esac
+# Help is answered before anything is sourced, and a wrong home is refused
+# before it: sourced libraries create the state folder, and nothing here (dry
+# run and help included) may create a folder, file or lock.
+for _arg in "$@"; do
+  case "$_arg" in
+    -h|--help) usage; exit 0 ;;
+  esac
+done
+unset _arg
+if [ ! -d "$STATE" ] || [ -L "$STATE" ]; then
+  echo "error: retire refused: no state folder at $STATE (check FM_HOME); nothing was changed" >&2
+  exit 1
+fi
 
 for _src in \
   fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-backend.sh fm-lock-lib.sh \
