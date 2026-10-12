@@ -996,6 +996,75 @@ test_local_only_truly_unpushed_refuses() {
   pass "local-only worktree with truly unpushed work is refused (safety preserved)"
 }
 
+# Branch retirement: the task branch is deleted only when proven landed on the
+# default branch; the proof line is logged and the tip id saved for recreation.
+test_branch_retired_when_merged_with_proof() {
+  local case_dir rc tip
+  case_dir=$(make_case retire-merged)
+  write_meta "$case_dir" local-only ship
+  wt_commit "$case_dir" "merged work"
+  tip=$(git -C "$case_dir/wt" rev-parse HEAD)
+  git -C "$case_dir/wt" push -q origin HEAD:main
+  git -C "$case_dir/project" fetch -q origin
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "retire-merged: teardown should succeed"
+  git -C "$case_dir/project" rev-parse --verify -q refs/heads/fm/task-x1 >/dev/null \
+    && fail "retire-merged: landed branch was not deleted"
+  grep -q "retired branch fm/task-x1 @ $tip - merged:" "$case_dir/stderr" \
+    || fail "retire-merged: no proof line"
+  grep -q " fm/task-x1 $tip merged" "$case_dir/data/retired-branches.md" \
+    || fail "retire-merged: commit id not saved"
+  pass "landed task branch is deleted with a proof line and its commit id saved"
+}
+
+test_branch_retired_when_patch_equivalent() {
+  local case_dir rc tip
+  case_dir=$(make_case retire-patch)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" f.txt "same change"
+  tip=$(git -C "$case_dir/wt" rev-parse HEAD)
+  # Same net patch lands on origin/main as a different commit (a squash).
+  land_on_origin_main "$case_dir" f.txt "same change"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "retire-patch: teardown should succeed"
+  git -C "$case_dir/project" rev-parse --verify -q refs/heads/fm/task-x1 >/dev/null \
+    && fail "retire-patch: patch-equivalent branch was not deleted"
+  grep -q " fm/task-x1 $tip patch-equivalent" "$case_dir/data/retired-branches.md" \
+    || fail "retire-patch: commit id not saved"
+  pass "patch-equivalent task branch is deleted with proof"
+}
+
+test_branch_kept_when_landing_unproven() {
+  local case_dir rc tip
+  case_dir=$(make_case retire-unproven)
+  write_meta "$case_dir" local-only ship
+  wt_commit "$case_dir" "unlanded work"
+  tip=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  set +e
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "retire-unproven: forced teardown should succeed"
+  [ "$(git -C "$case_dir/project" rev-parse refs/heads/fm/task-x1 2>/dev/null)" = "$tip" ] \
+    || fail "retire-unproven: unproven branch was deleted or moved"
+  grep -q "branch fm/task-x1 left in place - not proven landed" "$case_dir/stderr" \
+    || fail "retire-unproven: no left-in-place message"
+  [ ! -s "$case_dir/data/retired-branches.md" ] || fail "retire-unproven: notes written"
+  pass "unproven task branch is left alone and said so"
+}
+
 test_local_only_merged_to_local_main_allows() {
   local case_dir rc
   case_dir=$(make_case merged-main)
@@ -5333,6 +5402,9 @@ test_teardown_closes_a_gerrit_task_with_its_change_url_as_a_note
 test_teardown_manual_backend_leaves_the_backlog_to_the_operator
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
+test_branch_retired_when_merged_with_proof
+test_branch_retired_when_patch_equivalent
+test_branch_kept_when_landing_unproven
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed

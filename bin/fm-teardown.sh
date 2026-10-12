@@ -1678,10 +1678,14 @@ retire_landed_branch() {  # <worktree> <branch>
     echo "note: branch $branch ($tip) left in place - not proven landed on ${name:-the default branch}" >&2
     return 0
   fi
+  # The tip id is saved BEFORE the delete: if it cannot be recorded, the branch stays.
+  if ! { mkdir -p "$DATA" 2>/dev/null && \
+    printf '%s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$branch" "$tip" "$proof" >> "$DATA/retired-branches.md"; }; then
+    echo "note: branch $branch ($tip) left in place - could not save its commit id to $DATA/retired-branches.md" >&2
+    return 0
+  fi
   git -C "$wt" branch -D "$branch" >/dev/null 2>&1 || return 0
   echo "retired branch $branch @ $tip - $proof" >&2
-  mkdir -p "$DATA" 2>/dev/null && \
-    printf '%s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$branch" "$tip" "$proof" >> "$DATA/retired-branches.md" || true
 }
 
 # The completion links this teardown already holds locally. A scout's
