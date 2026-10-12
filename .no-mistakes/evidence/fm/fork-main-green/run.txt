@@ -1,0 +1,3 @@
+ok - merged branch deleted
+ok - equivalent branch deleted
+ok - unlanded branch kept
