@@ -57,3 +57,52 @@ test_direct_invocation_still_works() {
 
 test_symlink_invocation_resolves_sibling_lib
 test_direct_invocation_still_works
+
+GOOD_B64=$(printf '%s' "$TMP_ROOT/real-root" | base64 | tr -d '\n')
+
+test_corrupt_decode_prints_diagnostic() {
+  local out err code
+  out="$TMP_ROOT/corrupt.stdout"
+  err="$TMP_ROOT/corrupt.stderr"
+  "$REAL_BIN/fm-remote-entrypoint.sh" 1 '!!notbase64!!' "$GOOD_B64" "$GOOD_B64" >"$out" 2>"$err"
+  code=$?
+  expect_code 64 "$code" "corrupt decode exit code"
+  assert_grep 'error: invalid base64 for remote root' "$err" "original message changed"
+  assert_grep 'diagnostic: remote root decode failed: encoded length=13 bytes, empty=no, only base64 characters=no, decoder stderr=base64: invalid input' "$err" \
+    "diagnostic lacks length or decoder stderr"
+  assert_grep 'writable=yes' "$err" "diagnostic lacks staging dir"
+  pass "corrupt decode appends a diagnostic line with length and decoder stderr"
+}
+
+test_unwritable_staging_names_it() {
+  local err code stubs="$TMP_ROOT/stubs"
+  err="$TMP_ROOT/unwritable.stderr"
+  mkdir -p "$stubs"
+  cat > "$stubs/mktemp" <<'S'
+#!/usr/bin/env bash
+d=$(/usr/bin/mktemp "$@") || exit 1
+chmod 555 "$d"
+printf '%s\n' "$d"
+S
+  chmod +x "$stubs/mktemp"
+  PATH="$stubs:$PATH" "$REAL_BIN/fm-remote-entrypoint.sh" 1 "$GOOD_B64" "$GOOD_B64" "$GOOD_B64" >/dev/null 2>"$err"
+  code=$?
+  expect_code 64 "$code" "unwritable staging exit code"
+  assert_grep 'staging dir=' "$err" "diagnostic lacks staging dir"
+  assert_grep 'writable=no' "$err" \
+    "diagnostic did not name the unwritable staging dir"
+  pass "unwritable staging directory is named in the diagnostic"
+}
+
+test_good_decode_prints_no_diagnostic() {
+  local err
+  err="$TMP_ROOT/good.stderr"
+  "$REAL_BIN/fm-remote-entrypoint.sh" 1 "$GOOD_B64" "$GOOD_B64" "$GOOD_B64" >/dev/null 2>"$err"
+  assert_no_grep 'diagnostic:' "$err" "good decode printed a diagnostic"
+  assert_no_grep 'invalid base64' "$err" "good decode failed to decode"
+  pass "good decode prints no diagnostic"
+}
+
+test_corrupt_decode_prints_diagnostic
+test_unwritable_staging_names_it
+test_good_decode_prints_no_diagnostic
