@@ -74,6 +74,21 @@ unset TASKS_AXI_FILE TASKS_AXI_BACKEND
 # throwaway homes, so they run with the override granted; the guard's own suite
 # unsets it to prove the refusal. Never inherit an operator's real grant.
 export FM_UNGUARDED_RUNTIME_OK=fm-test-fixture
+# Write the tracked default backlog configuration into a fixture home. Never copy
+# "$ROOT/.tasks.toml": an operator's primary checkout keeps a gitignored override
+# there (for example a beads backend at its live backlog), so a copy points the
+# fixture at the operator's queue and produces false failures. This mirrors the
+# tracked .tasks.toml defaults.
+fm_test_tasks_toml() {  # <destination-file>
+  cat > "$1" <<'TOML'
+backend = "markdown"
+
+[markdown]
+path = "data/backlog.md"
+archive = "data/done-archive.md"
+done_keep = 10
+TOML
+}
 
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
