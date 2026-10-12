@@ -240,14 +240,14 @@
 # checks before any destructive return. Teardown output notes every wait, retry, and
 # removal so the operator can see what happened.
 #
-# Released-tree build cleanup: once `treehouse return` has succeeded for a ship
-# or scout worktree whose root holds a Cargo.toml, teardown runs a quiet
-# `nice cargo clean` there so a freed pool slot does not keep gigabytes of Rust
-# build output. It runs only after every safety refusal and the return itself
-# have passed, never on the project's primary checkout or a secondmate home, and
-# never fails the teardown (a missing or failing cargo is ignored). It also runs
-# on a --force teardown, which skips the landed-work test and may be discarding
-# unlanded work. FM_TEARDOWN_CARGO_CLEAN=0 turns it off.
+# Released-tree build cleanup: for a ship or scout worktree whose root holds a
+# Cargo.toml, teardown runs a quiet `nice cargo clean` there, just before
+# `treehouse return`, so a freed pool slot does not keep gigabytes of Rust build
+# output and the clean cannot race the slot's next holder. It runs only after
+# every safety refusal has passed, never on the project's primary checkout or a
+# secondmate home, and never fails the teardown (a missing or failing cargo is
+# ignored). It does NOT run on a --force teardown, which bypasses the landed-work
+# test. FM_TEARDOWN_CARGO_CLEAN=0 turns it off.
 #
 # Pre-teardown cleanup sequence (runs once every landed/discard-work safety
 # refusal above has already passed, and BEFORE any worktree return, branch
@@ -1897,8 +1897,8 @@ teardown_herdr_release_pane_cwd() {  # <worktree> <project>
   return 0
 }
 
-# Best-effort `cargo clean` in a worktree that was just released to the pool.
-# Callers invoke it only after a successful return; it never fails the teardown.
+# Best-effort `cargo clean` in a worktree about to be released to the pool.
+# Callers invoke it only after the safety checks passed; it never fails the teardown.
 teardown_cargo_clean_released() {  # <worktree> <project>
   local wt=$1 proj=$2 wt_abs proj_abs
   [ "${FM_TEARDOWN_CARGO_CLEAN:-1}" != 0 ] || return 0
@@ -3746,6 +3746,7 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
     post_lock_cleanup_check=validate_worktree_teardown_safety
   fi
   teardown_herdr_release_pane_cwd "$WT" "$PROJ"
+  teardown_cargo_clean_released "$WT" "$PROJ"
   teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" || {
     echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
     exit 1
@@ -3755,7 +3756,6 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   # unclaimed until its next holder claims it, and leaves the claim in place
   # whenever the return did not actually happen.
   fm_treehouse_slot_owner_release "$WT" "$ID"
-  teardown_cargo_clean_released "$WT" "$PROJ"
 fi
 
 HERDR_PRESENTATION_JOURNAL="$STATE/$ID.herdr-presentation"
