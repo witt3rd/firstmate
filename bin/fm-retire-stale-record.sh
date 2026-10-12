@@ -26,9 +26,13 @@
 #     supervision-lease and gate-agent guards pass, and the task is not live:
 #     its recorded endpoint is proved dead or missing (alive, ambiguous,
 #     unreadable and unverified are all refused). An endpoint another task's
-#     record also names is not this task's and is not probed.
-#   - landed work. A scout: data/<id>/report.md is a non-empty regular file and
-#     bin/fm-captain-hold.sh verify passes. A ship: its PR is merged on the
+#     record also names is refused too: its wake rows and per-window markers
+#     cannot be told apart from this task's, so retire or reconcile the other
+#     record first.
+#   - landed work. A scout: data/<id>/report.md is a regular file of at least
+#     200 bytes whose first line is a Markdown heading (every scout brief asks
+#     for a standalone report, so a one-line note or a headerless stub is not
+#     one) and bin/fm-captain-hold.sh verify passes. A ship: its PR is merged on the
 #     forge, or - for a local-only ship - its branch is in the local default
 #     branch. Teardown's own landed-work test inspects the worktree, which is
 #     exactly what is gone or shared here, so this is the forge/clone-side
@@ -48,8 +52,8 @@
 # status, busy and turn markers, steering inbox, alert and presentation
 # markers, PR-check artifacts, wake-queue rows, and the watcher's per-window
 # idle/stale markers (.hash-/.count-/.stale-/.stale-since-/.wedge-escalations-/
-# .paused-*/.writing-*/.waiting-* for the recorded endpoint, only when no other
-# record names that endpoint). The record itself goes last, together with the
+# .paused-*/.writing-*/.waiting-* for the recorded endpoint, which no other
+# record may name). The record itself goes last, together with the
 # backlog item's close, through the same pending-close record and atomic
 # transition teardown uses (the item is closed with the report or PR link; a
 # home with no automatic backlog just loses the record). NEVER touched: any
@@ -152,6 +156,7 @@ refuse() {  # <reason...>
 }
 
 # Facts the proofs establish and the plan reads.
+MIN_REPORT_BYTES=200
 KIND=ship
 MODE=
 BACKEND=tmux
@@ -227,8 +232,7 @@ prove_not_live() {
   local state shared
   [ -n "$TARGET" ] || { note "no endpoint recorded: nothing to probe"; return 0; }
   if shared=$(other_record_for_target "$TARGET"); then
-    note "endpoint $TARGET is also named by task $shared: not this task's, left alone"
-    return 0
+    refuse "endpoint $TARGET is also named by task $shared, so this task's wake rows and per-window markers cannot be told apart from that task's; retire or reconcile $shared's record first"
   fi
   state=$(fm_backend_agent_state "$BACKEND" "$TARGET")
   case "$state" in
@@ -291,13 +295,17 @@ prove_landed() {
   case "$KIND" in
     scout)
       report="$DATA/$ID/report.md"
-      if [ ! -f "$report" ] || [ -L "$report" ] || [ ! -s "$report" ]; then
-        refuse "scout task $ID has no non-empty report at $report"
+      if [ ! -f "$report" ] || [ -L "$report" ]; then
+        refuse "scout task $ID has no report at $report"
+      fi
+      if [ "$(wc -c < "$report" | tr -d ' ')" -lt "$MIN_REPORT_BYTES" ] \
+         || ! head -n 1 "$report" | grep -Eq '^#{1,6} +[^ ]'; then
+        refuse "scout task $ID's report at $report is not a real report (it needs a Markdown heading on its first line and at least $MIN_REPORT_BYTES bytes)"
       fi
       FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
         FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-captain-hold.sh" verify "$ID" >/dev/null 2>&1 \
         || refuse "scout task $ID has not passed the captain-call completion gate (bin/fm-captain-hold.sh verify $ID)"
-      note "report $report exists and is non-empty"
+      note "report $report is a real report"
       ;;
     *)
       [ -d "$PROJ" ] || refuse "ship task $ID's project $PROJ is not available to prove landing"
@@ -457,16 +465,13 @@ candidate_paths() {
   fi
 }
 
-# The per-window markers belong to this task only while no other record of this
-# home names the same endpoint.
+# prove_not_live already refused an endpoint another record names, so the
+# per-window markers of the recorded endpoint are this task's alone.
 resolve_window_key() {
   local window
   WINDOW_KEY=
   window=$(fm_meta_get "$META" window)
   [ -n "$window" ] || return 0
-  if other_record_for_target "$(fm_backend_target_of_meta "$META")" >/dev/null; then
-    return 0
-  fi
   WINDOW_KEY=$(window_key "$window")
 }
 
@@ -558,7 +563,11 @@ fm_wake_queue_prune_task "$STATE" "$ID" "$TARGET" 2>/dev/null || true
 if [ -n "$WINDOW_KEY" ]; then
   fm_backend_clear_transition "$BACKEND" "$STATE" "$TARGET" || true
 fi
-chmod u+w "$STATE/$ID.git-hooks" 2>/dev/null || true
+# The spawn-owned hooks directory is left read-only by its installer; never
+# chmod through a link planted in its place (rm below drops a link itself).
+if [ -d "$STATE/$ID.git-hooks" ] && [ ! -L "$STATE/$ID.git-hooks" ]; then
+  chmod u+w "$STATE/$ID.git-hooks" 2>/dev/null || true
+fi
 while IFS= read -r path; do
   [ -e "$path" ] || [ -L "$path" ] || continue
   rm -rf -- "$path"

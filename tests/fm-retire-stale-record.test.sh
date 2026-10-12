@@ -126,10 +126,20 @@ write_task() {  # <case-dir> <id> <kind> <worktree> [extra meta...]
   : > "$state/.wedge-escalations-firstmate_fm-$id"
 }
 
+# A real report: a Markdown heading and a standalone body well over the floor.
+real_report() {  # <id>
+  printf '# Report for %s\n\n' "$1"
+  printf 'What was done, what was found, the evidence and the recommendation. %.0s' 1 2 3 4
+  printf '\n'
+}
+
 write_report() {  # <case-dir> <id> [content]
   mkdir -p "$(home_of "$1")/data/$2"
-  printf '%s\n' "${3-findings}" > "$(home_of "$1")/data/$2/report.md"
-  [ -n "${3-findings}" ] || : > "$(home_of "$1")/data/$2/report.md"
+  if [ "$#" -ge 3 ]; then
+    printf '%s' "$3" > "$(home_of "$1")/data/$2/report.md"
+  else
+    real_report "$2" > "$(home_of "$1")/data/$2/report.md"
+  fi
 }
 
 # Everything under the case dir except the throwaway tool shims, as one
@@ -263,9 +273,18 @@ test_refuses_missing_and_empty_report() {
   wt=$(make_slot "$c" slot1 fm/later1 later1)
   write_task "$c" scout1 scout "$wt"
   write_task "$c" later1 ship "$wt"
-  refuses "a scout with no report" "has no non-empty report" "$c" scout1
+  refuses "a scout with no report" "has no report" "$c" scout1
   write_report "$c" scout1 ""
-  refuses "a scout with an empty report" "has no non-empty report" "$c" scout1
+  refuses "a scout with an empty report" "is not a real report" "$c" scout1
+  write_report "$c" scout1 "x"
+  refuses "a scout with a one-byte report" "is not a real report" "$c" scout1
+  write_report "$c" scout1 "# Report"$'\n'"short"
+  refuses "a scout with a heading but a stub body" "is not a real report" "$c" scout1
+  write_report "$c" scout1 "$(printf 'no heading on the first line, just prose. %.0s' 1 2 3 4 5 6 7 8)"
+  refuses "a scout with a long report that has no heading" "is not a real report" "$c" scout1
+  write_report "$c" scout1
+  ALIVE=fm-later1 run_retire "$c" scout1 >/dev/null || fail "a real report passes the gate"
+  pass "a real report is accepted, a stub is not"
 }
 
 test_refuses_unpushed_commits_in_a_named_slot() {
@@ -334,6 +353,47 @@ test_refuses_an_open_keyed_decision() {
   PR_STATE=
 }
 
+test_never_chmods_through_a_planted_hooks_symlink() {
+  local c outside state mode
+  c=$(make_case hooklink scout1)
+  state="$(home_of "$c")/state"
+  write_task "$c" scout1 scout "$c/pool/gone/repo"
+  write_report "$c" scout1
+  outside="$c/outside-hooks"
+  mkdir -p "$outside"
+  chmod 500 "$outside"
+  ln -s "$outside" "$state/scout1.git-hooks"
+  run_retire "$c" scout1 --confirm >/dev/null || fail "retire with a planted hooks symlink"
+  mode=$(stat -c %a "$outside" 2>/dev/null || stat -f %Lp "$outside")
+  chmod 700 "$outside"
+  assert_equals "500" "$mode" "the link's target keeps its mode"
+  assert_absent "$state/scout1.git-hooks" "the planted link itself is removed"
+  assert_present "$outside" "the link's target survives"
+  # A real read-only hooks directory is still cleared.
+  c=$(make_case hookdir scout1)
+  state="$(home_of "$c")/state"
+  write_task "$c" scout1 scout "$c/pool/gone/repo"
+  write_report "$c" scout1
+  mkdir -p "$state/scout1.git-hooks"
+  : > "$state/scout1.git-hooks/commit-msg"
+  chmod 500 "$state/scout1.git-hooks"
+  run_retire "$c" scout1 --confirm >/dev/null || fail "retire with a read-only hooks directory"
+  assert_absent "$state/scout1.git-hooks" "a real read-only hooks directory is removed"
+  pass "never chmods through a planted hooks symlink"
+}
+
+test_refuses_a_shared_endpoint_and_keeps_the_other_tasks_wake_rows() {
+  local c state
+  c=$(make_case sharedendpoint scout1 later1)
+  state="$(home_of "$c")/state"
+  write_task "$c" scout1 scout "$c/pool/gone/repo" "window=firstmate:fm-shared"
+  write_task "$c" later1 ship "$c/pool/gone2/repo" "window=firstmate:fm-shared"
+  write_report "$c" scout1
+  printf '1\t1\tstale\tfirstmate:fm-shared\tx\n' > "$state/.wake-queue"
+  refuses "an endpoint another task's record also names" "is also named by task later1" "$c" scout1
+  assert_grep "firstmate:fm-shared" "$state/.wake-queue" "the other task's wake row is kept"
+}
+
 test_refuses_a_secondmate() {
   local c
   c=$(make_case mate mate1)
@@ -366,4 +426,6 @@ test_refuses_an_intact_exclusive_slot
 test_refuses_unlanded_ship
 test_refuses_an_open_keyed_decision
 test_refuses_a_secondmate
+test_never_chmods_through_a_planted_hooks_symlink
+test_refuses_a_shared_endpoint_and_keeps_the_other_tasks_wake_rows
 test_rejects_bad_requests
