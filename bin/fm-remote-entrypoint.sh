@@ -42,16 +42,38 @@ SCRIPT_DIR=$(CDPATH='' cd "$(dirname "$REAL_SOURCE")" && pwd -P)
 
 die() { printf 'error: %s\n' "$1" >&2; exit "${2:-64}"; }
 
+DECODE_ERR=
+
 base64_decode_to() { # <encoded> <destination>
-  local encoded=$1 destination=$2
-  if printf '%s' "$encoded" | base64 --decode > "$destination" 2>/dev/null; then return 0; fi
-  if printf '%s' "$encoded" | base64 -D > "$destination" 2>/dev/null; then return 0; fi
+  local encoded=$1 destination=$2 err
+  DECODE_ERR=
+  if err=$(printf '%s' "$encoded" | base64 --decode 2>&1 > "$destination"); then return 0; fi
+  DECODE_ERR=$err
+  if printf '%s' "$encoded" | base64 -D > "$destination" 2>/dev/null; then DECODE_ERR=; return 0; fi
   return 1
+}
+
+# Appends one stderr line explaining a decode failure without echoing content:
+# only lengths, a character-class summary, the first decoder's stderr, and the
+# staging directory's writability and free space and inodes.
+decode_diagnostic() { # <label> <encoded>
+  local label=$1 encoded=$2 empty=no chars=yes writable=no df_line
+  [ -n "$encoded" ] || empty=yes
+  case "$encoded" in *[!A-Za-z0-9+/=]*) chars=no ;; esac
+  [ -d "$TMP" ] && [ -w "$TMP" ] && writable=yes
+  df_line=$(df -Pk "$TMP" 2>/dev/null | awk 'NR==2 {print $4 "KiB free"}') || df_line=
+  [ -n "$df_line" ] || df_line="free space unknown"
+  df_line="$df_line, $(df -Pi "$TMP" 2>/dev/null | awk 'NR==2 {print $4 " inodes free"}')"
+  printf 'diagnostic: %s decode failed: encoded length=%s bytes, empty=%s, only base64 characters=%s, decoder stderr=%s, staging dir=%s, writable=%s, %s\n' \
+    "$label" "${#encoded}" "$empty" "$chars" "${DECODE_ERR:-none}" "$TMP" "$writable" "$df_line" >&2
 }
 
 decode_text() { # <label> <encoded> <destination>
   local label=$1 encoded=$2 destination=$3 bytes controls
-  base64_decode_to "$encoded" "$destination" || die "invalid base64 for $label"
+  if ! base64_decode_to "$encoded" "$destination"; then
+    decode_diagnostic "$label" "$encoded"
+    die "invalid base64 for $label"
+  fi
   bytes=$(LC_ALL=C wc -c < "$destination" | tr -d ' ')
   [ "$bytes" -gt 0 ] || die "$label is empty"
   controls=$(fm_remote_job_has_forbidden_text_bytes "$destination")
@@ -116,7 +138,10 @@ trap 'exit 143' TERM
 
 decode_text "remote root" "$2" "$TMP/root"
 decode_text "remote home" "$3" "$TMP/home"
-base64_decode_to "$4" "$TMP/argv" || die "invalid base64 for argv"
+if ! base64_decode_to "$4" "$TMP/argv"; then
+  decode_diagnostic argv "$4"
+  die "invalid base64 for argv"
+fi
 ROOT=$(<"$TMP/root")
 HOME_PATH=$(<"$TMP/home")
 ROOT=$(fm_remote_job_canonical_existing_dir "$ROOT") || die "remote root is not a safe existing directory"
