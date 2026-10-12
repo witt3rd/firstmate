@@ -10,7 +10,8 @@
 #   re-proves everything under the task's locks and then removes the record.
 #   Exit 0 on a dry run that would retire, a completed retirement, and a task
 #   that has no record (idempotent no-op); exit 1 on any refusal, with the exact
-#   reason; exit 2 on a bad request.
+#   reason; exit 2 on a bad request. A wrong FM_HOME (no state folder) is
+#   refused with exit 1 before anything is created, dry run included.
 #
 # Why a sibling of fm-teardown.sh rather than a flag on it: teardown is a
 # 3,900-line script whose every path kills processes, returns worktrees and
@@ -73,6 +74,20 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 usage() {
   awk '/^# PROOFS/ { exit } NR > 1 && /^#/ { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
 }
+
+# Help is answered before anything is sourced, and a wrong home is refused
+# before it: sourced libraries create the state folder, and nothing here (dry
+# run and help included) may create a folder, file or lock.
+for _arg in "$@"; do
+  case "$_arg" in
+    -h|--help) usage; exit 0 ;;
+  esac
+done
+unset _arg
+if [ ! -d "$STATE" ] || [ -L "$STATE" ]; then
+  echo "error: retire refused: no state folder at $STATE (check FM_HOME); nothing was changed" >&2
+  exit 1
+fi
 
 for _src in \
   fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-backend.sh fm-lock-lib.sh \
