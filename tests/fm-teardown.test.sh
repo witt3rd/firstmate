@@ -673,7 +673,7 @@ make_path_without_lsof() {  # <case-dir>
 add_cargo_stub() {  # <case-dir> <exit-code>
   cat > "$1/fakebin/cargo" <<SH
 #!/usr/bin/env bash
-printf '%s %s\\n' "\$(pwd -P)" "\$*" >> "$1/cargo.log"
+printf '%s %s env=%s\\n' "\$(pwd -P)" "\$*" "\${CARGO_TARGET_DIR:-unset}" >> "$1/cargo.log"
 exit $2
 SH
   chmod +x "$1/fakebin/cargo"
@@ -705,7 +705,7 @@ test_landed_teardown_cleans_cargo_output() {
   rc=$?
   set -e
   expect_code 0 "$rc" "cargo-clean: landed teardown should succeed"
-  assert_grep "$wt clean -q" "$case_dir/cargo.log" "cargo-clean: released worktree was not cleaned"
+  assert_grep "$wt clean -q --target-dir $wt/target env=unset" "$case_dir/cargo.log" "cargo-clean: released worktree was not cleaned with its own target dir"
   pass "landed teardown runs cargo clean in the released worktree"
 }
 
@@ -760,6 +760,63 @@ test_forced_teardown_never_cleans_cargo_output() {
   expect_code 0 "$rc" "cargo-forced: forced teardown should succeed"
   assert_absent "$case_dir/cargo.log" "cargo-forced: forced teardown ran cargo"
   pass "forced teardown never runs cargo clean"
+}
+
+# The tree is untrusted: a project config, the teardown environment, or a
+# symlinked target must never steer cargo's delete outside the worktree.
+commit_in_wt() {  # <case-dir> <message>
+  git -C "$1/wt" add -A
+  git -C "$1/wt" commit -q -m "$2"
+  git -C "$1/wt" push -q origin fm/task-x1
+}
+
+test_cargo_clean_ignores_project_config_target_dir() {
+  local case_dir rc wt outside
+  case_dir=$(make_cargo_clean_case cargo-config 1)
+  add_cargo_stub "$case_dir" 0
+  outside="$case_dir/outside"
+  mkdir -p "$outside" "$case_dir/wt/.cargo"
+  printf '[build]\ntarget-dir = "%s"\n' "$outside" > "$case_dir/wt/.cargo/config.toml"
+  commit_in_wt "$case_dir" "add cargo config"
+  wt=$(cd "$case_dir/wt" && pwd -P)
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "cargo-config: teardown should succeed"
+  assert_grep "clean -q --target-dir $wt/target" "$case_dir/cargo.log" "cargo-config: clean did not pin the worktree target dir"
+  assert_no_grep "$outside" "$case_dir/cargo.log" "cargo-config: clean was pointed at the config's directory"
+  pass "cargo clean pins the worktree target dir despite a project config target-dir"
+}
+
+test_cargo_clean_unsets_env_target_dir() {
+  local case_dir rc wt
+  case_dir=$(make_cargo_clean_case cargo-env 1)
+  add_cargo_stub "$case_dir" 0
+  wt=$(cd "$case_dir/wt" && pwd -P)
+  set +e
+  CARGO_TARGET_DIR="$case_dir/outside" run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "cargo-env: teardown should succeed"
+  assert_grep "clean -q --target-dir $wt/target env=unset" "$case_dir/cargo.log" "cargo-env: CARGO_TARGET_DIR reached cargo or the target dir was not pinned"
+  pass "cargo clean unsets CARGO_TARGET_DIR and pins the worktree target dir"
+}
+
+test_cargo_clean_skips_symlinked_target() {
+  local case_dir rc
+  case_dir=$(make_cargo_clean_case cargo-symlink 1)
+  add_cargo_stub "$case_dir" 0
+  mkdir -p "$case_dir/outside"
+  ln -s "$case_dir/outside" "$case_dir/wt/target"
+  commit_in_wt "$case_dir" "symlink target"
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "cargo-symlink: teardown should succeed"
+  assert_absent "$case_dir/cargo.log" "cargo-symlink: cargo ran with a symlinked target"
+  pass "cargo clean is skipped when target is a symlink"
 }
 
 test_teardown_survives_failing_cargo() {
@@ -4929,6 +4986,9 @@ test_refused_teardown_never_cleans_cargo_output
 test_teardown_without_cargo_toml_never_cleans
 test_cargo_clean_can_be_turned_off
 test_forced_teardown_never_cleans_cargo_output
+test_cargo_clean_ignores_project_config_target_dir
+test_cargo_clean_unsets_env_target_dir
+test_cargo_clean_skips_symlinked_target
 test_teardown_survives_failing_cargo
 test_teardown_survives_absent_cargo
 test_untracked_only_refusal_diagnostic
