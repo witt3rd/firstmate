@@ -97,6 +97,16 @@
 # keeps closing its rows; `--any-origin` and the stored `(any)` marker mean
 # what an absent origin means and are accepted for the same reason.
 #
+# A NEWLY applied answer (closed or released, through `answers` or a direct
+# `answer`) and a re-hold with `--until` (a deferred answer) each queue exactly
+# one `check` wake for this home's own firstmate, keyed on the task and its
+# resolution-record ordinal and naming only the task id and the mode. A replay,
+# a skipped key, and a refusal queue nothing, and the answer record is
+# unchanged. The wake is queued here, below every channel, so every channel gets
+# it. A caller whose own delivery already announces to firstmate sets
+# FM_ANSWER_WAKE_COVERED=1 so that delivery wakes once and not twice; the
+# process-event runner does, because its captured result is announced itself.
+#
 # RECONCILE IS RESERVED AT THIS INTAKE, NOT FILTERED IN A CHANNEL.
 # The exact answer value `reconcile` means "go re-check reality", never "the
 # captain answered". `answers` matches it before it reads the close mode,
@@ -903,6 +913,7 @@ verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how> <origi
 command_hold() {
   local id=${1:-} title='' reason='' repo='' origin='' until='' show state existing_title body='' hold_kind hold_set occurrence
   local existing_hold_kind='' existing_held='' preserve_hold_set=0 stored_reason previous_origin='' hold_status=0
+  local existing_until='' was_answered=0
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -943,6 +954,8 @@ command_hold() {
       || fail "task $id is already closed; a new captain call needs its own task"
     existing_hold_kind=$(show_field_value "$show" hold_kind)
     existing_held=$(show_field_value "$show" held)
+    existing_until=$(show_field_value "$show" hold_until)
+    ! body_has_resolution_record "$(show_field "$show" body)" || was_answered=1
     if [ "$existing_hold_kind" = captain ] && [ "$existing_held" = yes ]; then
       preserve_hold_set=1
     fi
@@ -1008,6 +1021,15 @@ command_hold() {
   [ -n "$(body_hold_set_timestamp "$(show_field_value "$show" body)")" ] \
     || fail "task $id lost its hold-set stamp while being held"
   publish_parent_hold "$id" "$occurrence" needs-decision "$reason"
+  # A re-hold with a date is the captain deferring a call (a "revisit later"
+  # answer): it newly changes a captain-held task, so it wakes firstmate once.
+  # A first hold, a hold without a date, and an exact repeat of the same
+  # deferral are not answers and queue nothing.
+  if [ -n "$until" ] && { [ "$existing_hold_kind" = captain ] || [ "$was_answered" = 1 ]; } \
+    && ! { [ "$existing_hold_kind" = captain ] && [ "$existing_held" = yes ] && [ "$existing_until" = "$until" ]; }; then
+    queue_main_wake "$id" "captain-deferral-$id-$occurrence-$until" \
+      "check: captain answer applied: $id (deferred until $until)"
+  fi
   printf '%s\n' "$id"
 }
 
@@ -1162,6 +1184,7 @@ command_answer() {
     body_has_resolution_record "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
     publish_parent_resolution_then_retire "$id" "$occurrence" "answered (repaired)"
+    wake_main_for_answer "$id" "$occurrence" recorded
     printf 'repaired: %s\n' "$id"
     return 0
   fi
@@ -1186,6 +1209,7 @@ command_answer() {
       fi
       remove_interrupted_answer_stamp "$id"
       publish_parent_resolution_then_retire "$id" $((occurrence - 1)) "$outcome"
+      wake_main_for_answer "$id" $((occurrence - 1)) "$([ "$release" = 1 ] && echo released || echo closed)"
       printf '%s: %s\n' "$outcome" "$id"
       return 0
     fi
@@ -1199,6 +1223,7 @@ command_answer() {
     body_has_resolution_record "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
     publish_parent_resolution_then_retire "$id" "$occurrence" "$outcome"
+    wake_main_for_answer "$id" "$occurrence" "$([ "$release" = 1 ] && echo released || echo closed)"
     printf '%s: %s\n' "$outcome" "$id"
     return 0
   fi
@@ -1311,6 +1336,27 @@ sanitize_field() {  # <text>
 
 sanitize_reconcile_provenance() {
   printf '%s' "$1" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177' | cut -c1-1024
+}
+
+# Queue ONE wake for this home's own firstmate the moment a captain answer
+# newly lands on a held task, so an answer that arrives from any channel (the
+# connector, chat, a captured source) is noticed at once rather than at the next
+# unrelated wake. Only the task id and the close mode are named, never the
+# answer text. The key carries the resolution-record ordinal, so a released
+# and re-held task wakes again for its next answer, and a replay (which never
+# reaches the callers below) queues nothing. The answer is already durable, so
+# a wake that cannot be queued is reported as `actionable:` on stderr rather
+# than undoing the record. A caller whose own delivery already announces to
+# firstmate (the process-event runner's captured result) sets
+# FM_ANSWER_WAKE_COVERED=1, so that delivery wakes once and not twice.
+queue_main_wake() {  # <task-id> <key> <text>
+  fm_wake_append check "$2" "$3" \
+    || printf 'actionable: the change to %s was applied but no wake could be queued for firstmate\n' "$1" >&2
+}
+
+wake_main_for_answer() {  # <task-id> <record-ordinal> <mode>
+  [ "${FM_ANSWER_WAKE_COVERED:-}" != 1 ] || return 0
+  queue_main_wake "$1" "captain-answer-$1-$2" "check: captain answer applied: $1 ($3)"
 }
 
 command_answers() {

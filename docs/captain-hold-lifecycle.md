@@ -218,6 +218,10 @@ Each key is reported as follows:
 | A replay with a mode mismatch | Skipped. |
 
 The command exits nonzero when any key was skipped.
+A newly applied answer also queues exactly one `check` wake for this home's own firstmate, so the answer is noticed the moment it lands.
+That covers a close or release through `answers`, a direct `answer`, and a re-hold with `--until` (a deferred answer).
+The wake names only the task id and the mode, never the captain's words, and a replay, a skipped key, a refusal, a first hold, or an exact repeat of the same deferral queues nothing.
+A caller whose own delivery already announces to firstmate sets `FM_ANSWER_WAKE_COVERED=1` so that delivery wakes once: the process-event runner does, because it announces the captured result itself.
 `--source` is provenance text recorded in the durable decision, never a behavior switch, and the command carries no per-channel branch.
 
 ### Source bindings

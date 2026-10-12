@@ -463,8 +463,10 @@ feed_keyed_answers() {  # <adapter> <source-id> <result-file>
   origin=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$id" 2>/dev/null) || return 1
   [ -n "$origin" ] || return 1
   seq=$(fm_procevent_result_sequence "$result") || return 1
+  # The captured result is announced by this runner itself, so the intake must
+  # not queue a second wake for the same delivery (bin/fm-captain-hold.sh).
   "$script" answers "$result" 2>/dev/null \
-    | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$origin" \
+    | FM_ANSWER_WAKE_COVERED=1 "$SCRIPT_DIR/fm-captain-hold.sh" answers "$origin" \
         --source "the captured result $id sequence $seq" >/dev/null 2>&1
 }
 
