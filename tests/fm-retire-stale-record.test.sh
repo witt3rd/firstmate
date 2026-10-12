@@ -414,7 +414,27 @@ test_rejects_bad_requests() {
   pass "rejects bad requests"
 }
 
+test_refuses_a_wrong_home_and_creates_nothing() {
+  local c="$TMP_ROOT/wronghome" before after out rc mode
+  mkdir -p "$c/empty"
+  for mode in missing nostate; do
+    local h="$c/missing-home"
+    [ "$mode" = nostate ] && h="$c/empty"
+    before=$(find "$c" | sort)
+    for args in "x" "x --confirm"; do
+      # shellcheck disable=SC2086
+      out=$(FM_HOME="$h" bash "$RETIRE" $args 2>&1) && rc=0 || rc=$?
+      expect_code 1 "$rc" "a wrong home ($mode) is refused: $args"
+      assert_contains "$out" "no state folder" "the refusal names the missing state folder"
+      after=$(find "$c" | sort)
+      assert_equals "$before" "$after" "a wrong home ($mode) leaves the filesystem unchanged"
+    done
+  done
+  pass "refuses a wrong home and creates nothing"
+}
+
 test_retires_scout_whose_slot_a_later_live_task_owns
+test_refuses_a_wrong_home_and_creates_nothing
 test_retires_ship_with_gone_worktree_and_merged_pr
 test_dry_run_changes_nothing
 test_second_run_is_a_no_op

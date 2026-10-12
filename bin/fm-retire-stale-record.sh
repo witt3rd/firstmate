@@ -74,6 +74,18 @@ usage() {
   awk '/^# PROOFS/ { exit } NR > 1 && /^#/ { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
 }
 
+# Sourced libraries may create the state folder, so refuse a wrong home first:
+# nothing here (dry run included) may create a folder, file or lock.
+case " $* " in
+  *" -h "*|*" --help "*) ;;
+  *)
+    if [ ! -d "$STATE" ] || [ -L "$STATE" ]; then
+      echo "error: retire refused: no state folder at $STATE (check FM_HOME); nothing was changed" >&2
+      exit 1
+    fi
+    ;;
+esac
+
 for _src in \
   fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-backend.sh fm-lock-lib.sh \
   fm-classify-lib.sh fm-pr-lib.sh fm-public-followup-lib.sh \
