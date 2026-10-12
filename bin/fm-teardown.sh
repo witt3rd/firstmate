@@ -240,6 +240,15 @@
 # checks before any destructive return. Teardown output notes every wait, retry, and
 # removal so the operator can see what happened.
 #
+# Released-tree build cleanup: once `treehouse return` has succeeded for a ship
+# or scout worktree whose root holds a Cargo.toml, teardown runs a quiet
+# `nice cargo clean` there so a freed pool slot does not keep gigabytes of Rust
+# build output. It runs only after every safety refusal and the return itself
+# have passed, never on the project's primary checkout or a secondmate home, and
+# never fails the teardown (a missing or failing cargo is ignored). It also runs
+# after a --force teardown whose return succeeded: target/ is ignored scratch,
+# not work, so no refusal changes. FM_TEARDOWN_CARGO_CLEAN=0 turns it off.
+#
 # Pre-teardown cleanup sequence (runs once every landed/discard-work safety
 # refusal above has already passed, and BEFORE any worktree return, branch
 # delete, or backend kill below - a still-active run or a leaked process may
@@ -1885,6 +1894,24 @@ teardown_herdr_release_pane_cwd() {  # <worktree> <project>
     sleep 0.5
   done
   echo "warning: task $ID's Herdr endpoint shell did not leave its worktree before the return; the return may end it" >&2
+  return 0
+}
+
+# Best-effort `cargo clean` in a worktree that was just released to the pool.
+# Callers invoke it only after a successful return; it never fails the teardown.
+teardown_cargo_clean_released() {  # <worktree> <project>
+  local wt=$1 proj=$2 wt_abs proj_abs
+  [ "${FM_TEARDOWN_CARGO_CLEAN:-1}" != 0 ] || return 0
+  [ -f "$wt/Cargo.toml" ] || return 0
+  command -v cargo >/dev/null 2>&1 || return 0
+  wt_abs=$(CDPATH='' cd -- "$wt" 2>/dev/null && pwd -P) || return 0
+  proj_abs=$(CDPATH='' cd -- "$proj" 2>/dev/null && pwd -P) || return 0
+  [ "$wt_abs" != "$proj_abs" ] || return 0
+  if command -v nice >/dev/null 2>&1; then
+    ( cd "$wt_abs" && nice cargo clean -q ) >/dev/null 2>&1 || true
+  else
+    ( cd "$wt_abs" && cargo clean -q ) >/dev/null 2>&1 || true
+  fi
   return 0
 }
 
@@ -3727,6 +3754,7 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   # unclaimed until its next holder claims it, and leaves the claim in place
   # whenever the return did not actually happen.
   fm_treehouse_slot_owner_release "$WT" "$ID"
+  teardown_cargo_clean_released "$WT" "$PROJ"
 fi
 
 HERDR_PRESENTATION_JOURNAL="$STATE/$ID.herdr-presentation"
