@@ -830,8 +830,8 @@ tests/fm-remote-transport-lanes.test.sh 66089
 tests/fm-retire-stale-record.test.sh 14153
 tests/fm-rovo-harness.test.sh 15691
 tests/fm-rovo-signals-live-e2e.test.sh 52
+tests/fm-secondmate-busy-contract-live-e2e.test.sh 22802
 tests/fm-secondmate-harness.test.sh 188187
-tests/fm-secondmate-busy-contract-live-e2e.test.sh 90000
 tests/fm-secondmate-lifecycle-e2e.test.sh 11268
 tests/fm-secondmate-liveness.test.sh 24564
 tests/fm-secondmate-reconcile.test.sh 100853
