@@ -59,6 +59,10 @@ ln -s /absolute/path/to/firstmate/bin/fm-remote-entrypoint.sh ~/.local/bin/fm-re
 The entrypoint accepts encoded argv for genuine executable `bin/fm-*.sh` files only.
 It never accepts a shell command string.
 
+When decoding an argument fails, the entrypoint keeps the `error: invalid base64 for <label>` line and adds one `diagnostic:` line to stderr.
+It reports the encoded length, whether the text is empty or has non-base64 characters, the decoder's stderr, and the staging directory's writability and free space and inodes, never the content.
+Use it to tell a transient cause such as a full disk from a real encoding fault.
+
 ### Doctor bootstrap over plain SSH
 
 The readiness-owning doctor runs over this plain SSH bootstrap.
