@@ -2317,6 +2317,61 @@ test_keyed_answer_wakes_firstmate_once() {
   pass "a newly applied keyed answer wakes firstmate once; replays and skipped keys wake nobody"
 }
 
+# The same guarantee holds below the intake: a direct answer wakes once, a
+# deferral (a re-hold with a date) wakes once, and nothing that is not a newly
+# applied change - a replay, a first hold, a hold without a date, an exact
+# repeat of the same deferral - wakes anybody.
+test_direct_answer_and_deferral_wake_firstmate_once() {
+  local home queue before secret
+  home=$(make_home direct-answer-wake)
+  secret="marmalade-vector-plan"
+  queue="$home/state/.wake-queue"
+  run_captain "$home" hold sample-direct-call --title "Direct call" \
+    --reason "captain direct pending" --repo sample >/dev/null || fail "could not hold the direct call"
+  run_captain "$home" hold sample-defer-call --title "Defer call" \
+    --reason "captain defer pending" --repo sample --until 2099-01-01 >/dev/null \
+    || fail "could not hold the deferral call"
+  [ ! -s "$queue" ] || fail "a first hold, even with a date, queued a wake: $(cat "$queue")"
+  run_captain "$home" hold sample-plain-call --title "Plain call" \
+    --reason "captain plain pending" --repo sample >/dev/null || fail "could not hold the plain call"
+  run_captain "$home" hold sample-plain-call --reason "captain plain pending" >/dev/null \
+    || fail "could not repeat the plain hold"
+  [ ! -s "$queue" ] || fail "a hold without a date queued a wake: $(cat "$queue")"
+
+  printf 'The captain said %s.\n' "$secret" > "$home/direct.txt"
+  run_captain "$home" answer sample-direct-call --decision-file "$home/direct.txt" >/dev/null \
+    || fail "the direct answer was not applied"
+  [ "$(grep -c . "$queue")" = 1 ] || fail "a direct answer did not queue exactly one wake: $(cat "$queue" 2>/dev/null)"
+  assert_contains "$(cat "$queue")" "sample-direct-call" "the direct answer wake does not name the task"
+  assert_contains "$(cat "$queue")" "closed" "the direct answer wake does not name the mode"
+  assert_not_contains "$(cat "$queue")" "$secret" "the direct answer wake carries the captain's words"
+  before=$(cat "$queue")
+  run_captain "$home" answer sample-direct-call --decision-file "$home/direct.txt" >/dev/null \
+    || fail "the direct answer replay was not idempotent"
+  [ "$(cat "$queue")" = "$before" ] || fail "a replayed direct answer queued a wake: $(cat "$queue")"
+
+  run_captain "$home" hold sample-defer-call --reason "captain defer pending" --until 2099-02-02 >/dev/null \
+    || fail "could not defer the call to a new date"
+  [ "$(grep -c . "$queue")" = 2 ] || fail "a deferral did not queue exactly one wake: $(cat "$queue")"
+  assert_contains "$(tail -n 1 "$queue")" "sample-defer-call" "the deferral wake does not name the task"
+  assert_contains "$(tail -n 1 "$queue")" "deferred until 2099-02-02" "the deferral wake does not name its mode"
+  before=$(cat "$queue")
+  run_captain "$home" hold sample-defer-call --reason "captain defer pending" --until 2099-02-02 >/dev/null \
+    || fail "could not repeat the deferral"
+  [ "$(cat "$queue")" = "$before" ] || fail "an exact repeat of a deferral queued a wake: $(cat "$queue")"
+
+  # Released work re-held with a date is a deferral of a previously answered call.
+  run_captain "$home" hold sample-gate-work --title "Gated work" --reason "captain go needed" \
+    --repo sample >/dev/null || fail "could not hold the gated work"
+  printf 'sample-gate-work\tgo\tlabel\trelease\n' | run_captain "$home" answers --source "the spire" >/dev/null \
+    || fail "could not release the gated work"
+  [ "$(grep -c . "$queue")" = 3 ] || fail "the release did not queue exactly one wake: $(cat "$queue")"
+  run_captain "$home" hold sample-gate-work --reason "captain go needed again" --until 2099-03-03 >/dev/null \
+    || fail "could not re-hold the released work with a date"
+  [ "$(grep -c . "$queue")" = 4 ] || fail "a re-hold with a date did not queue exactly one wake: $(cat "$queue")"
+  pass "a direct answer and a deferral each wake firstmate once; replays, first holds and repeats wake nobody"
+}
+
 test_board_answer_reaches_the_keyed_answer_intake() {
   local home sid stub out queue show
   home=$(make_home board-channel)
@@ -2357,6 +2412,8 @@ SH
   queue=$(cat "$home/state/.wake-queue" 2>/dev/null || true)
   assert_contains "$queue" "check: procevent lavish $sid 1" \
     "the captured board answer produced no wake: $queue"
+  [ "$(printf '%s\n' "$queue" | grep -c .)" = 1 ] \
+    || fail "a captured board answer queued more than the one announcement wake: $queue"
 
   show=$(tasks_in "$home" show sample-board-call --full)
   assert_contains "$show" "state: done" "the board answer did not close the captain call"
@@ -4767,6 +4824,7 @@ test_reconcile_outcomes_retry_partial_failures_once
 test_unbound_source_closes_no_hold
 test_legacy_identities_keep_working
 test_keyed_answer_wakes_firstmate_once
+test_direct_answer_and_deferral_wake_firstmate_once
 test_board_answer_reaches_the_keyed_answer_intake
 test_chat_channel_feeds_the_same_keyed_answer_intake
 test_origin_slug_validation_precedes_path_construction
