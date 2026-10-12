@@ -10,7 +10,8 @@
 #   re-proves everything under the task's locks and then removes the record.
 #   Exit 0 on a dry run that would retire, a completed retirement, and a task
 #   that has no record (idempotent no-op); exit 1 on any refusal, with the exact
-#   reason; exit 2 on a bad request.
+#   reason; exit 2 on a bad request. A wrong FM_HOME (no state folder) is
+#   refused with exit 1 before anything is created, dry run included.
 #
 # Why a sibling of fm-teardown.sh rather than a flag on it: teardown is a
 # 3,900-line script whose every path kills processes, returns worktrees and
