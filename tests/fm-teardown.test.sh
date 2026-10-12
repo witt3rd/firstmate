@@ -3412,6 +3412,15 @@ land_shippable_commit() {
   git -C "$case_dir/project" fetch -q origin
 }
 
+# Also put the task branch's work on main. Teardown retires a task branch only
+# when its work is proven landed there and keeps it otherwise, so a case that
+# expects the branch gone needs its work on main first.
+land_task_work_on_main() {
+  local case_dir=$1
+  git -C "$case_dir/wt" push -q origin fm/task-x1:main
+  git -C "$case_dir/project" fetch -q origin
+}
+
 # Cleanup keeps the task's no-mistakes pipeline spend in this home's records
 # (bin/fm-pipeline-spend.sh) while the task branch that attributes its runs and
 # the task record still exist, then removes both as before.
@@ -3421,6 +3430,7 @@ test_teardown_records_the_task_pipeline_spend() {
   write_meta "$case_dir" no-mistakes ship
   : > "$case_dir/config/pipeline-spend"
   land_shippable_commit "$case_dir"
+  land_task_work_on_main "$case_dir"
   mkdir -p "$case_dir/nm"
   python3 - "$case_dir/nm/state.sqlite" "$case_dir/project" "$(date +%s)" <<'PY'
 import sqlite3

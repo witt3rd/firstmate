@@ -1643,6 +1643,35 @@ work_is_landed() {
   content_in_default
 }
 
+# Retire the task's local branch ONLY when it is proven fully landed on the default
+# branch: its tip is an ancestor of it (merged) or every commit is patch-equivalent
+# to one on it (git cherry shows no '+'). One proof line is logged per deletion and
+# the tip commit id is appended to $DATA/retired-branches.md so it can be recreated
+# (git branch <name> <sha>). Unproven branches are left alone, with a message.
+retire_landed_branch() {  # <worktree> <branch>
+  local wt=$1 branch=$2 name ref tip cherry proof=
+  tip=$(git -C "$wt" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null) || return 0
+  name=${BASE_BRANCH:-}
+  [ -n "$name" ] || name=$(default_branch 2>/dev/null) || name=
+  for ref in ${name:+"refs/remotes/origin/$name"} ${name:+"refs/heads/$name"}; do
+    git -C "$wt" rev-parse --verify --quiet "$ref^{commit}" >/dev/null 2>&1 || continue
+    if git -C "$wt" merge-base --is-ancestor "$tip" "$ref" 2>/dev/null; then
+      proof="merged: $tip is an ancestor of ${ref#refs/}"; break
+    fi
+    if cherry=$(git -C "$wt" cherry "$ref" "$tip" 2>/dev/null) && ! printf '%s\n' "$cherry" | grep -q '^+'; then
+      proof="patch-equivalent: every commit of $tip is in ${ref#refs/}"; break
+    fi
+  done
+  if [ -z "$proof" ]; then
+    echo "note: branch $branch ($tip) left in place - not proven landed on ${name:-the default branch}" >&2
+    return 0
+  fi
+  git -C "$wt" branch -D "$branch" >/dev/null 2>&1 || return 0
+  echo "retired branch $branch @ $tip - $proof" >&2
+  mkdir -p "$DATA" 2>/dev/null && \
+    printf '%s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$branch" "$tip" "$proof" >> "$DATA/retired-branches.md" || true
+}
+
 # The completion links this teardown already holds locally. A scout's
 # deliverable is its report, a local-only ship lands on local main, and every
 # other ship carries the PR recorded on its own record.
@@ -3656,7 +3685,7 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
     branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
     if [ "$branch" != "HEAD" ]; then
       if git -C "$WT" checkout --detach -q 2>/dev/null; then
-        git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
+        retire_landed_branch "$WT" "$branch"
       fi
     fi
     rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" \
@@ -3674,7 +3703,7 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
   if [ "$branch" != "HEAD" ]; then
     if git -C "$WT" checkout --detach -q 2>/dev/null; then
-      git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
+      retire_landed_branch "$WT" "$branch"
     fi
   fi
   # Remove our hook file so a reused pool worktree cannot fire signals for a dead task.
