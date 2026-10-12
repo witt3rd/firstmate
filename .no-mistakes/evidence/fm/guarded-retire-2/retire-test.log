@@ -4,6 +4,10 @@ ok - dry run changes nothing
 ok - second run is a no-op
 ok - refuses: a scout with no report
 ok - refuses: a scout with an empty report
+ok - refuses: a scout with a one-byte report
+ok - refuses: a scout with a heading but a stub body
+ok - refuses: a scout with a long report that has no heading
+ok - a real report is accepted, a stub is not
 ok - refuses: a slot holding unpushed commits
 ok - refuses: a shared slot on this record's own branch with unpushed commits
 ok - refuses: a live task
@@ -12,4 +16,6 @@ ok - refuses: a ship whose PR is not merged
 ok - refuses: a ship whose PR cannot be read
 ok - refuses: an open keyed decision
 ok - refuses: a secondmate
+ok - never chmods through a planted hooks symlink
+ok - refuses: an endpoint another task's record also names
 ok - rejects bad requests
