@@ -97,6 +97,12 @@
 # keeps closing its rows; `--any-origin` and the stored `(any)` marker mean
 # what an absent origin means and are accepted for the same reason.
 #
+# A NEWLY applied answer (closed or released) queues exactly one `check` wake
+# for this home's own firstmate, keyed on the task and its resolution-record
+# occurrence and naming only the task id and the close mode. A replay, a skipped
+# key, and a refusal queue nothing, and the answer record is unchanged. The
+# wake is queued here, in the shared intake, so every channel gets it.
+#
 # RECONCILE IS RESERVED AT THIS INTAKE, NOT FILTERED IN A CHANNEL.
 # The exact answer value `reconcile` means "go re-check reality", never "the
 # captain answered". `answers` matches it before it reads the close mode,
@@ -1313,6 +1319,23 @@ sanitize_reconcile_provenance() {
   printf '%s' "$1" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177' | cut -c1-1024
 }
 
+# Queue ONE wake for this home's own firstmate the moment a keyed answer newly
+# lands on a held task, so an answer that arrives from another channel (the
+# connector, a captured source) is noticed at once rather than at the next
+# unrelated wake. Only the task id and the close mode are named, never the
+# answer text. The key carries the resolution-record occurrence, so a released
+# and re-held task wakes again for its next answer, and a replayed delivery
+# (which never reaches the caller) queues nothing. The answer is already
+# durable, so a wake that cannot be queued is reported as `actionable:` on
+# stderr rather than undoing the record.
+wake_main_for_answer() {  # <task-id> <occurrence> <release-marker-or-empty>
+  local id=$1 occurrence=$2 mode=closed
+  [ -z "$3" ] || mode=released
+  fm_wake_append check "captain-answer-$id-$occurrence" \
+    "check: captain answer applied: $id ($mode)" \
+    || printf 'actionable: the answer to %s was applied but no wake could be queued for firstmate\n' "$id" >&2
+}
+
 command_answers() {
   local origin='' source='' row rest key answer label mode id show state hold_kind body digest legacy_digest legacy_key
   local recorded_digest recorded_mode occurrence tmp err closed=0 skipped=0 reason release_flag tab=$'\t'
@@ -1443,6 +1466,7 @@ command_answers() {
       # A parent-channel delivery problem is reported on stderr by the answer
       # path even when the close succeeded; keep it visible.
       [ ! -s "$err" ] || cat "$err" >&2
+      wake_main_for_answer "$id" $(( $(resolution_record_count "$body") + 1 )) "${release_flag:+released}"
       printf 'closed: %s\n' "$id"
       closed=$((closed + 1))
     else

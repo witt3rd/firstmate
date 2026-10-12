@@ -218,6 +218,8 @@ Each key is reported as follows:
 | A replay with a mode mismatch | Skipped. |
 
 The command exits nonzero when any key was skipped.
+A newly applied answer, whether it closes or releases, also queues exactly one `check` wake for this home's own firstmate, so the answer is noticed the moment it lands.
+The wake names only the task id and the close mode, never the captain's words, and a replay, a skipped key, or a refusal queues nothing.
 `--source` is provenance text recorded in the durable decision, never a behavior switch, and the command carries no per-channel branch.
 
 ### Source bindings

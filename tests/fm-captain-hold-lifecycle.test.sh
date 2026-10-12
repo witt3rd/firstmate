@@ -2249,6 +2249,74 @@ test_legacy_identities_keep_working() {
 # the closed task is asserted here end to end - capture, the wake that tells
 # firstmate to look, and the recorded answer - because each of those was intact
 # on its own while the chain as a whole delivered nothing.
+# An answer that newly lands through the shared intake must wake firstmate the
+# moment it lands: the connector's answer reached the ledger and the held task
+# yet nothing was queued, so it was noticed hours later. Replays and skipped
+# keys must queue nothing, and the wake names only the task and the close mode.
+test_keyed_answer_wakes_firstmate_once() {
+  local home queue wakes before secret
+  home=$(make_home answer-wake)
+  secret="zebra-quartz-protocol"
+  run_captain "$home" hold sample-wake-close --title "Wake close call" \
+    --reason "captain wake close pending" --repo sample >/dev/null || fail "could not hold the close call"
+  run_captain "$home" hold sample-wake-release --title "Wake release call" \
+    --reason "captain wake release pending" --repo sample >/dev/null || fail "could not hold the release call"
+  run_captain "$home" hold sample-wake-badmode --title "Wake bad mode call" \
+    --reason "captain wake bad mode pending" --repo sample >/dev/null || fail "could not hold the bad-mode call"
+  tasks_in "$home" add sample-wake-unheld "Ordinary work" --kind ship --repo sample >/dev/null \
+    || fail "could not add the unheld task"
+  queue="$home/state/.wake-queue"
+  [ ! -s "$queue" ] || fail "precondition: the wake queue was not empty"
+
+  printf 'sample-wake-close\t%s\tShown label\n' "$secret" \
+    | run_captain "$home" answers --source "the spire" >/dev/null \
+    || fail "the keyed answer was not applied"
+  wakes=$(grep -c . "$queue" 2>/dev/null || true)
+  [ "$wakes" = 1 ] || fail "a new keyed answer queued $wakes wakes, not exactly one: $(cat "$queue" 2>/dev/null)"
+  assert_contains "$(cat "$queue")" "check" "the answer wake is not a check wake"
+  assert_contains "$(cat "$queue")" "sample-wake-close" "the answer wake does not name the task"
+  assert_contains "$(cat "$queue")" "closed" "the answer wake does not name the close mode"
+  assert_not_contains "$(cat "$queue")" "$secret" "the answer wake carries the captain's words"
+  assert_not_contains "$(cat "$queue")" "Shown label" "the answer wake carries the card label"
+
+  # A replayed delivery, and a different answer on the now-closed task, wake nobody.
+  before=$(cat "$queue")
+  printf 'sample-wake-close\t%s\tShown label\n' "$secret" \
+    | run_captain "$home" answers --source "the spire" >/dev/null \
+    || fail "the replayed keyed answer was not an idempotent no-op"
+  printf 'sample-wake-close\tother words\tShown label\n' \
+    | run_captain "$home" answers --source "the spire" >/dev/null 2>&1 \
+    && fail "an answer on an already closed task was accepted"
+  [ "$(cat "$queue")" = "$before" ] || fail "a replay or a closed-task answer queued a wake: $(cat "$queue")"
+
+  # Skipped and refused keys wake nobody and leave the tasks as they were.
+  printf '%s\n' \
+    "sample-wake-absent	words	label" \
+    "sample-wake-unheld	words	label" \
+    "sample-wake-badmode	words	label	drop" \
+    "sample-wake-badmode	reconcile	label" \
+    | run_captain "$home" answers --source "the spire" >/dev/null 2>&1 \
+    && fail "skipped keys were reported as applied"
+  [ "$(cat "$queue")" = "$before" ] || fail "a skipped or refused key queued a wake: $(cat "$queue")"
+  assert_contains "$(tasks_in "$home" show sample-wake-badmode --full)" "held: yes" \
+    "a refused answer released the held task"
+
+  # A release is a newly applied answer too, and names its own mode.
+  printf 'sample-wake-release\t%s\tlabel\trelease\n' "$secret" \
+    | run_captain "$home" answers --source "the spire" >/dev/null \
+    || fail "the keyed release was not applied"
+  wakes=$(grep -c . "$queue")
+  [ "$wakes" = 2 ] || fail "a new keyed release left $wakes queued wakes, not two: $(cat "$queue")"
+  assert_contains "$(tail -n 1 "$queue")" "sample-wake-release" "the release wake does not name the task"
+  assert_contains "$(tail -n 1 "$queue")" "released" "the release wake does not name the mode"
+  assert_not_contains "$(tail -n 1 "$queue")" "$secret" "the release wake carries the captain's words"
+  printf 'sample-wake-release\t%s\tlabel\trelease\n' "$secret" \
+    | run_captain "$home" answers --source "the spire" >/dev/null \
+    || fail "the replayed release was not an idempotent no-op"
+  [ "$(grep -c . "$queue")" = 2 ] || fail "a replayed release queued a wake: $(cat "$queue")"
+  pass "a newly applied keyed answer wakes firstmate once; replays and skipped keys wake nobody"
+}
+
 test_board_answer_reaches_the_keyed_answer_intake() {
   local home sid stub out queue show
   home=$(make_home board-channel)
@@ -4698,6 +4766,7 @@ test_reconcile_closes_with_evidence_or_keeps_the_call_open
 test_reconcile_outcomes_retry_partial_failures_once
 test_unbound_source_closes_no_hold
 test_legacy_identities_keep_working
+test_keyed_answer_wakes_firstmate_once
 test_board_answer_reaches_the_keyed_answer_intake
 test_chat_channel_feeds_the_same_keyed_answer_intake
 test_origin_slug_validation_precedes_path_construction
