@@ -13,7 +13,7 @@ A task's worktree is held by a durable Treehouse lease named after the task, fro
    Later `treehouse get` calls never hand that slot out and `treehouse prune` never removes it, even with no process running inside it.
    The lease is taken before the task's endpoint exists, so a refusal there leaves nothing behind (see "Fast failure on exhaustion").
 2. The spawn checks that the path is an isolated worktree, claims the slot for the task, moves the task's pane into it with a `cd`, and only then starts the worker.
-3. `bin/fm-teardown.sh` runs `treehouse return --force <path>` when the task is cleaned up, which releases the lease and puts the slot back in the pool.
+3. `bin/fm-teardown.sh` runs `treehouse return --force <path>` when the task is cleaned up, which releases the lease and puts the slot back in the pool. Before the return, a non-`--force` teardown runs a best-effort `cargo clean` in Cargo worktrees so a free slot stays lean.
 4. A spawn that fails or is interrupted after the lease was taken, and before a task record exists, returns the lease itself with `treehouse return --force --if-lease-holder <task-id> <path>`.
    The one exception is a worker that was already launched and whose endpoint could not be closed: it may still be working in the slot, so the lease stays and the spawn prints the exact return command to run once it has stopped.
 

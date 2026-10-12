@@ -240,6 +240,22 @@
 # checks before any destructive return. Teardown output notes every wait, retry, and
 # removal so the operator can see what happened.
 #
+# Released-tree build cleanup: for a ship or scout worktree whose root holds a
+# Cargo.toml, teardown runs a quiet, time-bounded `nice cargo clean` there, just before
+# `treehouse return`, so a freed pool slot does not keep gigabytes of Rust build
+# output and the clean cannot race the slot's next holder. It runs only after
+# every safety refusal has passed, never on the project's primary checkout or a
+# secondmate home, and never fails the teardown (a missing or failing cargo is
+# ignored). It does NOT run on a --force teardown, which bypasses the landed-work
+# test. FM_TEARDOWN_CARGO_CLEAN=0 turns it off.
+# The tree is untrusted input, so the clean is confined: it always passes
+# `--target-dir <worktree>/target` (overriding any project config or
+# CARGO_TARGET_DIR/CARGO_BUILD_TARGET_DIR, which are also unset for the call) and
+# is skipped when <worktree>/target is a symlink. What is guaranteed is that
+# cargo is told to remove only that directory inside the worktree, not that
+# cargo itself removes nothing else.
+# FM_TEARDOWN_CARGO_CLEAN_TIMEOUT_SECS (default 300) bounds the clean.
+#
 # Pre-teardown cleanup sequence (runs once every landed/discard-work safety
 # refusal above has already passed, and BEFORE any worktree return, branch
 # delete, or backend kill below - a still-active run or a leaked process may
@@ -1885,6 +1901,32 @@ teardown_herdr_release_pane_cwd() {  # <worktree> <project>
     sleep 0.5
   done
   echo "warning: task $ID's Herdr endpoint shell did not leave its worktree before the return; the return may end it" >&2
+  return 0
+}
+
+# Best-effort `cargo clean` in a worktree about to be released to the pool.
+# Callers invoke it only after the safety checks passed; it never fails the teardown.
+teardown_cargo_clean_released() {  # <worktree> <project>
+  local wt=$1 proj=$2 wt_abs proj_abs
+  [ "${FM_TEARDOWN_CARGO_CLEAN:-1}" != 0 ] || return 0
+  [ "$FORCE" != "--force" ] || return 0
+  [ -f "$wt/Cargo.toml" ] || return 0
+  command -v cargo >/dev/null 2>&1 || return 0
+  wt_abs=$(CDPATH='' cd -- "$wt" 2>/dev/null && pwd -P) || return 0
+  proj_abs=$(CDPATH='' cd -- "$proj" 2>/dev/null && pwd -P) || return 0
+  [ "$wt_abs" != "$proj_abs" ] || return 0
+  # The worktree is untrusted: a symlinked target would send cargo's delete
+  # outside it, so leave such a tree alone.
+  [ ! -L "$wt_abs/target" ] || return 0
+  local -a runner=()
+  if command -v timeout >/dev/null 2>&1; then
+    runner+=(timeout "${FM_TEARDOWN_CARGO_CLEAN_TIMEOUT_SECS:-300}")
+  fi
+  if command -v nice >/dev/null 2>&1; then
+    runner+=(nice)
+  fi
+  ( cd "$wt_abs" && env -u CARGO_TARGET_DIR -u CARGO_BUILD_TARGET_DIR \
+      "${runner[@]+"${runner[@]}"}" cargo clean -q --target-dir "$wt_abs/target" ) >/dev/null 2>&1 || true
   return 0
 }
 
@@ -3718,6 +3760,7 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
     post_lock_cleanup_check=validate_worktree_teardown_safety
   fi
   teardown_herdr_release_pane_cwd "$WT" "$PROJ"
+  teardown_cargo_clean_released "$WT" "$PROJ"
   teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" || {
     echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
     exit 1

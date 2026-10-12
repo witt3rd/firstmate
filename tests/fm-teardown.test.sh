@@ -669,6 +669,180 @@ make_path_without_lsof() {  # <case-dir>
   printf '%s\n' "$path_dir"
 }
 
+# Stub cargo that records its working directory and arguments.
+add_cargo_stub() {  # <case-dir> <exit-code>
+  cat > "$1/fakebin/cargo" <<SH
+#!/usr/bin/env bash
+printf '%s %s env=%s\\n' "\$(pwd -P)" "\$*" "\${CARGO_TARGET_DIR:-unset}" >> "$1/cargo.log"
+exit $2
+SH
+  chmod +x "$1/fakebin/cargo"
+}
+
+# Landed no-mistakes case whose worktree root carries a committed Cargo.toml (or not).
+make_cargo_clean_case() {  # <name> <with-cargo-toml: 1|0>
+  local case_dir
+  case_dir=$(make_case "$1")
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  land_on_origin_main "$case_dir" feature.txt hello
+  if [ "$2" = 1 ]; then
+    printf '%s\n' '[package]' 'name = "t"' > "$case_dir/wt/Cargo.toml"
+    git -C "$case_dir/wt" add Cargo.toml
+    git -C "$case_dir/wt" commit -q -m "add Cargo.toml"
+    git -C "$case_dir/wt" push -q origin fm/task-x1
+  fi
+  printf '%s\n' "$case_dir"
+}
+
+test_landed_teardown_cleans_cargo_output() {
+  local case_dir rc wt
+  case_dir=$(make_cargo_clean_case cargo-clean 1)
+  add_cargo_stub "$case_dir" 0
+  wt=$(cd "$case_dir/wt" && pwd -P)
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "cargo-clean: landed teardown should succeed"
+  assert_grep "$wt clean -q --target-dir $wt/target env=unset" "$case_dir/cargo.log" "cargo-clean: released worktree was not cleaned with its own target dir"
+  pass "landed teardown runs cargo clean in the released worktree"
+}
+
+test_refused_teardown_never_cleans_cargo_output() {
+  local case_dir rc
+  case_dir=$(make_cargo_clean_case cargo-refused 1)
+  add_cargo_stub "$case_dir" 0
+  printf '%s\n' "uncommitted edit" > "$case_dir/wt/feature.txt"
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "cargo-refused: dirty teardown should refuse"
+  assert_absent "$case_dir/cargo.log" "cargo-refused: refused teardown ran cargo"
+  pass "refused teardown never runs cargo clean"
+}
+
+test_teardown_without_cargo_toml_never_cleans() {
+  local case_dir rc
+  case_dir=$(make_cargo_clean_case cargo-none 0)
+  add_cargo_stub "$case_dir" 0
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "cargo-none: teardown should succeed"
+  assert_absent "$case_dir/cargo.log" "cargo-none: cargo ran without a Cargo.toml"
+  pass "teardown without a Cargo.toml never runs cargo clean"
+}
+
+test_cargo_clean_can_be_turned_off() {
+  local case_dir rc
+  case_dir=$(make_cargo_clean_case cargo-off 1)
+  add_cargo_stub "$case_dir" 0
+  set +e
+  FM_TEARDOWN_CARGO_CLEAN=0 run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "cargo-off: teardown should succeed"
+  assert_absent "$case_dir/cargo.log" "cargo-off: cargo ran despite FM_TEARDOWN_CARGO_CLEAN=0"
+  pass "FM_TEARDOWN_CARGO_CLEAN=0 turns the cargo clean off"
+}
+
+test_forced_teardown_never_cleans_cargo_output() {
+  local case_dir rc
+  case_dir=$(make_cargo_clean_case cargo-forced 1)
+  add_cargo_stub "$case_dir" 0
+  set +e
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "cargo-forced: forced teardown should succeed"
+  assert_absent "$case_dir/cargo.log" "cargo-forced: forced teardown ran cargo"
+  pass "forced teardown never runs cargo clean"
+}
+
+# The tree is untrusted: a project config, the teardown environment, or a
+# symlinked target must never steer cargo's delete outside the worktree.
+commit_in_wt() {  # <case-dir> <message>
+  git -C "$1/wt" add -A
+  git -C "$1/wt" commit -q -m "$2"
+  git -C "$1/wt" push -q origin fm/task-x1
+}
+
+test_cargo_clean_ignores_project_config_target_dir() {
+  local case_dir rc wt outside
+  case_dir=$(make_cargo_clean_case cargo-config 1)
+  add_cargo_stub "$case_dir" 0
+  outside="$case_dir/outside"
+  mkdir -p "$outside" "$case_dir/wt/.cargo"
+  printf '[build]\ntarget-dir = "%s"\n' "$outside" > "$case_dir/wt/.cargo/config.toml"
+  commit_in_wt "$case_dir" "add cargo config"
+  wt=$(cd "$case_dir/wt" && pwd -P)
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "cargo-config: teardown should succeed"
+  assert_grep "clean -q --target-dir $wt/target" "$case_dir/cargo.log" "cargo-config: clean did not pin the worktree target dir"
+  assert_no_grep "$outside" "$case_dir/cargo.log" "cargo-config: clean was pointed at the config's directory"
+  pass "cargo clean pins the worktree target dir despite a project config target-dir"
+}
+
+test_cargo_clean_unsets_env_target_dir() {
+  local case_dir rc wt
+  case_dir=$(make_cargo_clean_case cargo-env 1)
+  add_cargo_stub "$case_dir" 0
+  wt=$(cd "$case_dir/wt" && pwd -P)
+  set +e
+  CARGO_TARGET_DIR="$case_dir/outside" run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "cargo-env: teardown should succeed"
+  assert_grep "clean -q --target-dir $wt/target env=unset" "$case_dir/cargo.log" "cargo-env: CARGO_TARGET_DIR reached cargo or the target dir was not pinned"
+  pass "cargo clean unsets CARGO_TARGET_DIR and pins the worktree target dir"
+}
+
+test_cargo_clean_skips_symlinked_target() {
+  local case_dir rc
+  case_dir=$(make_cargo_clean_case cargo-symlink 1)
+  add_cargo_stub "$case_dir" 0
+  mkdir -p "$case_dir/outside"
+  ln -s "$case_dir/outside" "$case_dir/wt/target"
+  commit_in_wt "$case_dir" "symlink target"
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "cargo-symlink: teardown should succeed"
+  assert_absent "$case_dir/cargo.log" "cargo-symlink: cargo ran with a symlinked target"
+  pass "cargo clean is skipped when target is a symlink"
+}
+
+test_teardown_survives_failing_cargo() {
+  local case_dir rc
+  case_dir=$(make_cargo_clean_case cargo-fails 1)
+  add_cargo_stub "$case_dir" 1
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "cargo-fails: teardown should succeed when cargo fails"
+  assert_present "$case_dir/cargo.log" "cargo-fails: cargo was never attempted"
+  pass "teardown still succeeds when cargo clean fails"
+}
+
+test_teardown_survives_absent_cargo() {
+  local case_dir rc
+  case_dir=$(make_cargo_clean_case cargo-absent 1)
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "cargo-absent: teardown should succeed without cargo"
+  pass "teardown still succeeds when cargo is absent"
+}
+
 test_local_only_fork_remote_allows() {
   local case_dir rc
   case_dir=$(make_case fork-allow)
@@ -4807,6 +4981,16 @@ test_teardown_returns_the_worktree_lease
 test_content_fallback_uses_recorded_base_branch
 test_content_fallback_refreshes_stale_origin_ref
 test_dirty_worktree_refuses
+test_landed_teardown_cleans_cargo_output
+test_refused_teardown_never_cleans_cargo_output
+test_teardown_without_cargo_toml_never_cleans
+test_cargo_clean_can_be_turned_off
+test_forced_teardown_never_cleans_cargo_output
+test_cargo_clean_ignores_project_config_target_dir
+test_cargo_clean_unsets_env_target_dir
+test_cargo_clean_skips_symlinked_target
+test_teardown_survives_failing_cargo
+test_teardown_survives_absent_cargo
 test_untracked_only_refusal_diagnostic
 test_tracked_edit_refusal_diagnostic
 test_mixed_refusal_diagnostic
