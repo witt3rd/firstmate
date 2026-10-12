@@ -246,8 +246,8 @@
 # build output. It runs only after every safety refusal and the return itself
 # have passed, never on the project's primary checkout or a secondmate home, and
 # never fails the teardown (a missing or failing cargo is ignored). It also runs
-# after a --force teardown whose return succeeded: target/ is ignored scratch,
-# not work, so no refusal changes. FM_TEARDOWN_CARGO_CLEAN=0 turns it off.
+# on a --force teardown, which skips the landed-work test and may be discarding
+# unlanded work. FM_TEARDOWN_CARGO_CLEAN=0 turns it off.
 #
 # Pre-teardown cleanup sequence (runs once every landed/discard-work safety
 # refusal above has already passed, and BEFORE any worktree return, branch
@@ -1902,6 +1902,7 @@ teardown_herdr_release_pane_cwd() {  # <worktree> <project>
 teardown_cargo_clean_released() {  # <worktree> <project>
   local wt=$1 proj=$2 wt_abs proj_abs
   [ "${FM_TEARDOWN_CARGO_CLEAN:-1}" != 0 ] || return 0
+  [ "$FORCE" != "--force" ] || return 0
   [ -f "$wt/Cargo.toml" ] || return 0
   command -v cargo >/dev/null 2>&1 || return 0
   wt_abs=$(CDPATH='' cd -- "$wt" 2>/dev/null && pwd -P) || return 0

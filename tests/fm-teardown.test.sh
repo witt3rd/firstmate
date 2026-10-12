@@ -749,6 +749,19 @@ test_cargo_clean_can_be_turned_off() {
   pass "FM_TEARDOWN_CARGO_CLEAN=0 turns the cargo clean off"
 }
 
+test_forced_teardown_never_cleans_cargo_output() {
+  local case_dir rc
+  case_dir=$(make_cargo_clean_case cargo-forced 1)
+  add_cargo_stub "$case_dir" 0
+  set +e
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "cargo-forced: forced teardown should succeed"
+  assert_absent "$case_dir/cargo.log" "cargo-forced: forced teardown ran cargo"
+  pass "forced teardown never runs cargo clean"
+}
+
 test_teardown_survives_failing_cargo() {
   local case_dir rc
   case_dir=$(make_cargo_clean_case cargo-fails 1)
@@ -4915,6 +4928,7 @@ test_landed_teardown_cleans_cargo_output
 test_refused_teardown_never_cleans_cargo_output
 test_teardown_without_cargo_toml_never_cleans
 test_cargo_clean_can_be_turned_off
+test_forced_teardown_never_cleans_cargo_output
 test_teardown_survives_failing_cargo
 test_teardown_survives_absent_cargo
 test_untracked_only_refusal_diagnostic
