@@ -806,6 +806,33 @@ test_raw_secondmate_launch_writes_no_busy_wiring() {
   pass "a raw claude, pi, pi-signed, or omp secondmate launch writes no busy wiring and classifies unknown"
 }
 
+# The per-task destructive-command guard is a worker adapter. A secondmate's
+# busy arming now runs the same wiring branches, but a secondmate is guarded by
+# its home's tracked primary hooks, so none of those branches may carry it.
+test_secondmate_launches_carry_no_per_task_destructive_guard() {
+  local case_dir id harness out state
+  for harness in claude pi opencode omp; do
+    id="sm-dg-$harness"
+    case_dir="$TMP_ROOT/$id"
+    out=$(spawn_secondmate_harness "$case_dir" "$id" "$harness") \
+      || fail "$harness secondmate spawn failed: $out"
+    state="$case_dir/primary/state"
+    case "$harness" in
+      claude)
+        assert_present "$state/$id.claude-settings.json" "claude secondmate wrote no settings"
+        jq -e '.hooks.UserPromptSubmit and (.hooks | has("PreToolUse") | not)' "$state/$id.claude-settings.json" >/dev/null \
+          || fail "the claude secondmate settings must carry busy hooks and no PreToolUse guard" ;;
+      pi) assert_present "$state/$id.pi-ext.ts" "pi secondmate wrote no busy extension"
+        assert_not_contains "$(cat "$state/$id.pi-ext.ts")" fm-destructive-pretool-check "the pi secondmate extension carries the per-task guard" ;;
+      omp) assert_present "$state/$id.omp-ext.ts" "omp secondmate wrote no busy extension"
+        assert_not_contains "$(cat "$state/$id.omp-ext.ts")" fm-destructive-pretool-check "the omp secondmate extension carries the per-task guard" ;;
+      opencode) assert_present "$case_dir/sm/.opencode/plugins/fm-busy-state.js" "opencode secondmate wrote no busy plugin"
+        assert_not_contains "$(cat "$case_dir/sm/.opencode/plugins/fm-busy-state.js")" fm-destructive-pretool-check "the opencode secondmate plugin carries the per-task guard" ;;
+    esac
+  done
+  pass "secondmate launches carry the busy wiring but no per-task destructive guard"
+}
+
 test_secondmate_codex_and_grok_do_not_arm_a_parent_turnend() {
   local case_dir id state launch out sm
   case_dir="$TMP_ROOT/sm-codex"
@@ -843,6 +870,7 @@ test_secondmate_pi_extension_reports_busy_without_a_parent_turnend
 test_secondmate_omp_extension_reports_busy_without_a_parent_turnend
 test_secondmate_opencode_plugin_closes_without_a_parent_turnend
 test_secondmate_codex_and_grok_do_not_arm_a_parent_turnend
+test_secondmate_launches_carry_no_per_task_destructive_guard
 test_pi_extension_semantic_lifecycle
 test_pi_extension_serializes_settle_before_next_start
 test_pi_extension_stale_incarnation_rejected

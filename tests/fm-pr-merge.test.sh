@@ -2596,6 +2596,21 @@ test_forgejo_merge_method_and_extra_args() {
   pass "fm-pr-merge maps --squash/--rebase to Forgejo's Do field, defaults to the repository's default merge style, and refuses any other extra argument"
 }
 
+test_waive_billing_block_refused_on_forgejo() {
+  local case_dir rc
+  case_dir=$(make_forgejo_case forgejo-waive-billing)
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$FJ_URL" --waive-billing-block \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "forgejo-waive-billing: --waive-billing-block must not apply on Forgejo"
+  assert_grep '--waive-billing-block does not apply to Forgejo' "$case_dir/stderr" \
+    "forgejo-waive-billing: refusal did not name Forgejo"
+  [ ! -s "$case_dir/tea.log" ] || fail "forgejo-waive-billing: tea ran despite --waive-billing-block"
+  pass "fm-pr-merge refuses --waive-billing-block on Forgejo"
+}
+
 test_gitlab_head_override_args_refuse_before_recording() {
   local case_dir rc
   case_dir=$(make_gitlab_case gitlab-head-override)
@@ -4882,3 +4897,4 @@ test_waive_billing_block_is_attended_and_mergeable_only
 test_waive_billing_block_composes_with_admin_for_the_review_requirement_only
 test_allow_red_refused_on_forgejo
 test_allow_missing_refused_on_forgejo
+test_waive_billing_block_refused_on_forgejo
