@@ -1059,7 +1059,7 @@ test_branch_kept_when_landing_unproven() {
   expect_code 0 "$rc" "retire-unproven: forced teardown should succeed"
   [ "$(git -C "$case_dir/project" rev-parse refs/heads/fm/task-x1 2>/dev/null)" = "$tip" ] \
     || fail "retire-unproven: unproven branch was deleted or moved"
-  grep -q "branch fm/task-x1 left in place - not proven landed" "$case_dir/stderr" \
+  grep -Eq "fm/task-x1 (.*) left in place - not proven landed" "$case_dir/stderr" \
     || fail "retire-unproven: no left-in-place message"
   [ ! -s "$case_dir/data/retired-branches.md" ] || fail "retire-unproven: notes written"
   pass "unproven task branch is left alone and said so"

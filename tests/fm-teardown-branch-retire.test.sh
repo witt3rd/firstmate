@@ -67,6 +67,7 @@ assert_absent "$DATA/retired-branches.md"
 new_repo nodefault
 git -C "$R" checkout -q -b t4; git -C "$R" checkout -q --detach
 (
+  # shellcheck disable=SC2329 # called by the eval-ed retire_landed_branch
   default_branch() { return 1; }
   BASE_BRANCH=
   err=$(retire_landed_branch "$R" t4 2>&1)
@@ -80,6 +81,7 @@ new_repo missingbase
 git -C "$R" checkout -q -b t5; echo e >"$R/e"; git -C "$R" add e; git -C "$R" commit -q -m e
 git -C "$R" checkout -q --detach
 (
+  # shellcheck disable=SC2034 # read by the eval-ed retire_landed_branch
   BASE_BRANCH=nonexistent
   retire_landed_branch "$R" t5 >/dev/null 2>&1
   git -C "$R" rev-parse -q --verify refs/heads/t5 >/dev/null || fail "branch deleted with missing default branch"
