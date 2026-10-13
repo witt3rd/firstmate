@@ -675,6 +675,33 @@ test_hold_creates_a_captain_row_when_beads_requires_due_without_custom_type() {
   pass "hold creates a captain row when Beads requires due and has no captain type"
 }
 
+test_hold_refuses_a_batched_reason() {
+  local home id out shape
+  home=$(make_home batched-reason)
+  id=fm-batched-call
+  hold_refused() {  # <label> <reason>
+    if out=$(run_captain "$home" hold "$id" --title "Batched" --reason "$2" --repo sample 2>&1 >/dev/null); then
+      fail "$1: a batched reason was accepted"
+    fi
+    assert_contains "$out" "a hold is ONE question: raise one hold per question" "$1: wrong refusal"
+    if tasks_in "$home" show "$id" >/dev/null 2>&1; then fail "$1: refusal still wrote a task"; fi
+  }
+  hold_refused numbered $'Question:\n1. First? Recommend yes.\n2. Second? Recommend no.'
+  hold_refused two-fields $'Question: one?\nQuestion: two?'
+  shape=$'Question:\n1. A? Recommend a.\n2. B? Recommend b.\n3. C? Recommend c.\n4. D? Recommend d.\n5. E? Recommend e.'
+  hold_refused five "$shape"
+  grep -q "$id" "$home/data/backlog.md" && fail "refusal changed the backlog"
+  [ -z "$(ls "$home/state" 2>/dev/null)" ] || fail "refusal wrote state"
+  run_captain "$home" hold fm-ok-prose --title Ok \
+    --reason "Question: use version 1.2? see section 3. It costs 2. Then (maybe) decide" --repo sample >/dev/null \
+    || fail "prose numbers refused"
+  run_captain "$home" hold fm-ok-one --title Ok --reason $'Question:\n1. Only one? (yes)\nline two' --repo sample >/dev/null \
+    || fail "single item refused"
+  run_captain "$home" hold fm-ok-until --title Ok --reason "Question: later?" --repo sample --until 2099-01-01 >/dev/null \
+    || fail "deferral refused"
+  pass "hold refuses a batched reason and accepts a single question"
+}
+
 # Reproduces the loss exactly with privacy-safe synthetic names: the investigation
 # and visual review have ended, the only genuine unresolved captain call is report
 # prose, no held backlog item or open status exists, and the authoritative
@@ -4857,3 +4884,4 @@ test_verify_names_the_unresolvable_legacy_id_once
 test_verify_resolves_a_pre_collapse_key_through_its_derived_marker
 test_captain_hold_mutations_address_the_beads_backend
 test_hold_creates_a_captain_row_when_beads_requires_due_without_custom_type
+test_hold_refuses_a_batched_reason

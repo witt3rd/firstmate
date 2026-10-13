@@ -53,6 +53,7 @@
 # `complete` and `verify` check. The reason may hold parentheses and line breaks:
 # tasks-axi refuses them, so `hold` escapes them where it writes the reason and
 # readers decode them (bin/fm-hold-reason-lib.sh owns the encoding).
+# A hold is ONE question: `hold` refuses a reason with two `Question:` fields or two numbered list items.
 # `--until` records the captain's own deferral date through `tasks-axi hold
 # --until`, so a "revisit later" answer is stored as a date instead of a live
 # card.
@@ -910,6 +911,28 @@ verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how> <origi
   printf '%s %s %s\n' "$id" "$how" "$origin_state"
 }
 
+# Refuse a batched reason: more than one `Question:` field, or more than one
+# numbered item ("1." at a line start or directly after `Question:`).
+reason_is_one_question() {  # <reason>
+  local line rest questions=0 items=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    rest=$line
+    while [[ $rest == *"Question:"* ]]; do
+      questions=$((questions + 1))
+      rest=${rest#*"Question:"}
+    done
+    line=${line#"${line%%[![:space:]]*}"}
+    if [[ $line == "Question:"* ]]; then
+      line=${line#"Question:"}
+      line=${line#"${line%%[![:space:]]*}"}
+    fi
+    if [[ $line =~ ^[0-9]+\.([[:space:]]|$) ]]; then
+      items=$((items + 1))
+    fi
+  done <<< "$1"
+  [ "$questions" -le 1 ] && [ "$items" -le 1 ]
+}
+
 command_hold() {
   local id=${1:-} title='' reason='' repo='' origin='' until='' show state existing_title body='' hold_kind hold_set occurrence
   local existing_hold_kind='' existing_held='' preserve_hold_set=0 stored_reason previous_origin='' hold_status=0
@@ -929,6 +952,7 @@ command_hold() {
   done
   validate_slug task-id "$id"
   [ -n "$reason" ] || fail "reason must not be empty"
+  reason_is_one_question "$reason" || fail "a hold is ONE question: raise one hold per question"
   # bin/fm-hold-reason-lib.sh owns the storage constraint and reversible encoding.
   stored_reason=$(fm_hold_reason_encode "$reason") || fail "could not encode the hold reason"
   if [ -n "$origin" ]; then
