@@ -952,7 +952,7 @@ command_hold() {
   done
   validate_slug task-id "$id"
   [ -n "$reason" ] || fail "reason must not be empty"
-  reason_is_one_question "$reason" || fail "a hold is ONE question: raise one hold per question"
+  reason_is_one_question "$reason" || fail "a hold is ONE question: raise one hold per question (and write facts as sentences or bullets, not a numbered list)"
   # bin/fm-hold-reason-lib.sh owns the storage constraint and reversible encoding.
   stored_reason=$(fm_hold_reason_encode "$reason") || fail "could not encode the hold reason"
   if [ -n "$origin" ]; then

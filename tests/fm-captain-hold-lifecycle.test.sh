@@ -683,7 +683,7 @@ test_hold_refuses_a_batched_reason() {
     if out=$(run_captain "$home" hold "$id" --title "Batched" --reason "$2" --repo sample 2>&1 >/dev/null); then
       fail "$1: a batched reason was accepted"
     fi
-    assert_contains "$out" "a hold is ONE question: raise one hold per question" "$1: wrong refusal"
+    assert_contains "$out" "a hold is ONE question: raise one hold per question (and write facts as sentences or bullets, not a numbered list)" "$1: wrong refusal"
     if tasks_in "$home" show "$id" >/dev/null 2>&1; then fail "$1: refusal still wrote a task"; fi
   }
   hold_refused numbered $'Question:\n1. First? Recommend yes.\n2. Second? Recommend no.'
