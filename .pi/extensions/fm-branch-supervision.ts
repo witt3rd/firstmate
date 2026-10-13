@@ -1681,6 +1681,8 @@ ${context.command}
     // getEntries() here loses the captain request that the next wake may answer.
     // Stage it verbatim and remember the future persisted index for turn_end's
     // duplicate suppression. Operational extension injections are not dialog.
+    // Newer Pi types a custom-message run without a prompt; it carries no captain text.
+    if (!("prompt" in event)) return;
     const prompt = event.prompt;
     processingOpenedThisRun = queuedProcessingContent !== null && prompt === queuedProcessingContent;
     const trimmed = prompt.trim();
