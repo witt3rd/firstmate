@@ -55,7 +55,7 @@ CHECK_TRUST="$STATE/$CHECK_ID.check-trust"
 MAIL_BIN="$SCRIPT_DIR/fm-mail.sh"
 REGISTER_BIN="$SCRIPT_DIR/fm-check-register.sh"
 RECORD_SCHEMA=fm-mail-check-v1
-MAX_LINE=240
+FOLD_WIDTH=240
 
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
@@ -234,8 +234,8 @@ action_check() {
   fi
   [ -n "$woken_before" ] && rm -f -- "$woken_before"
   if [ -n "$line" ] && { [ "$line" != "$RECORD_REPORTED" ] || [ "$queued" -eq 1 ]; }; then
-    fm_cap_line_var "mail: $line" "$MAX_LINE"
-    printf '%s\n' "$FM_LINE_CAP_LINE"
+    fm_fold_line_var "mail: $line" "$FOLD_WIDTH"
+    printf '%s\n' "$FM_FOLD_LINE"
   fi
   record_write "$line" || true
   return 0
