@@ -167,6 +167,26 @@ printf "42\\t2026-09-05T00:00:00Z\\talice@example.com\\tHello\\n"'
   pass "fm-mail-check: a successful poll that surfaces new mail emits one wake line"
 }
 
+# shellcheck disable=SC2016
+test_long_failure_line_is_folded_without_loss() {
+  local home out expected joined
+  home=$(make_home long-failure)
+  write_env "$home"
+  enter_mailbox "$home" \
+    'printf "fm-mail poll error: %s\\n" "$(printf "w%03d " $(seq 1 150))" >&2
+exit 1'
+  out="$home/out.txt"
+  run_check "$home" "$out" "$CHECK"
+  [ "$(wc -l < "$out" | tr -d '[:space:]')" -gt 1 ] || fail "an over-long report should fold across lines: $(cat "$out")"
+  if grep -F 'truncated' "$out" >/dev/null; then fail "a folded report carries a truncation marker"; fi
+  [ "$(awk '{ if (length($0) > m) m = length($0) } END { print m }' "$out")" -le 244 ] || fail "a folded line is wider than the fold width"
+  joined=$(sed '1!s/^  | //' "$out" | tr -d '\n')
+  expected="mail: fm-mail poll error: $(printf 'w%03d ' $(seq 1 150))"
+  expected=${expected%" "}; joined=${joined%" "}
+  [ "$joined" = "$expected" ] || fail "rejoining the fold must give the original report: $joined"
+  pass "fm-mail-check: an over-long report is folded across lines and loses nothing"
+}
+
 test_failure_is_reported_once_until_it_changes() {
   local home out
   home=$(make_home failure)
@@ -463,6 +483,7 @@ test_arm_refuses_a_symlink_at_the_shim_path
 test_arm_refuses_without_the_mail_plane
 test_successful_poll_with_new_mail_emits_one_wake_line
 test_failure_is_reported_once_until_it_changes
+test_long_failure_line_is_folded_without_loss
 test_unconfigured_home_is_reported_once
 test_slow_poll_times_out_and_is_reported
 test_fail_closed_poll_after_wake_reports_the_failure

@@ -248,8 +248,6 @@ fi
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
-# shellcheck source=bin/fm-line-cap-lib.sh
-. "$SCRIPT_DIR/fm-line-cap-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-task-inbox-lib.sh
@@ -557,7 +555,6 @@ RESOLVE_STATUS_FILE=
 # longer owns also keeps the common path free of any backlog read.
 RESOLVE_STATUS_KEYS=
 RESOLVE_HOLD_KEYS=
-RESOLVE_CLOSE_MAX=$FM_LINE_CAP_DEFAULT
 
 # Resolve a --resolve-key key that the status log no longer owns to the
 # captain-held task that carries it: the key as a task id itself (the collapsed
@@ -660,12 +657,6 @@ if [ -n "$RESOLVE_KEYS" ]; then
   fi
   # Refuse before send when a named status-log key cannot actually close: a
   # reserved key with an answered: note is a silent no-op in the fold.
-  # The cap bounds the line that is actually APPENDED, and the self-announced
-  # append stamps each line with its emission time. Reserve that stamp's width
-  # here so the probe below measures the same bytes the writer will produce and
-  # the close record stays inside the cap this refusal cites.
-  RESOLVE_CLOSE_MAX=$((FM_LINE_CAP_DEFAULT - $(status_stamp_width)))
-  [ "$RESOLVE_CLOSE_MAX" -ge 0 ] || RESOLVE_CLOSE_MAX=0
   resolve_excerpt=$(printf '%s' "$*" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177')
   for k in $RESOLVE_STATUS_KEYS; do
     probe=$(fm_send_resolve_close_note "$k" "$resolve_excerpt")
@@ -674,10 +665,9 @@ if [ -n "$RESOLVE_KEYS" ]; then
       exit 1
     fi
     probe_line="resolved [key=$k]: $probe"
-    fm_cap_line_var "$probe_line" "$RESOLVE_CLOSE_MAX"
-    probe_key=$(_fm_decision_key "$FM_LINE_CAP_LINE") || probe_key=
-    if [ "$(status_line_verb "$FM_LINE_CAP_LINE")" != resolved ] || [ "$probe_key" != "$k" ]; then
-      echo "error: --resolve-key cannot close a decision key of length ${#k}: its ${#probe_line}-character close record exceeds the $FM_LINE_CAP_DEFAULT-character status-line cap, and truncation would remove the structural key delimiter. Refusing rather than writing an ineffective close; nothing was sent." >&2
+    probe_key=$(_fm_decision_key "$probe_line") || probe_key=
+    if [ "$(status_line_verb "$probe_line")" != resolved ] || [ "$probe_key" != "$k" ]; then
+      echo "error: --resolve-key cannot close a decision key of length ${#k}: its close record does not parse back to that key. Refusing rather than writing an ineffective close; nothing was sent." >&2
       exit 1
     fi
   done
@@ -700,8 +690,7 @@ fm_send_close_resolved_keys() { # <answer-text>
   note=$(printf '%s' "$note" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177')
   for k in $RESOLVE_STATUS_KEYS; do
     close_note=$(fm_send_resolve_close_note "$k" "$note")
-    fm_cap_line_var "resolved [key=$k]: $close_note" "$RESOLVE_CLOSE_MAX"
-    close_lines+=("$FM_LINE_CAP_LINE")
+    close_lines+=("resolved [key=$k]: $close_note")
   done
   [ "${#close_lines[@]}" -gt 0 ] || return 0
   append_rc=0
