@@ -234,8 +234,7 @@ action_check() {
   fi
   [ -n "$woken_before" ] && rm -f -- "$woken_before"
   if [ -n "$line" ] && { [ "$line" != "$RECORD_REPORTED" ] || [ "$queued" -eq 1 ]; }; then
-    fm_cap_line_var "mail: $line" "$MAX_LINE"
-    printf '%s\n' "$FM_LINE_CAP_LINE"
+    fm_fold_line "mail: $line" "$MAX_LINE"
   fi
   record_write "$line" || true
   return 0
