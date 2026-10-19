@@ -20,9 +20,9 @@ Docker is **not this guard's business any more.** The fleet's own docker shim (f
 owner for docker: it refuses prune, `-a`/`--all`/`--filter`, "every running container", and anything that belongs to a running named service, and
 allows everything else, so a creator can always remove what it created. This guard dropped `docker-prune`, `docker-bulk-rm` and `docker-rm-unowned`
 (which matched the task label in the target's *name* and refused workers' own cleanup), plus `find-delete`, `systemctl-disable` and the
-`unclassifiable-destructive` backstop. One consequence: syntax the tokenizer cannot parse (a `case` arm, unbalanced quotes) is no longer classified, so
-a retained rule can be bypassed that way. It was dropped because it refused routine work (multi-line notes that merely mention a verb), not because
-it never fired; restore it for the retained verbs only if that gap matters.
+`unclassifiable-destructive` backstop for those verbs. The backstop itself is **kept for the retained verbs only** (recursive `rm`, device tools, `btrfs subvolume
+delete`, `git clean`): syntax the tokenizer cannot parse (a `case` arm, unbalanced quotes) that visibly names one of them still fails closed, so those rules cannot
+be bypassed by parse-hostile syntax. Unparsable text that only mentions docker, `find -delete` or `systemctl` is allowed.
 
 ## What is refused
 
@@ -93,7 +93,7 @@ A failure to write the log or note never turns a denial into an allow.
 The transport accepts the same entry forms as the cd-guard: stdin JSON at `.tool_input.command` (Claude with `--claude`, Codex, Cursor with `--cursor`) or `.toolInput.command` (Grok), and `--command <exact string>` (OpenCode, Pi, pi-signed, omp).
 A strict-superset prefilter skips the Node process when the de-quoted command names none of the guarded tools and carries no `$'` or `$"` decoder marker; that marker set is coupled to the shared classifier's decoder set exactly as [`cd-guard.md`](cd-guard.md#transport-and-fail-open-behavior) describes.
 Empty stdin, unparseable JSON, missing `jq` on the stdin path, missing Node, a missing policy owner, or an invalid policy response fail open with exit 0, because a broken hook must not deny every shell call.
-(Until 2026-10-18 unclassifiable syntax that visibly named a destructive verb failed closed with `unclassifiable-destructive`; that backstop is gone, see "What changed".)
+Unclassifiable syntax that visibly names a retained destructive verb fails closed with `unclassifiable-destructive` (see "What changed on 2026-10-18").
 
 The output contract is identical in shape to [`arm-pretool-check.md`](arm-pretool-check.md#output-contract): allow is exit 0 with no output, deny is exit 2 with the Claude-shaped object on stderr plus the Grok object on stdout unless `--claude`, and `--cursor` prints Cursor's returned decision object with exit 0.
 

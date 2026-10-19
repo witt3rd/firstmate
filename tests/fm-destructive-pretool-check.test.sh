@@ -216,10 +216,11 @@ test_policy_reason_codes() {
     out=$(node "$POLICY" --command "$dcmd" --cwd "$FIX_WT" --home "$FIX_HOME")
     assert_equals "$out" "allow" "docker is not this guard's business: $dcmd"
   done
-  for ncmd in "find ~ -name x -exec rm -rf {} +" "systemctl --user disable animus" 'echo x; rm -rf ~/a/*; echo y' 'echo x; rm -rf ~/a/*; case y in z) true;; esac'; do
+  for ncmd in 'case y in z) docker volume prune -f;; esac' 'case y in z) systemctl disable foo;; esac' 'case y in z) find ~ -delete;; esac' 'cat <<EOF\nnote: docker rm -f x; systemctl disable y\nEOF\ncase a in b) true;; esac' "find ~ -name x -exec rm -rf {} +" "systemctl --user disable animus" 'echo x; rm -rf ~/a/*; echo y' 'echo x; rm -rf ~/a/*; case y in z) true;; esac' 'case y in z) git clean -fdx;; esac'; do
     out=$(node "$POLICY" --command "$ncmd" --cwd "$FIX_WT" --home "$FIX_HOME")
     case "$ncmd" in
-      *"case y in"*) assert_equals "$out" "allow" "KNOWN GAP (the unclassifiable-destructive backstop was dropped 2026-10-18): syntax the tokenizer cannot parse is not classified: $ncmd" ;;
+      *"rm -rf"*"case y in"*|*"case y in"*"git clean"*) assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	unclassifiable-destructive" "unparsable syntax that names a RETAINED verb (rm -rf, git clean) still fails closed: $ncmd" ;;
+      *"case y in"*) assert_equals "$out" "allow" "unparsable syntax that only names docker / systemctl / find is allowed: $ncmd" ;;
       *"rm -rf ~/a/*"*) assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	rm-glob-protected" "a retained rule still fires inside a longer command" ;;
       *) assert_equals "$out" "allow" "removed rule (find-delete / systemctl-disable): $ncmd" ;;
     esac

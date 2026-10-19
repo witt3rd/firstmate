@@ -33,6 +33,8 @@ const REASONS = {
     "writing, formatting, wiping, or repartitioning a block device is irreversible",
   "btrfs-subvolume-delete":
     "deleting a btrfs subvolume is irreversible",
+  "unclassifiable-destructive":
+    "the command uses shell syntax this guard cannot classify and mentions a retained destructive command (recursive rm, a device tool, btrfs subvolume delete, git clean)",
 };
 
 const MAX_DEPTH = 8;
@@ -64,6 +66,22 @@ function deny(code) {
 
 function isPipe(separator) {
   return separator === "|" || separator === "|&";
+}
+
+// Raw backstop for syntax the shared tokenizer refuses (case arms, unbalanced
+// quoting): fail closed only when a RETAINED destructive verb is visibly
+// present. Since 2026-10-18 docker, find -delete and systemctl are not
+// patterns here: docker is the fleet docker shim's job, and the other two
+// rules were dropped, so only the verbs whose rules remain are backstopped.
+function rawLooksDestructive(command) {
+  const text = command.replace(/\\\r?\n/g, "");
+  return [
+    /\brm\b[\s\S]*(?:\s-[A-Za-z]*[rR]|--recursive)/,
+    /\b(?:mkfs(?:\.\w+)?|mke2fs|mkswap|wipefs|blkdiscard|parted|sfdisk|sgdisk)\b/,
+    /\bdd\b[\s\S]*\bof=\/dev\//,
+    /\bbtrfs\b[\s\S]*\bsub\w*\s+d/,
+    /\bgit\b[\s\S]*\bclean\b/,
+  ].some((pattern) => pattern.test(text));
 }
 
 function isWord(token) {
@@ -312,9 +330,9 @@ function stripExtraWrappers(words, index) {
 // --- program walk ------------------------------------------------------------
 
 function analyze(command, context, depth) {
-  if (depth > MAX_DEPTH) return null;
+  if (depth > MAX_DEPTH) return rawLooksDestructive(command) ? deny("unclassifiable-destructive") : null;
   const lexed = new Lexer(command).tokenize();
-  if (lexed.error) return null;
+  if (lexed.error) return rawLooksDestructive(command) ? deny("unclassifiable-destructive") : null;
   const { nodes, separators } = splitProgram(lexed.tokens);
   let local = { ...context };
   for (let index = 0; index < nodes.length; index += 1) {
