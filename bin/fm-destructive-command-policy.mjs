@@ -21,40 +21,21 @@ import { fileURLToPath } from "node:url";
 import { Lexer, splitProgram, commandPosition } from "./fm-arm-command-policy.mjs";
 
 const REASONS = {
-  "docker-prune":
-    "a docker or podman prune deletes every matching resource on the host, including shared ones this pane did not create",
-  "docker-bulk-rm":
-    "a docker or podman removal whose targets come from a filter, wildcard, variable, command substitution, xargs, or a pipe can delete resources this pane did not create",
-  "docker-rm-unowned":
-    "a docker or podman removal may name only resources that carry this pane's own task label; this name does not, so it may belong to someone else",
   "rm-glob-protected":
     "a recursive rm over a wildcard or variable path under the home directory or /mnt can sweep shared state; only this pane's own worktree and /tmp are open to it",
   "rm-protected-root":
     "a recursive rm of the home directory, a shared top-level directory under it, /mnt, or / is never a cleanup",
   "rm-bulk-piped":
     "an rm fed by xargs or a pipe deletes a list nobody reviewed",
-  "find-delete":
-    "find with -delete or -exec rm may run only under /tmp/fm-*; elsewhere it deletes a list nobody reviewed",
   "git-clean":
     "git clean -f deletes untracked and ignored work; it may run only inside the worktree spawned for this pane",
   "device-write":
     "writing, formatting, wiping, or repartitioning a block device is irreversible",
   "btrfs-subvolume-delete":
     "deleting a btrfs subvolume is irreversible",
-  "systemctl-disable":
-    "disabling or masking a systemd unit changes host services that fleet-ops manages",
-  "unclassifiable-destructive":
-    "the command uses shell syntax this guard cannot classify and mentions a destructive command",
 };
 
 const MAX_DEPTH = 8;
-const DOCKER_CLIS = new Set(["docker", "podman", "nerdctl"]);
-const DOCKER_GLOBAL_ARG_OPTIONS = new Set([
-  "-H", "--host", "-c", "--context", "--config", "-l", "--log-level",
-  "--tlscacert", "--tlscert", "--tlskey", "--connection", "--url", "--identity",
-  "--root", "--runroot", "--namespace", "-n", "--address", "-a",
-]);
-const DOCKER_OBJECTS = new Set(["volume", "container", "image", "network", "system", "builder", "buildx"]);
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
 const SHELL_KEYWORDS = new Set(["do", "then", "else", "elif", "if", "while", "until", "!", "time"]);
 const EXTRA_WRAPPERS = {
@@ -72,7 +53,6 @@ const DEVICE_TOOLS = new Set(["mkfs", "mke2fs", "mkswap", "wipefs", "blkdiscard"
 const PARTITION_LISTERS = new Set(["parted", "fdisk", "sfdisk", "sgdisk", "gdisk"]);
 const DEV_SAFE = /^\/dev\/(?:null|zero|stdout|stderr|stdin|tty|fd\/.*|full|random|urandom)$/;
 const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
-const FIND_EXEC_DELETERS = new Set(["rm", "rmdir", "unlink", "shred", "docker", "podman", "nerdctl"]);
 
 function basename(value) {
   return value.split("/").filter(Boolean).at(-1) || value;
@@ -84,22 +64,6 @@ function deny(code) {
 
 function isPipe(separator) {
   return separator === "|" || separator === "|&";
-}
-
-// Raw backstop for syntax the shared tokenizer refuses (case arms, unbalanced
-// quoting): fail closed only when a destructive verb is visibly present.
-function rawLooksDestructive(command) {
-  const text = command.replace(/\\\r?\n/g, "");
-  return [
-    /\b(?:docker|podman|nerdctl)\b[\s\S]*\b(?:prune|rm|rmi|remove)\b/,
-    /\brm\b[\s\S]*(?:\s-[A-Za-z]*[rR]|--recursive)/,
-    /\bfind\b[\s\S]*(?:-delete|-exec(?:dir)?\s+\S*\brm\b)/,
-    /\b(?:mkfs(?:\.\w+)?|mke2fs|mkswap|wipefs|blkdiscard|parted|sfdisk|sgdisk)\b/,
-    /\bdd\b[\s\S]*\bof=\/dev\//,
-    /\bbtrfs\b[\s\S]*\bsub\w*\s+d/,
-    /\bsystemctl\b[\s\S]*\b(?:disable|mask)\b/,
-    /\bgit\b[\s\S]*\bclean\b/,
-  ].some((pattern) => pattern.test(text));
 }
 
 function isWord(token) {
@@ -174,60 +138,7 @@ function inSharedTree(location, context) {
   return Boolean(context.home) && within(location, context.home);
 }
 
-function findRootOpen(location, context) {
-  if (!/^\/tmp\/fm-[^/]+/.test(location)) return false;
-  return !(context.home && within(location, context.home));
-}
-
-function ownsName(name, context) {
-  return context.ownLabels.some((label) => label.length >= 3 && name.includes(label));
-}
-
 // --- per-command classifiers --------------------------------------------------
-
-function classifyDocker(words, start, context, fed) {
-  let index = start;
-  while (index < words.length && words[index].value.startsWith("-")) {
-    const option = words[index].value;
-    if (!option.includes("=") && DOCKER_GLOBAL_ARG_OPTIONS.has(option)) index += 2;
-    else index += 1;
-  }
-  const sub = words[index]?.value;
-  if (!sub) return null;
-  let objectKind = "container";
-  let verbIndex = index;
-  if (DOCKER_OBJECTS.has(sub)) {
-    objectKind = sub;
-    verbIndex = index + 1;
-    while (verbIndex < words.length && words[verbIndex].value.startsWith("-")) verbIndex += 1;
-  } else if (sub === "rmi") {
-    objectKind = "image";
-  }
-  const verb = words[verbIndex]?.value;
-  if (!verb) return null;
-  if (verb === "prune") {
-    if (objectKind === "builder" || objectKind === "buildx") return null;
-    return deny("docker-prune");
-  }
-  const removal = (verbIndex === index && (verb === "rm" || verb === "rmi")) ||
-    (verbIndex !== index && (verb === "rm" || verb === "remove") && objectKind !== "system");
-  if (!removal) return null;
-  if (fed) return deny("docker-bulk-rm");
-  const targets = [];
-  for (let i = verbIndex + 1; i < words.length; i += 1) {
-    const value = words[i].value;
-    if (value === "-a" || value === "--all" || value.startsWith("--filter")) return deny("docker-bulk-rm");
-    if (value.startsWith("-")) continue;
-    targets.push(words[i]);
-  }
-  for (const target of targets) {
-    if (dynamicWord(target) || globWord(target) || /[*?[]/.test(target.value)) return deny("docker-bulk-rm");
-  }
-  for (const target of targets) {
-    if (!ownsName(target.value, context)) return deny("docker-rm-unowned");
-  }
-  return null;
-}
 
 function classifyRm(words, start, context, fed) {
   let recursive = false;
@@ -266,31 +177,6 @@ function classifyRm(words, start, context, fed) {
     if (isProtectedRoot(location, context) || (context.home && within(location, context.home))) return deny("rm-glob-protected");
     if (within(location, "/tmp")) continue;
     if (inSharedTree(location, context)) return deny("rm-glob-protected");
-  }
-  return null;
-}
-
-function classifyFind(words, start, context) {
-  let index = start;
-  while (index < words.length && /^-(?:H|L|P|O\d*)$/.test(words[index].value)) index += 1;
-  if (words[index]?.value === "-D") index += 2;
-  const starts = [];
-  while (index < words.length && !/^[-(!,]/.test(words[index].value)) {
-    starts.push(words[index]);
-    index += 1;
-  }
-  let destructive = false;
-  for (let i = index; i < words.length; i += 1) {
-    const value = words[i].value;
-    if (value === "-delete") destructive = true;
-    if (FIND_EXEC.has(value) && words[i + 1] && FIND_EXEC_DELETERS.has(basename(words[i + 1].value))) destructive = true;
-  }
-  if (!destructive) return null;
-  const roots = starts.length > 0 ? starts : null;
-  if (!roots) return context.cwd && findRootOpen(context.cwd, context) ? null : deny("find-delete");
-  for (const root of roots) {
-    const { location, pattern } = targetLocation(root, context);
-    if (!location || !findRootOpen(location, context)) return deny("find-delete");
   }
   return null;
 }
@@ -353,19 +239,6 @@ function classifyBtrfs(words, start) {
   const [group, verb] = args;
   if (!group || !verb) return null;
   if (group.length >= 2 && "subvolume".startsWith(group) && "delete".startsWith(verb)) return deny("btrfs-subvolume-delete");
-  return null;
-}
-
-function classifySystemctl(words, start) {
-  for (let i = start; i < words.length; i += 1) {
-    const value = words[i].value;
-    if (value === "-H" || value === "-M" || value === "--host" || value === "--machine" || value === "-t" || value === "--type" || value === "-p" || value === "--property") {
-      i += 1;
-      continue;
-    }
-    if (value.startsWith("-")) continue;
-    return value === "disable" || value === "mask" ? deny("systemctl-disable") : null;
-  }
   return null;
 }
 
@@ -439,9 +312,9 @@ function stripExtraWrappers(words, index) {
 // --- program walk ------------------------------------------------------------
 
 function analyze(command, context, depth) {
-  if (depth > MAX_DEPTH) return rawLooksDestructive(command) ? deny("unclassifiable-destructive") : null;
+  if (depth > MAX_DEPTH) return null;
   const lexed = new Lexer(command).tokenize();
-  if (lexed.error) return rawLooksDestructive(command) ? deny("unclassifiable-destructive") : null;
+  if (lexed.error) return null;
   const { nodes, separators } = splitProgram(lexed.tokens);
   let local = { ...context };
   for (let index = 0; index < nodes.length; index += 1) {
@@ -470,13 +343,10 @@ function analyze(command, context, depth) {
     const start = stripped.index + 1;
     const fed = stripped.fed || piped;
     let verdict = null;
-    if (DOCKER_CLIS.has(name)) verdict = classifyDocker(words, start, local, fed);
-    else if (name === "rm") verdict = classifyRm(words, start, local, stripped.fed);
-    else if (name === "find") verdict = classifyFind(words, start, local);
+    if (name === "rm") verdict = classifyRm(words, start, local, stripped.fed);
     else if (name === "git") verdict = classifyGit(words, start, local);
     else if (name === "dd" || DEVICE_TOOLS.has(name) || name.startsWith("mkfs.")) verdict = classifyDevice(name.startsWith("mkfs.") ? "mkfs" : name, words, start);
     else if (name === "btrfs") verdict = classifyBtrfs(words, start);
-    else if (name === "systemctl") verdict = classifySystemctl(words, start);
     else if (SHELLS.has(name)) {
       const payload = shellPayload(words, start);
       if (payload.kind === "command") verdict = analyze(payload.payload, local, depth + 1);

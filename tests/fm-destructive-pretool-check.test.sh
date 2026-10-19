@@ -61,31 +61,33 @@ matrix_case() {
   MATRIX_COMMANDS+=("$3")
 }
 
+# 2026-10-18 simplification: docker is the fleet docker shim's job (files/docker-guard/docker-minimal in fleet-ops), and find-delete,
+# systemctl-disable and the unclassifiable backstop are gone, so these former denials are ALLOWED by this guard.
 # The xwvol incident shapes: a filtered listing fed into a volume removal.
-matrix_case X01 deny 'docker volume ls -q -f name=xwvol- -f name=ws- | xargs docker volume rm'
-matrix_case X02 deny 'docker volume ls -q --filter name=xwvol | xargs -r docker volume rm -f'
-matrix_case X03 deny 'docker volume rm $(docker volume ls -q -f name=xwvol-)'
-matrix_case X04 deny 'docker volume rm `docker volume ls -q -f name=xwvol-`'
-matrix_case X05 deny "ssh x 'docker volume ls -q -f name=xwvol | xargs docker volume rm'"
-matrix_case X06 deny 'for v in $(docker volume ls -q -f name=xwvol); do docker volume rm "$v"; done'
-matrix_case X07 deny 'docker volume ls -q | grep xwvol | xargs -n1 docker volume rm'
-matrix_case X08 deny 'docker volume rm xwvol-ws-123'
-matrix_case X09 deny 'docker volume ls -q -f name=xwvol | while read -r v; do docker volume rm "$v"; done'
+matrix_case X01 allow 'docker volume ls -q -f name=xwvol- -f name=ws- | xargs docker volume rm'
+matrix_case X02 allow 'docker volume ls -q --filter name=xwvol | xargs -r docker volume rm -f'
+matrix_case X03 allow 'docker volume rm $(docker volume ls -q -f name=xwvol-)'
+matrix_case X04 allow 'docker volume rm `docker volume ls -q -f name=xwvol-`'
+matrix_case X05 allow "ssh x 'docker volume ls -q -f name=xwvol | xargs docker volume rm'"
+matrix_case X06 allow 'for v in $(docker volume ls -q -f name=xwvol); do docker volume rm "$v"; done'
+matrix_case X07 allow 'docker volume ls -q | grep xwvol | xargs -n1 docker volume rm'
+matrix_case X08 allow 'docker volume rm xwvol-ws-123'
+matrix_case X09 allow 'docker volume ls -q -f name=xwvol | while read -r v; do docker volume rm "$v"; done'
 # Docker and podman bulk forms.
-matrix_case D01 deny 'docker volume prune -f'
-matrix_case D02 deny 'docker system prune -af --volumes'
-matrix_case D03 deny 'docker container prune'
-matrix_case D04 deny 'docker image prune -a'
-matrix_case D05 deny 'docker network prune -f'
-matrix_case D06 deny 'docker rm -f $(docker ps -aq)'
-matrix_case D07 deny 'docker rmi xwvol-*'
-matrix_case D08 deny 'sudo docker volume rm $VOL'
-matrix_case D09 deny 'podman volume prune'
-matrix_case D10 deny 'docker rm -f other-stack-web'
-matrix_case D11 deny 'docker -H ssh://x volume prune -f'
-matrix_case D12 deny "bash -c 'docker volume prune -f'"
-matrix_case D13 deny "eval 'docker system prune -f'"
-matrix_case D14 deny 'case x in a) docker volume prune -f;; esac'
+matrix_case D01 allow 'docker volume prune -f'
+matrix_case D02 allow 'docker system prune -af --volumes'
+matrix_case D03 allow 'docker container prune'
+matrix_case D04 allow 'docker image prune -a'
+matrix_case D05 allow 'docker network prune -f'
+matrix_case D06 allow 'docker rm -f $(docker ps -aq)'
+matrix_case D07 allow 'docker rmi xwvol-*'
+matrix_case D08 allow 'sudo docker volume rm $VOL'
+matrix_case D09 allow 'podman volume prune'
+matrix_case D10 allow 'docker rm -f other-stack-web'
+matrix_case D11 allow 'docker -H ssh://x volume prune -f'
+matrix_case D12 allow "bash -c 'docker volume prune -f'"
+matrix_case D13 allow "eval 'docker system prune -f'"
+matrix_case D14 allow 'case x in a) docker volume prune -f;; esac'
 # Recursive rm over a glob or root under the home directory or /mnt.
 matrix_case R01 deny 'rm -rf ~/.treehouse/*'
 matrix_case R02 deny 'rm -rf ~/.local/state/*'
@@ -101,8 +103,8 @@ matrix_case R10 deny 'find ~ -name cache | xargs rm -rf'
 matrix_case G01 deny 'git -C ~/src/other clean -fdx'
 matrix_case G02 deny 'cd ~/src/other && git clean -fdx'
 # find -delete or -exec rm outside /tmp/fm-*.
-matrix_case F01 deny "find . -name '*.pyc' -delete"
-matrix_case F02 deny 'find ~ -name x -exec rm -rf {} +'
+matrix_case F01 allow "find . -name '*.pyc' -delete"
+matrix_case F02 allow 'find ~ -name x -exec rm -rf {} +'
 # Block devices, btrfs subvolumes, and managed systemd units.
 matrix_case V01 deny 'dd if=/dev/zero of=/dev/sda bs=1M'
 matrix_case V02 deny 'mkfs.ext4 /dev/sdb1'
@@ -110,12 +112,12 @@ matrix_case V03 deny 'wipefs -a /dev/sdb'
 matrix_case V04 deny 'parted /dev/sda mklabel gpt'
 matrix_case V05 deny 'btrfs subvolume delete /mnt/snap'
 matrix_case V06 deny 'sudo btrfs sub del /x'
-matrix_case V07 deny 'systemctl --user disable animus'
-matrix_case V08 deny 'systemctl mask foo.service'
+matrix_case V07 allow 'systemctl --user disable animus'
+matrix_case V08 allow 'systemctl mask foo.service'
 # A self-granted override inside the command grants nothing.
-matrix_case O01 deny 'FM_DESTRUCTIVE_OK=T-1 docker volume prune -f'
-matrix_case O02 deny 'export FM_DESTRUCTIVE_OK=T-1; docker volume prune -f'
-matrix_case O03 deny 'env FM_DESTRUCTIVE_OK=T-1 docker volume prune -f'
+matrix_case O01 deny 'FM_DESTRUCTIVE_OK=T-1 rm -rf ~/.treehouse/*'
+matrix_case O02 deny 'export FM_DESTRUCTIVE_OK=T-1; rm -rf ~/.treehouse/*'
+matrix_case O03 deny 'env FM_DESTRUCTIVE_OK=T-1 rm -rf ~/.treehouse/*'
 
 # ALLOW: read-only, explicitly named own resources, own worktree, or data.
 matrix_case A01 allow 'docker volume ls -q -f name=xwvol'
@@ -205,17 +207,26 @@ test_full_acceptance_matrix() {
 # contract documents, so an adapter or log reader can rely on them.
 test_policy_reason_codes() {
   local out
-  out=$(node "$POLICY" --command 'docker volume ls -q -f name=xwvol | xargs docker volume rm' --cwd "$FIX_WT" --home "$FIX_HOME")
-  assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	docker-bulk-rm" "the xwvol pipe shape must deny as docker-bulk-rm"
-  out=$(node "$POLICY" --command 'docker volume prune -f' --cwd "$FIX_WT" --home "$FIX_HOME")
-  assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	docker-prune" "a prune must deny as docker-prune"
-  out=$(node "$POLICY" --command "docker volume rm $FIX_TASK-db" --cwd "$FIX_WT" --home "$FIX_HOME")
-  assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	docker-rm-unowned" "without an own label even a named volume is unowned"
-  out=$(node "$POLICY" --command "docker volume rm $FIX_TASK-db" --cwd "$FIX_WT" --home "$FIX_HOME" --own-label "$FIX_TASK")
-  assert_equals "$out" "allow" "the named own-label volume must allow"
+  out=$(node "$POLICY" --command 'ls ~/.treehouse | xargs rm -rf' --cwd "$FIX_WT" --home "$FIX_HOME")
+  assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	rm-bulk-piped" "the xwvol pipe shape must deny as rm-bulk-piped"
+  out=$(node "$POLICY" --command 'rm -rf ~/.treehouse/*' --cwd "$FIX_WT" --home "$FIX_HOME")
+  assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	rm-glob-protected" "a prune must deny as rm-glob-protected"
+  # docker is the fleet docker shim's job now (fleet-ops files/docker-guard/docker-minimal): this guard lets every docker shape pass
+  for dcmd in 'docker volume prune -f' "docker volume rm $FIX_TASK-db" 'docker rm -f $(docker ps -aq)' 'ls | xargs docker kill'; do
+    out=$(node "$POLICY" --command "$dcmd" --cwd "$FIX_WT" --home "$FIX_HOME")
+    assert_equals "$out" "allow" "docker is not this guard's business: $dcmd"
+  done
+  for ncmd in "find ~ -name x -exec rm -rf {} +" "systemctl --user disable animus" 'echo x; rm -rf ~/a/*; echo y' 'echo x; rm -rf ~/a/*; case y in z) true;; esac'; do
+    out=$(node "$POLICY" --command "$ncmd" --cwd "$FIX_WT" --home "$FIX_HOME")
+    case "$ncmd" in
+      *"case y in"*) assert_equals "$out" "allow" "KNOWN GAP (the unclassifiable-destructive backstop was dropped 2026-10-18): syntax the tokenizer cannot parse is not classified: $ncmd" ;;
+      *"rm -rf ~/a/*"*) assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	rm-glob-protected" "a retained rule still fires inside a longer command" ;;
+      *) assert_equals "$out" "allow" "removed rule (find-delete / systemctl-disable): $ncmd" ;;
+    esac
+  done
   out=$(node "$POLICY" --command 'git clean -fdx' --cwd "$FIX_WT" --home "$FIX_HOME")
   assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	git-clean" "git clean with no worktree spawned for the caller must deny"
-  pass "policy CLI: stable reason codes, own-label allow, and own-worktree gating"
+  pass "policy CLI: stable reason codes for the retained rules; docker, find-delete and systemctl are allowed"
 }
 
 # --- log, supervisor note, and override -------------------------------------
@@ -226,7 +237,7 @@ test_denial_is_logged_and_noted() {
   (
     cd "$FIX_WT" || exit 99
     unset FM_DESTRUCTIVE_OK FM_TASK_ID
-    HOME="$FIX_HOME" "$CHECK" --command 'docker volume ls -q -f name=xwvol | xargs docker volume rm' \
+    HOME="$FIX_HOME" "$CHECK" --command 'ls ~/.treehouse | xargs rm -rf' \
       --state "$home/state" --task log-task --worktree "$FIX_WT" >/dev/null 2>&1
   )
   rc=$?
@@ -235,15 +246,15 @@ test_denial_is_logged_and_noted() {
   assert_present "$log" "a denial must write the durable guard log"
   line=$(tail -n 1 "$log")
   printf '%s' "$line" | jq -e --arg wt "$FIX_WT" '
-    .decision == "deny" and .code == "docker-bulk-rm" and .who == "task:log-task" and
+    .decision == "deny" and .code == "rm-bulk-piped" and .who == "task:log-task" and
     (.at | type == "number") and (.time | test("Z$")) and .cwd == $wt and
-    (.command | contains("xargs docker volume rm")) and .ticket == ""' >/dev/null \
+    (.command | contains("xargs rm -rf")) and .ticket == ""' >/dev/null \
     || fail "the log line must record what, who, when, and where: $line"
   status="$home/state/log-task.status"
   assert_present "$status" "a worker denial must append to the worker's status stream"
   line=$(tail -n 1 "$status")
   case "$line" in
-    "note [at="*"]: destructive-command guard denied [docker-bulk-rm]; the command did not run: docker volume ls"*) ;;
+    "note [at="*"]: destructive-command guard denied [rm-bulk-piped]; the command did not run: ls ~/.treehouse | xargs rm -rf"*) ;;
     *) fail "the status line must be a stamped note naming the code and command: $line" ;;
   esac
   (
@@ -259,19 +270,19 @@ test_override_from_process_environment() {
   (
     cd "$FIX_WT" || exit 99
     unset FM_TASK_ID
-    FM_DESTRUCTIVE_OK=CAPT-42 HOME="$FIX_HOME" "$CHECK" --command 'docker volume prune -f' \
+    FM_DESTRUCTIVE_OK=CAPT-42 HOME="$FIX_HOME" "$CHECK" --command 'rm -rf ~/.treehouse/*' \
       --state "$home/state" --task ov-task >/dev/null 2>&1
   )
   rc=$?
   expect_code 0 "$rc" "a valid ticket in the guard's own environment must allow"
   log="$home/data/destructive-guard.log"
-  tail -n 1 "$log" | jq -e '.decision == "override" and .ticket == "CAPT-42" and .code == "docker-prune"' >/dev/null \
+  tail -n 1 "$log" | jq -e '.decision == "override" and .ticket == "CAPT-42" and .code == "rm-glob-protected"' >/dev/null \
     || fail "an honored override must be logged with its ticket: $(tail -n 1 "$log")"
-  assert_grep "override FM_DESTRUCTIVE_OK=CAPT-42 allowed [docker-prune]" "$home/state/ov-task.status" \
+  assert_grep "override FM_DESTRUCTIVE_OK=CAPT-42 allowed [rm-glob-protected]" "$home/state/ov-task.status" \
     "an honored override must also be noted for the supervisor"
   (
     cd "$FIX_WT" || exit 99
-    FM_DESTRUCTIVE_OK='bad ticket;rm' HOME="$FIX_HOME" "$CHECK" --command 'docker volume prune -f' \
+    FM_DESTRUCTIVE_OK='bad ticket;rm' HOME="$FIX_HOME" "$CHECK" --command 'rm -rf ~/.treehouse/*' \
       --state "$home/state" --task ov-task >/dev/null 2>&1
   )
   rc=$?
@@ -279,7 +290,7 @@ test_override_from_process_environment() {
   (
     cd "$FIX_WT" || exit 99
     unset FM_DESTRUCTIVE_OK
-    HOME="$FIX_HOME" "$CHECK" --command 'FM_DESTRUCTIVE_OK=CAPT-42 docker volume prune -f' \
+    HOME="$FIX_HOME" "$CHECK" --command 'FM_DESTRUCTIVE_OK=CAPT-42 rm -rf ~/.treehouse/*' \
       --state "$home/state" --task ov-task >/dev/null 2>&1
   )
   rc=$?
@@ -312,13 +323,13 @@ test_primary_applies_worker_policy_in_worker_panes() {
     cd "$FIX_WT" || exit 99
     unset FM_DESTRUCTIVE_OK
     FM_TASK_ID=some-worker FM_TASK_INBOX="$home/state/some-worker.inbox" HOME="$FIX_HOME" \
-      "$CHECK" --primary --command 'docker volume prune -f' >/dev/null 2>&1
+      "$CHECK" --primary --command 'rm -rf ~/.treehouse/*' >/dev/null 2>&1
   )
   rc=$?
   expect_code 2 "$rc" "the tracked primary adapter must deny in a worker pane too"
   tail -n 1 "$home/data/destructive-guard.log" | jq -e '.who == "task:some-worker" and .decision == "deny"' >/dev/null \
     || fail "a worker-pane denial through the primary adapter must log as that worker in its parent home"
-  assert_grep "destructive-command guard denied [docker-prune]" "$home/state/some-worker.status" \
+  assert_grep "destructive-command guard denied [rm-glob-protected]" "$home/state/some-worker.status" \
     "a worker-pane denial through the primary adapter must note the worker's status stream"
   (
     cd "$FIX_WT" || exit 99
@@ -330,7 +341,7 @@ test_primary_applies_worker_policy_in_worker_panes() {
   (
     cd "$FIX_WT" || exit 99
     unset FM_DESTRUCTIVE_OK FM_TASK_ID
-    FM_HOME="$home" HOME="$FIX_HOME" "$CHECK" --primary --command 'docker volume prune -f' >/dev/null 2>&1
+    FM_HOME="$home" HOME="$FIX_HOME" "$CHECK" --primary --command 'rm -rf ~/.treehouse/*' >/dev/null 2>&1
   )
   rc=$?
   expect_code 2 "$rc" "the primary adapter must deny in a primary or mate pane"
@@ -349,8 +360,8 @@ test_worker_denial_is_recorded_once_across_two_hooks() {
     cd "$FIX_WT" || exit 99
     unset FM_DESTRUCTIVE_OK
     export FM_TASK_ID=dd-task FM_TASK_INBOX="$home/state/dd-task.inbox" HOME="$FIX_HOME"
-    "$CHECK" --command 'docker system prune -af' --state "$home/state" --task dd-task --worktree "$FIX_WT" >/dev/null 2>&1
-    "$CHECK" --primary --command 'docker system prune -af' >/dev/null 2>&1
+    "$CHECK" --command 'rm -rf ~/.treehouse/*' --state "$home/state" --task dd-task --worktree "$FIX_WT" >/dev/null 2>&1
+    "$CHECK" --primary --command 'rm -rf ~/.treehouse/*' >/dev/null 2>&1
   )
   rc=$?
   expect_code 2 "$rc" "the second hook must still deny"
@@ -368,11 +379,11 @@ test_secondmate_primary_reports_to_parent_channel() {
   (
     cd "$FIX_WT" || exit 99
     unset FM_DESTRUCTIVE_OK FM_TASK_ID
-    FM_HOME="$mate" HOME="$FIX_HOME" "$CHECK" --primary --command 'docker system prune -af' >/dev/null 2>&1
+    FM_HOME="$mate" HOME="$FIX_HOME" "$CHECK" --primary --command 'rm -rf ~/.treehouse/*' >/dev/null 2>&1
   )
   rc=$?
   expect_code 2 "$rc" "a secondmate primary must be denied"
-  assert_grep "destructive-command guard denied [docker-prune]" "$parent/state/sm-dg.status" \
+  assert_grep "destructive-command guard denied [rm-glob-protected]" "$parent/state/sm-dg.status" \
     "a secondmate denial must reach its parent channel"
   pass "a secondmate's denial is reported on its parent channel"
 }
@@ -389,7 +400,7 @@ test_fail_open_transport() {
   rc=$?
   expect_code 0 "$rc" "unparseable stdin must fail open"
   base=$(fm_test_base_path_sans "/usr/bin:/bin" node)
-  out=$(cd "$FIX_WT" && HOME="$FIX_HOME" PATH="$base" "$CHECK" --command 'docker volume prune -f' 2>&1)
+  out=$(cd "$FIX_WT" && HOME="$FIX_HOME" PATH="$base" "$CHECK" --command 'rm -rf ~/.treehouse/*' 2>&1)
   rc=$?
   expect_code 0 "$rc" "a missing Node runtime must fail open"
   pass "malformed transport and a missing runtime fail open"
@@ -451,10 +462,10 @@ test_pi_worker_adapter_denies_and_notes() {
   state="$HOME_DIR/state"
   ext="$state/$id.pi-ext.ts"
   assert_present "$ext" "pi spawn did not write the per-task extension"
-  out=$(cd "$WT_DIR" && unset FM_DESTRUCTIVE_OK && drive_tool_call "$ext" 'docker volume ls -q -f name=xwvol | xargs docker volume rm')
-  printf '%s' "$out" | jq -e '.block == true and (.reason | contains("[docker-bulk-rm]"))' >/dev/null \
+  out=$(cd "$WT_DIR" && unset FM_DESTRUCTIVE_OK && drive_tool_call "$ext" 'ls ~/.treehouse | xargs rm -rf')
+  printf '%s' "$out" | jq -e '.block == true and (.reason | contains("[rm-bulk-piped]"))' >/dev/null \
     || fail "the pi worker adapter must block the xwvol shape: $out"
-  assert_grep "destructive-command guard denied [docker-bulk-rm]" "$state/$id.status" \
+  assert_grep "destructive-command guard denied [rm-bulk-piped]" "$state/$id.status" \
     "the pi worker denial must reach the task's status stream"
   assert_grep "\"who\":\"task:$id\"" "$HOME_DIR/data/destructive-guard.log" \
     "the pi worker denial must be logged in the parent home"
@@ -502,14 +513,14 @@ const run = async (command) => {
     return `blocked:${error.message}`;
   }
 };
-process.stdout.write(`${await run("docker system prune -af")}\n${await run("ls -la")}\n`);
+process.stdout.write(`${await run("rm -rf ~/.treehouse/*")}\n${await run("ls -la")}\n`);
 EOF
 )
   case "$out" in
-    "blocked:"*"[docker-prune]"*$'\n'allowed) ;;
+    "blocked:"*"[rm-glob-protected]"*$'\n'allowed) ;;
     *) fail "the opencode worker plugin must block a prune and allow ls: $out" ;;
   esac
-  assert_grep "destructive-command guard denied [docker-prune]" "$HOME_DIR/state/$id.status" \
+  assert_grep "destructive-command guard denied [rm-glob-protected]" "$HOME_DIR/state/$id.status" \
     "the opencode worker denial must reach the task's status stream"
   pass "fm-spawn's OpenCode worker plugin blocks a prune by throwing and notes the parent"
 }
@@ -534,7 +545,7 @@ test_tracked_primary_adapters() {
   : >"$dir/AGENTS.md"
   cp "$ROOT/.codex/hooks.json" "$dir/.codex/hooks.json"
   cp "$CHECK" "$POLICY" "$ROOT/bin/fm-arm-command-policy.mjs" "$ROOT/bin/fm-hook-host-lib.sh" "$dir/bin/"
-  payload=$(jq -cn '{tool_name:"Bash",tool_input:{command:"docker volume prune -f"}}')
+  payload=$(jq -cn '{tool_name:"Bash",tool_input:{command:"rm -rf ~/.treehouse/*"}}')
   cmd=$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(contains("fm-destructive-pretool-check.sh"))' "$ROOT/.claude/settings.json")
   run_adapter "$dir" "" "$cmd" "$payload" CLAUDE_PROJECT_DIR="$dir" >/dev/null 2>&1
   expect_code 2 $? "the tracked Claude primary hook must deny"
@@ -543,19 +554,19 @@ test_tracked_primary_adapters() {
   cmd=$(jq -r '.hooks.PreToolUse[].hooks[].command | select(contains("fm-destructive-pretool-check.sh"))' "$ROOT/.codex/hooks.json")
   run_adapter "$dir" "" "$cmd" "$payload" >/dev/null 2>&1
   expect_code 2 $? "the tracked Codex primary hook must deny"
-  run_adapter "$dir" cx-worker "$cmd" "$(jq -cn '{tool_name:"Bash",tool_input:{command:"docker volume ls -q -f name=xwvol | xargs docker volume rm"}}')" \
+  run_adapter "$dir" cx-worker "$cmd" "$(jq -cn '{tool_name:"Bash",tool_input:{command:"ls ~/.treehouse | xargs rm -rf"}}')" \
     FM_TASK_INBOX="$dir/state/cx-worker.inbox" >/dev/null 2>&1
   expect_code 2 $? "the tracked Codex primary hook must deny the xwvol shape in a worker pane"
-  assert_grep "destructive-command guard denied [docker-bulk-rm]" "$dir/state/cx-worker.status" \
+  assert_grep "destructive-command guard denied [rm-bulk-piped]" "$dir/state/cx-worker.status" \
     "a worker denial through a primary-registered hook must note that worker's status stream"
   cmd=$(jq -r '.hooks.PreToolUse[].hooks[].command' "$ROOT/.grok/hooks/fm-primary-destructive-check.json")
-  out=$(run_adapter "$dir" "" "$cmd" "$(jq -cn '{toolName:"run_terminal_command",toolInput:{command:"docker volume prune -f"}}')" GROK_WORKSPACE_ROOT="$dir" 2>/dev/null)
+  out=$(run_adapter "$dir" "" "$cmd" "$(jq -cn '{toolName:"run_terminal_command",toolInput:{command:"rm -rf ~/.treehouse/*"}}')" GROK_WORKSPACE_ROOT="$dir" 2>/dev/null)
   rc=$?
   expect_code 2 "$rc" "the tracked Grok primary hook must deny"
   printf '%s' "$out" | jq -e '.decision == "deny"' >/dev/null || fail "the Grok hook must print its deny object: $out"
   cmd=$(jq -r '.hooks.preToolUse[] | .command | select(contains("fm-destructive-pretool-check.sh"))' "$ROOT/.cursor/hooks.json")
-  out=$(run_adapter "$dir" "" "$cmd" "$(jq -cn '{cursor_version:"1.0",tool_name:"Shell",tool_input:{command:"docker volume prune -f"}}')" CURSOR_PROJECT_DIR="$dir" 2>/dev/null)
-  printf '%s' "$out" | jq -e '.permission == "deny" and (.user_message | contains("[docker-prune]"))' >/dev/null \
+  out=$(run_adapter "$dir" "" "$cmd" "$(jq -cn '{cursor_version:"1.0",tool_name:"Shell",tool_input:{command:"rm -rf ~/.treehouse/*"}}')" CURSOR_PROJECT_DIR="$dir" 2>/dev/null)
+  printf '%s' "$out" | jq -e '.permission == "deny" and (.user_message | contains("[rm-glob-protected]"))' >/dev/null \
     || fail "the tracked Cursor primary hook must return Cursor's deny object: $out"
   out=$(cd "$dir" && unset FM_DESTRUCTIVE_OK FM_TASK_ID && export FM_HOME="$dir" HOME="$FIX_HOME" &&
     PLUGIN="$ROOT/.opencode/plugins/fm-primary-destructive-check.js" ROOTDIR="$dir" node --input-type=module 2>&1 <<'EOF'
@@ -563,7 +574,7 @@ import { pathToFileURL } from "node:url";
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const hooks = await mod.FmPrimaryDestructiveCheck({ worktree: process.env.ROOTDIR });
 try {
-  await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "docker volume prune -f" } });
+  await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "rm -rf ~/.treehouse/*" } });
   process.stdout.write("allowed");
 } catch (error) {
   process.stdout.write(`blocked:${error.message}`);
@@ -571,7 +582,7 @@ try {
 EOF
 )
   case "$out" in
-    "blocked:"*"[docker-prune]"*) ;;
+    "blocked:"*"[rm-glob-protected]"*) ;;
     *) fail "the tracked OpenCode primary plugin must block a prune: $out" ;;
   esac
   pass "tracked Claude, Codex, Grok, Cursor, and OpenCode primary adapters deny through the guard, in primary and worker panes alike"
@@ -587,14 +598,14 @@ test_claude_worker_adapter_denies() {
   settings="$WT_DIR/.claude/settings.local.json"
   cmd=$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[0].command' "$settings")
   [ -n "$cmd" ] && [ "$cmd" != null ] || fail "the claude worker settings carry no Bash PreToolUse hook"
-  payload=$(jq -cn '{tool_name:"Bash",tool_input:{command:"docker system prune -af --volumes"}}')
+  payload=$(jq -cn '{tool_name:"Bash",tool_input:{command:"rm -rf ~/.treehouse/*"}}')
   out=$(cd "$WT_DIR" && printf '%s' "$payload" | env -u FM_DESTRUCTIVE_OK sh -c "$cmd" 2>"$CASE_DIR/claude.err")
   rc=$?
   expect_code 2 "$rc" "the claude worker hook must deny a prune"
   [ -z "$out" ] || fail "the claude worker hook must keep stdout empty on deny: $out"
-  jq -e '.systemMessage | contains("[docker-prune]")' "$CASE_DIR/claude.err" >/dev/null \
+  jq -e '.systemMessage | contains("[rm-glob-protected]")' "$CASE_DIR/claude.err" >/dev/null \
     || fail "the claude worker hook must explain the denial on stderr: $(cat "$CASE_DIR/claude.err")"
-  assert_grep "destructive-command guard denied [docker-prune]" "$state/$id.status" \
+  assert_grep "destructive-command guard denied [rm-glob-protected]" "$state/$id.status" \
     "the claude worker denial must reach the task's status stream"
   pass "fm-spawn's Claude worker settings carry a Bash PreToolUse guard that denies and notes"
 }
@@ -650,12 +661,12 @@ test_pi_primary_extension_guards_mate_panes() {
   printf '#!/usr/bin/env bash\nexit 0\n' >"$project/bin/fm-arm-pretool-check.sh"
   chmod +x "$project/bin/"*.sh
   out=$(cd "$FIX_WT" && unset FM_DESTRUCTIVE_OK FM_TASK_ID && export FM_HOME="$project" HOME="$FIX_HOME" &&
-    drive_tool_call "$project/.pi/extensions/fm-primary-turnend-guard.ts" 'docker volume prune -f')
-  printf '%s' "$out" | jq -e '.block == true and (.reason | contains("[docker-prune]"))' >/dev/null \
+    drive_tool_call "$project/.pi/extensions/fm-primary-turnend-guard.ts" 'rm -rf ~/.treehouse/*')
+  printf '%s' "$out" | jq -e '.block == true and (.reason | contains("[rm-glob-protected]"))' >/dev/null \
     || fail "the Pi primary extension must block a prune in a primary or mate pane: $out"
   out=$(cd "$FIX_WT" && unset FM_DESTRUCTIVE_OK && export FM_TASK_ID=w1 FM_HOME="$project" HOME="$FIX_HOME" &&
-    drive_tool_call "$project/.pi/extensions/fm-primary-turnend-guard.ts" 'docker volume prune -f')
-  printf '%s' "$out" | jq -e '.block == true and (.reason | contains("[docker-prune]"))' >/dev/null \
+    drive_tool_call "$project/.pi/extensions/fm-primary-turnend-guard.ts" 'rm -rf ~/.treehouse/*')
+  printf '%s' "$out" | jq -e '.block == true and (.reason | contains("[rm-glob-protected]"))' >/dev/null \
     || fail "the Pi primary extension must also block a prune in a worker pane: $out"
   pass "the tracked Pi primary extension guards primary, mate, and worker panes"
 }

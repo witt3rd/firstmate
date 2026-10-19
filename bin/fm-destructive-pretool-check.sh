@@ -3,7 +3,7 @@
 #
 # A worker once deleted about 370 shared docker workspace volumes with a cleanup
 # filter that carried one stray extra pattern. A brief rule did not stop it, so
-# this guard makes the harness refuse a destructive bulk delete - docker prune,
+# this guard makes the harness refuse a destructive bulk delete - (docker moved to the fleet docker shim 2026-10-18),
 # a filtered/piped/wildcard docker removal, a recursive rm over a glob under the
 # home directory or /mnt, git clean outside the pane's own worktree, find
 # -delete outside /tmp/fm-*, block-device writes, btrfs subvolume deletes, and
@@ -262,8 +262,8 @@ case "$CMD" in
   *"\$'"*|*'$"'*) ;;
   *)
     case "$PREFILTER" in
-      *docker*|*podman*|*nerdctl*|*rm*|*find*|*git*|*dd*|*mkfs*|*mke2fs*|*mkswap*|\
-      *wipefs*|*blkdiscard*|*parted*|*fdisk*|*btrfs*|*systemctl*|*shred*) ;;
+      *rm*|*git*|*dd*|*mkfs*|*mke2fs*|*mkswap*|\
+      *wipefs*|*blkdiscard*|*parted*|*fdisk*|*btrfs*|*shred*) ;;
       *) exit 0 ;;
     esac
     ;;

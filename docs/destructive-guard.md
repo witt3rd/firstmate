@@ -14,24 +14,29 @@ The threat model is agent mistakes, the same as the sibling seatbelts ([`arm-pre
 The policy tokenizes the submitted bytes with the shared classifier owned by `bin/fm-arm-command-policy.mjs` and never executes, sources, or expands any part of them.
 It is not a sandbox: a destructive command hidden in a script file the agent writes and then runs, or assembled from opaque runtime data, is out of scope.
 
+## What changed on 2026-10-18 (fleet simplification)
+
+Docker is **not this guard's business any more.** The fleet's own docker shim (fleet-ops `files/docker-guard/docker-minimal`) is the single decision
+owner for docker: it refuses prune, `-a`/`--all`/`--filter`, "every running container", and anything that belongs to a running named service, and
+allows everything else, so a creator can always remove what it created. This guard dropped `docker-prune`, `docker-bulk-rm` and `docker-rm-unowned`
+(which matched the task label in the target's *name* and refused workers' own cleanup), plus `find-delete`, `systemctl-disable` and the
+`unclassifiable-destructive` backstop. One consequence: syntax the tokenizer cannot parse (a `case` arm, unbalanced quotes) is no longer classified, so
+a retained rule can be bypassed that way. It was dropped because it refused routine work (multi-line notes that merely mention a verb), not because
+it never fired; restore it for the retained verbs only if that gap matters.
+
 ## What is refused
+
 
 Each denial carries one stable code in square brackets before its prose reason.
 
 | Code | Refused shape |
 | --- | --- |
-| `docker-prune` | `docker` (also `podman`, `nerdctl`) `system`, `volume`, `container`, `image`, or `network` `prune`, with any options or remote `-H`/`--context`. `builder prune` (rebuildable cache) is allowed. |
-| `docker-bulk-rm` | `rm`, `rmi`, or `volume`/`container`/`image`/`network` `rm` whose targets come from a command substitution, a variable, a wildcard, `--filter`, `-a`/`--all`, `xargs`, or a pipe, including inside a loop, `ssh`, `sudo`, `bash -c`, or `eval`. |
-| `docker-rm-unowned` | A removal whose literal target names lack the pane's own task label. |
 | `rm-glob-protected` | Recursive `rm` over a wildcard or variable path whose static location is under the home directory, `/mnt`, `/home`, `/media`, `/srv`, or `/`, including a preceding `cd`. |
 | `rm-protected-root` | Recursive `rm` of `/`, the home directory, a shared top-level directory under it (`.treehouse` and its pools and slots, `.local`, `.local/state`, `.local/share`, `Documents`, `backups`, `src`, `cloud`, `.config`, `.ssh`), `/mnt` or a mount under it, or any `--no-preserve-root`. |
 | `rm-bulk-piped` | `rm` fed by `xargs` or `parallel`. |
-| `find-delete` | `find` with `-delete` or `-exec`/`-execdir`/`-ok` running `rm`, `rmdir`, `unlink`, `shred`, or a docker CLI, unless every start path is under `/tmp/fm-*`. |
 | `git-clean` | A forced `git clean` (not `-n`/`-i`) whose repository is not inside the worktree spawned for this pane. |
 | `device-write` | `dd of=/dev/...`, `mkfs*`, `mke2fs`, `mkswap`, `wipefs`, `blkdiscard`, `shred`, or a partitioner (`parted`, `fdisk`, `sfdisk`, `sgdisk`, `gdisk`) naming a block device; listing (`-l`, `print`) and `wipefs -n` are allowed. |
 | `btrfs-subvolume-delete` | `btrfs subvolume delete` and its abbreviations. |
-| `systemctl-disable` | `systemctl disable` or `mask`, system or `--user`, because host units are managed by fleet-ops. |
-| `unclassifiable-destructive` | Syntax the classifier cannot tokenize, such as a `case` arm, that visibly mentions one of the destructive verbs above. |
 
 Quoted text, comments, heredoc bodies, and later argument words are data, so `echo 'docker volume prune -f'` and `grep -rn 'rm -rf' docs` are allowed.
 
@@ -88,7 +93,7 @@ A failure to write the log or note never turns a denial into an allow.
 The transport accepts the same entry forms as the cd-guard: stdin JSON at `.tool_input.command` (Claude with `--claude`, Codex, Cursor with `--cursor`) or `.toolInput.command` (Grok), and `--command <exact string>` (OpenCode, Pi, pi-signed, omp).
 A strict-superset prefilter skips the Node process when the de-quoted command names none of the guarded tools and carries no `$'` or `$"` decoder marker; that marker set is coupled to the shared classifier's decoder set exactly as [`cd-guard.md`](cd-guard.md#transport-and-fail-open-behavior) describes.
 Empty stdin, unparseable JSON, missing `jq` on the stdin path, missing Node, a missing policy owner, or an invalid policy response fail open with exit 0, because a broken hook must not deny every shell call.
-Unclassifiable syntax that visibly names a destructive verb fails closed with `unclassifiable-destructive`.
+(Until 2026-10-18 unclassifiable syntax that visibly named a destructive verb failed closed with `unclassifiable-destructive`; that backstop is gone, see "What changed".)
 
 The output contract is identical in shape to [`arm-pretool-check.md`](arm-pretool-check.md#output-contract): allow is exit 0 with no output, deny is exit 2 with the Claude-shaped object on stderr plus the Grok object on stdout unless `--claude`, and `--cursor` prints Cursor's returned decision object with exit 0.
 
