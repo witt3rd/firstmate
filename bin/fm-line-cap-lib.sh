@@ -4,8 +4,8 @@
 #
 # Status and decision text (the wake digest's OPEN DECISIONS section and the
 # session-start digest's status tails) is never clipped: fm_fold_line_var below
-# folds it. The per-line cap that follows remains for non-status report lines
-# (mail, tool updates) and status-record writers. The cap's original rationale:
+# folds it, and so are mail reports and --resolve-key close notes. The per-line
+# cap that follows remains for the tool-update and startup-growth report lines. The cap's original rationale:
 # the two digests render the same kind of
 # content - an agent-written status line, which AGENTS.md section 8 treats as a
 # wake EVENT rather than current state - into a size-bounded view. An agent
