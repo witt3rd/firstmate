@@ -3,11 +3,12 @@
 #
 # A worker once deleted about 370 shared docker workspace volumes with a cleanup
 # filter that carried one stray extra pattern. A brief rule did not stop it, so
-# this guard makes the harness refuse a destructive bulk delete - (docker moved to the fleet docker shim 2026-10-18),
-# a filtered/piped/wildcard docker removal, a recursive rm over a glob under the
-# home directory or /mnt, git clean outside the pane's own worktree, find
-# -delete outside /tmp/fm-*, block-device writes, btrfs subvolume deletes, and
-# systemctl disable/mask - in every worker and mate pane that loads it.
+# this guard makes the harness refuse a destructive bulk delete - a recursive rm
+# over a glob under the home directory or /mnt, git clean outside the pane's own
+# worktree, find -delete or -exec rm over a protected location (the home
+# directory, a shared top-level directory, /mnt, /), block-device writes, and
+# btrfs subvolume deletes - in every worker and mate pane that loads it.
+# Docker is the fleet docker shim's job (since 2026-10-18), not this guard's.
 # bin/fm-destructive-command-policy.mjs is the sole owner of the allow/deny
 # decision. This wrapper acquires the harness payload, supplies the pane's
 # identity and own worktree, honors the captain-or-main override, logs every
@@ -262,7 +263,7 @@ case "$CMD" in
   *"\$'"*|*'$"'*) ;;
   *)
     case "$PREFILTER" in
-      *rm*|*git*|*dd*|*mkfs*|*mke2fs*|*mkswap*|\
+      *rm*|*find*|*git*|*dd*|*mkfs*|*mke2fs*|*mkswap*|\
       *wipefs*|*blkdiscard*|*parted*|*fdisk*|*btrfs*|*shred*) ;;
       *) exit 0 ;;
     esac

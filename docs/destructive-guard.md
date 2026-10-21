@@ -19,10 +19,10 @@ It is not a sandbox: a destructive command hidden in a script file the agent wri
 Docker is **not this guard's business any more.** The fleet's own docker shim (fleet-ops `files/docker-guard/docker-minimal`) is the single decision
 owner for docker: it refuses prune, `-a`/`--all`/`--filter`, "every running container", and anything that belongs to a running named service, and
 allows everything else, so a creator can always remove what it created. This guard dropped `docker-prune`, `docker-bulk-rm` and `docker-rm-unowned`
-(which matched the task label in the target's *name* and refused workers' own cleanup), plus `find-delete`, `systemctl-disable` and the
-`unclassifiable-destructive` backstop for those verbs. The backstop itself is **kept for the retained verbs only** (recursive `rm`, device tools, `btrfs subvolume
-delete`, `git clean`): syntax the tokenizer cannot parse (a `case` arm, unbalanced quotes) that visibly names one of them still fails closed, so those rules cannot
-be bypassed by parse-hostile syntax. Unparsable text that only mentions docker, `find -delete` or `systemctl` is allowed.
+(which matched the task label in the target's *name* and refused workers' own cleanup) and `systemctl-disable`. `find-delete` is **kept, narrowed**: it now denies
+only over a protected location and lets a creator clean up its own tree. The `unclassifiable-destructive` backstop is kept for the retained verbs (recursive `rm`,
+`find -delete`/`-exec rm`, device tools, `btrfs subvolume delete`, `git clean`): syntax the tokenizer cannot parse (a `case` arm, unbalanced quotes) that visibly
+names one of them still fails closed, so those rules cannot be bypassed by parse-hostile syntax. Unparsable text that only mentions docker or `systemctl` is allowed.
 
 ## What is refused
 
@@ -34,6 +34,7 @@ Each denial carries one stable code in square brackets before its prose reason.
 | `rm-glob-protected` | Recursive `rm` over a wildcard or variable path whose static location is under the home directory, `/mnt`, `/home`, `/media`, `/srv`, or `/`, including a preceding `cd`. |
 | `rm-protected-root` | Recursive `rm` of `/`, the home directory, a shared top-level directory under it (`.treehouse` and its pools and slots, `.local`, `.local/state`, `.local/share`, `Documents`, `backups`, `src`, `cloud`, `.config`, `.ssh`), `/mnt` or a mount under it, or any `--no-preserve-root`. |
 | `rm-bulk-piped` | `rm` fed by `xargs` or `parallel`. |
+| `find-delete` | `find` with `-delete` or `-exec`/`-execdir`/`-ok` running `rm`, `rmdir`, `unlink`, or `shred`, when a start path (or the cwd when none is given) is a protected location: the home directory itself, a shared top-level directory listed under `rm-protected-root`, `/mnt` and anything under it, `/media`, `/srv`, `/home`, or `/`. Inside the pane's own worktree, `/tmp`, and `~/.cache/fm/<task>/` it is allowed. |
 | `git-clean` | A forced `git clean` (not `-n`/`-i`) whose repository is not inside the worktree spawned for this pane. |
 | `device-write` | `dd of=/dev/...`, `mkfs*`, `mke2fs`, `mkswap`, `wipefs`, `blkdiscard`, `shred`, or a partitioner (`parted`, `fdisk`, `sfdisk`, `sgdisk`, `gdisk`) naming a block device; listing (`-l`, `print`) and `wipefs -n` are allowed. |
 | `btrfs-subvolume-delete` | `btrfs subvolume delete` and its abbreviations. |

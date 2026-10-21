@@ -27,6 +27,8 @@ const REASONS = {
     "a recursive rm of the home directory, a shared top-level directory under it, /mnt, or / is never a cleanup",
   "rm-bulk-piped":
     "an rm fed by xargs or a pipe deletes a list nobody reviewed",
+  "find-delete":
+    "find with -delete or -exec rm over the home directory, a shared top-level directory, /mnt, or / deletes a list nobody reviewed; it may run inside this pane's own worktree, /tmp, or the task's own cache",
   "git-clean":
     "git clean -f deletes untracked and ignored work; it may run only inside the worktree spawned for this pane",
   "device-write":
@@ -55,6 +57,7 @@ const DEVICE_TOOLS = new Set(["mkfs", "mke2fs", "mkswap", "wipefs", "blkdiscard"
 const PARTITION_LISTERS = new Set(["parted", "fdisk", "sfdisk", "sgdisk", "gdisk"]);
 const DEV_SAFE = /^\/dev\/(?:null|zero|stdout|stderr|stdin|tty|fd\/.*|full|random|urandom)$/;
 const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+const FIND_EXEC_DELETERS = new Set(["rm", "rmdir", "unlink", "shred"]);
 
 function basename(value) {
   return value.split("/").filter(Boolean).at(-1) || value;
@@ -70,13 +73,14 @@ function isPipe(separator) {
 
 // Raw backstop for syntax the shared tokenizer refuses (case arms, unbalanced
 // quoting): fail closed only when a RETAINED destructive verb is visibly
-// present. Since 2026-10-18 docker, find -delete and systemctl are not
-// patterns here: docker is the fleet docker shim's job, and the other two
-// rules were dropped, so only the verbs whose rules remain are backstopped.
+// present. Since 2026-10-18 docker and systemctl are not patterns here (docker
+// is the fleet docker shim's job; the systemctl rule was dropped), so only the
+// verbs whose rules remain are backstopped.
 function rawLooksDestructive(command) {
   const text = command.replace(/\\\r?\n/g, "");
   return [
     /\brm\b[\s\S]*(?:\s-[A-Za-z]*[rR]|--recursive)/,
+    /\bfind\b[\s\S]*(?:-delete|-exec(?:dir)?\s+\S*\b(?:rm|rmdir|unlink|shred)\b)/,
     /\b(?:mkfs(?:\.\w+)?|mke2fs|mkswap|wipefs|blkdiscard|parted|sfdisk|sgdisk)\b/,
     /\bdd\b[\s\S]*\bof=\/dev\//,
     /\bbtrfs\b[\s\S]*\bsub\w*\s+d/,
@@ -195,6 +199,45 @@ function classifyRm(words, start, context, fed) {
     if (isProtectedRoot(location, context) || (context.home && within(location, context.home))) return deny("rm-glob-protected");
     if (within(location, "/tmp")) continue;
     if (inSharedTree(location, context)) return deny("rm-glob-protected");
+  }
+  return null;
+}
+
+// find -delete / -exec rm is a bulk delete: denied only when a start path (or
+// the cwd when none is given) is a protected location. Inside the pane's own
+// worktree, /tmp, and the task's own cache it is a creator removing its own
+// objects, so it passes.
+function findRootProtected(word, context) {
+  const { location, pattern } = targetLocation(word, context);
+  if (!location) return Boolean(pattern) && globWord(word);
+  if (context.ownWorktree && within(location, context.ownWorktree)) return false;
+  if (isProtectedRoot(location, context)) return true;
+  for (const root of ["/mnt", "/media", "/srv"]) if (within(location, root)) return true;
+  return false;
+}
+
+function classifyFind(words, start, context) {
+  let index = start;
+  while (index < words.length && /^-(?:H|L|P|O\d*)$/.test(words[index].value)) index += 1;
+  if (words[index]?.value === "-D") index += 2;
+  const starts = [];
+  while (index < words.length && !/^[-(!,]/.test(words[index].value)) {
+    starts.push(words[index]);
+    index += 1;
+  }
+  let destructive = false;
+  for (let i = index; i < words.length; i += 1) {
+    const value = words[i].value;
+    if (value === "-delete") destructive = true;
+    if (FIND_EXEC.has(value) && words[i + 1] && FIND_EXEC_DELETERS.has(basename(words[i + 1].value))) destructive = true;
+  }
+  if (!destructive) return null;
+  if (starts.length === 0) {
+    if (!context.cwd) return null;
+    return findRootProtected({ value: context.cwd, subs: [], literal: true, unquotedExpansion: false }, context) ? deny("find-delete") : null;
+  }
+  for (const root of starts) {
+    if (findRootProtected(root, context)) return deny("find-delete");
   }
   return null;
 }
@@ -362,6 +405,7 @@ function analyze(command, context, depth) {
     const fed = stripped.fed || piped;
     let verdict = null;
     if (name === "rm") verdict = classifyRm(words, start, local, stripped.fed);
+    else if (name === "find") verdict = classifyFind(words, start, local);
     else if (name === "git") verdict = classifyGit(words, start, local);
     else if (name === "dd" || DEVICE_TOOLS.has(name) || name.startsWith("mkfs.")) verdict = classifyDevice(name.startsWith("mkfs.") ? "mkfs" : name, words, start);
     else if (name === "btrfs") verdict = classifyBtrfs(words, start);

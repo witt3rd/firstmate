@@ -61,8 +61,8 @@ matrix_case() {
   MATRIX_COMMANDS+=("$3")
 }
 
-# 2026-10-18 simplification: docker is the fleet docker shim's job (files/docker-guard/docker-minimal in fleet-ops), and find-delete,
-# systemctl-disable and the unclassifiable backstop are gone, so these former denials are ALLOWED by this guard.
+# 2026-10-18 simplification: docker is the fleet docker shim's job (files/docker-guard/docker-minimal in fleet-ops), and
+# systemctl-disable is gone, so these former denials are ALLOWED by this guard. find-delete stays, narrowed to protected locations.
 # The xwvol incident shapes: a filtered listing fed into a volume removal.
 matrix_case X01 allow 'docker volume ls -q -f name=xwvol- -f name=ws- | xargs docker volume rm'
 matrix_case X02 allow 'docker volume ls -q --filter name=xwvol | xargs -r docker volume rm -f'
@@ -102,9 +102,16 @@ matrix_case R10 deny 'find ~ -name cache | xargs rm -rf'
 # git clean outside the pane's own worktree.
 matrix_case G01 deny 'git -C ~/src/other clean -fdx'
 matrix_case G02 deny 'cd ~/src/other && git clean -fdx'
-# find -delete or -exec rm outside /tmp/fm-*.
+# find -delete or -exec rm: denied over a protected location, allowed in the pane's own worktree.
 matrix_case F01 allow "find . -name '*.pyc' -delete"
-matrix_case F02 allow 'find ~ -name x -exec rm -rf {} +'
+matrix_case F02 deny 'find ~ -name x -exec rm -rf {} +'
+matrix_case F03 deny 'find ~ -delete'
+matrix_case F04 deny 'find /mnt/x -delete'
+matrix_case F05 deny 'find /mnt/nasty/a/b -name x -exec rm {} +'
+matrix_case F06 deny 'find / -name x -execdir rm -f {} +'
+matrix_case F07 deny 'case y in z) find ~ -delete;; esac'
+matrix_case F08 allow "find $FIX_WT/build -name '*.o' -delete"
+matrix_case F09 allow 'find ~/.cache/fm/dg-task-1 -type f -delete'
 # Block devices, btrfs subvolumes, and managed systemd units.
 matrix_case V01 deny 'dd if=/dev/zero of=/dev/sda bs=1M'
 matrix_case V02 deny 'mkfs.ext4 /dev/sdb1'
@@ -216,18 +223,28 @@ test_policy_reason_codes() {
     out=$(node "$POLICY" --command "$dcmd" --cwd "$FIX_WT" --home "$FIX_HOME")
     assert_equals "$out" "allow" "docker is not this guard's business: $dcmd"
   done
-  for ncmd in 'case y in z) docker volume prune -f;; esac' 'case y in z) systemctl disable foo;; esac' 'case y in z) find ~ -delete;; esac' 'cat <<EOF\nnote: docker rm -f x; systemctl disable y\nEOF\ncase a in b) true;; esac' "find ~ -name x -exec rm -rf {} +" "systemctl --user disable animus" 'echo x; rm -rf ~/a/*; echo y' 'echo x; rm -rf ~/a/*; case y in z) true;; esac' 'case y in z) git clean -fdx;; esac'; do
+  for ncmd in 'case y in z) docker volume prune -f;; esac' 'case y in z) systemctl disable foo;; esac' 'cat <<EOF\nnote: docker rm -f x; systemctl disable y\nEOF\ncase a in b) true;; esac' "systemctl --user disable animus" 'echo x; rm -rf ~/a/*; echo y' 'echo x; rm -rf ~/a/*; case y in z) true;; esac' 'case y in z) git clean -fdx;; esac'; do
     out=$(node "$POLICY" --command "$ncmd" --cwd "$FIX_WT" --home "$FIX_HOME")
     case "$ncmd" in
       *"rm -rf"*"case y in"*|*"case y in"*"git clean"*) assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	unclassifiable-destructive" "unparsable syntax that names a RETAINED verb (rm -rf, git clean) still fails closed: $ncmd" ;;
-      *"case y in"*) assert_equals "$out" "allow" "unparsable syntax that only names docker / systemctl / find is allowed: $ncmd" ;;
+      *"case y in"*) assert_equals "$out" "allow" "unparsable syntax that only names docker / systemctl is allowed: $ncmd" ;;
       *"rm -rf ~/a/*"*) assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	rm-glob-protected" "a retained rule still fires inside a longer command" ;;
-      *) assert_equals "$out" "allow" "removed rule (find-delete / systemctl-disable): $ncmd" ;;
+      *) assert_equals "$out" "allow" "removed rule (systemctl-disable): $ncmd" ;;
     esac
   done
+  out=$(node "$POLICY" --command 'find ~ -delete' --cwd "$FIX_WT" --home "$FIX_HOME")
+  assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	find-delete" "find -delete over the home directory must deny"
+  out=$(node "$POLICY" --command 'case y in z) find ~ -delete;; esac' --cwd "$FIX_WT" --home "$FIX_HOME")
+  assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	unclassifiable-destructive" "unparsable syntax naming find -delete still fails closed"
+  out=$(node "$POLICY" --command 'find /mnt/x -delete' --cwd "$FIX_WT" --home "$FIX_HOME")
+  assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	find-delete" "find -delete under /mnt must deny"
+  out=$(node "$POLICY" --command "find . -name '*.pyc' -delete" --cwd "$FIX_WT" --home "$FIX_HOME" --own-worktree "$FIX_WT")
+  assert_equals "$out" "allow" "find -delete in the own worktree must allow"
+  out=$(node "$POLICY" --command 'find -name x -delete' --cwd "$FIX_HOME" --home "$FIX_HOME")
+  assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	find-delete" "find -delete with no start path from the home directory must deny"
   out=$(node "$POLICY" --command 'git clean -fdx' --cwd "$FIX_WT" --home "$FIX_HOME")
   assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	git-clean" "git clean with no worktree spawned for the caller must deny"
-  pass "policy CLI: stable reason codes for the retained rules; docker, find-delete and systemctl are allowed"
+  pass "policy CLI: stable reason codes for the retained rules; docker, and systemctl are allowed; find-delete denies over protected locations"
 }
 
 # --- log, supervisor note, and override -------------------------------------
