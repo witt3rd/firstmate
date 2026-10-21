@@ -806,6 +806,17 @@ case "$cmd" in
     rm -f "$world/$w.id" "$world/$w.path"
     ;;
   send-keys)
+    case "$text" in
+      "cd -- "*)
+        # The shell follows spawn's `cd` into the leased worktree.
+        w=$(window_name "$target")
+        dest=${text#cd -- }
+        dest=${dest% Enter}
+        dest=${dest#\'}
+        dest=${dest%\'}
+        printf '%s\n' "$dest" > "$world/$w.path"
+        ;;
+    esac
     if [ "$text" = "treehouse get Enter" ]; then
       w=$(window_name "$target")
       for slot in "$slots"/*/project; do
@@ -819,6 +830,55 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  # Spawn leases its worktree with `treehouse get --lease` before any window
+  # exists, so the pool stand-in also answers the lease commands: a lease is
+  # held under its task id until `treehouse return` names that holder.
+  cat > "$fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+world='$world'
+slots='$slots'
+SH
+  cat >> "$fakebin/treehouse" <<'SH'
+case "${1:-}" in
+  get)
+    holder=
+    while [ "$#" -gt 0 ]; do
+      [ "$1" = --lease-holder ] && holder=${2:-}
+      shift
+    done
+    for slot in "$slots"/*/project; do
+      [ -e "$slot" ] || continue
+      key=$(basename "$(dirname "$slot")")
+      [ ! -e "$world/lease.$key" ] || continue
+      printf '%s\n' "$holder" > "$world/lease.$key"
+      printf '%s\n' "$slot"
+      exit 0
+    done
+    echo "all worktrees are in use (max_trees)" >&2
+    exit 1
+    ;;
+  return)
+    holder=
+    path=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --if-lease-holder) holder=${2:-}; shift ;;
+        --*) ;;
+        return) ;;
+        *) path=$1 ;;
+      esac
+      shift
+    done
+    key=$(basename "$(dirname "$path")")
+    if [ -e "$world/lease.$key" ] && [ "$(cat "$world/lease.$key")" = "$holder" ]; then
+      rm -f "$world/lease.$key"
+    fi
+    exit 0
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
 }
 
 # A launch refused after it claimed its slot must leave the pool and the task
@@ -974,9 +1034,9 @@ test_non_polytoken_refused_launch_keeps_its_window() {
 
 # install_isolation_flip_git <fakebin> <worktree>: a git that answers every
 # command truthfully except `rev-parse --show-toplevel` on <worktree>, which
-# reports a foreign root from its third read on - after the discovery poll's
-# two agreeing reads adopted the slot, so only the post-poll isolation check
-# sees the worktree stop being isolated.
+# reports a foreign root from its first read on - the leased slot is adopted
+# without a pane poll, so the isolation check right after the lease is the one
+# that sees the worktree stop being isolated.
 install_isolation_flip_git() {  # <fakebin> <worktree>
   local fakebin=$1 wt=$2 real_git
   real_git=$(command -v git)
@@ -986,7 +1046,7 @@ if [ "\$1" = -C ] && [ "\$2" = '$wt' ] && [ "\$3" = rev-parse ] && [ "\$4" = --s
   n=\$(cat '$fakebin/.toplevel-reads' 2>/dev/null || echo 0)
   n=\$((n + 1))
   printf '%s\n' "\$n" > '$fakebin/.toplevel-reads'
-  if [ "\$n" -gt 2 ]; then
+  if [ "\$n" -gt 0 ]; then
     printf '%s\n' '$fakebin'
     exit 0
   fi
@@ -1010,7 +1070,7 @@ test_treehouse_isolation_refusal_points_at_what_survives() {
   out=$(run_spawn "$id" --harness codex --mode no-mistakes --yolo off)
   status=$?
   [ "$status" -ne 0 ] || fail "a codex spawn whose slot stopped being isolated should refuse"
-  assert_contains "$out" "treehouse get did not yield an isolated worktree" \
+  assert_contains "$out" "treehouse get --lease did not yield an isolated worktree" \
     "the codex spawn did not refuse on the post-poll isolation check"$'\n'"$out"
   assert_contains "$out" "refusing to launch to avoid tangling the primary checkout. Inspect target firstmate:fm-$id" \
     "a non-polytoken isolation refusal must keep main's window pointer"$'\n'"$out"
@@ -1033,7 +1093,7 @@ SH
   out=$(run_spawn "$id" --harness polytoken --model zai/glm-5.3-flash --effort low --mode no-mistakes --yolo off)
   status=$?
   [ "$status" -ne 0 ] || fail "a polytoken spawn whose slot stopped being isolated should refuse"
-  assert_contains "$out" "treehouse get did not yield an isolated worktree" \
+  assert_contains "$out" "treehouse get --lease did not yield an isolated worktree" \
     "the polytoken spawn did not refuse on the post-poll isolation check"$'\n'"$out"
   assert_contains "$out" "pool (window firstmate:fm-$id is closed on exit" \
     "a fresh polytoken isolation refusal must name the worktree and the closed window"$'\n'"$out"

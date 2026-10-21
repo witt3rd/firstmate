@@ -277,9 +277,6 @@ test_unborn_head_project_is_refused_at_once() {
   [ -z "$(git -C "$PROJ_DIR" rev-list --all 2>/dev/null)" ] || fail "spawn committed into the project"
   pass "a project with an unborn HEAD is refused at once with its cause named"
 }
-test_unborn_head_project_is_refused_at_once
-
-echo "# all fm-spawn-worktree-settle tests passed"
 
 test_acquisition_leases_under_the_task_id
 test_exhausted_pool_refuses_immediately_before_any_endpoint_exists

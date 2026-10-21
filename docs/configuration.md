@@ -1137,6 +1137,7 @@ An absent per-secondmate file preserves the existing home-wide pin or unpinned b
 Other secondmates and ordinary workers remain unchanged.
 A pin for another runner does not apply, and `pi` and `pi-signed` share `pi-account`.
 An empty, malformed, unreadable, or unusable per-secondmate pin refuses with its path and reason rather than falling back to the primary's account.
+A secondmate whose registered scope maps to one [spend profile](#spend-profiles-spend_profiles-in-configcrew-dispatchjson) launches on that profile's Pi store instead, which supersedes the Pi pin file; a per-secondmate Claude pin is unaffected.
 
 For example, `config/secondmate-accounts/work/claude-account` containing `/home/me/.claude-work` selects that existing Claude login for the local secondmate named `work`.
 Removing that file restores the primary home's account selection on the next launch.

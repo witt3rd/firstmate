@@ -109,6 +109,7 @@ spawn_ship() {
   shift
   fm_test_spawn_brief "$HOME_DIR" "$id"
   : > "$CASE/launch.log"
+  : > "$FAKEBIN/.spawn-window"
   FM_FAKE_LAUNCH_LOG="$CASE/launch.log" \
     fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" "$id" "$PROJ" --mode no-mistakes --yolo off "$@"
 }
@@ -138,7 +139,7 @@ JSON
   assert_no_grep "profile=" "$HOME_DIR/state/legacy-1.meta" "a legacy record must carry no profile"
   assert_no_grep "captain_override=" "$HOME_DIR/state/legacy-1.meta" "a legacy record must carry no override"
   assert_no_grep "account=" "$HOME_DIR/state/legacy-1.meta" "a legacy record must carry no account"
-  legacy_launch=$(sed 's/legacy-[12]/ID/g' "$CASE/launch.log")
+  legacy_launch=$(sed -e 's/legacy-[12]/ID/g' -e 's/git-config\.[A-Za-z0-9._]*\.sh/git-config.sh/g' "$CASE/launch.log")
   legacy_keys=$(cut -d= -f1 "$HOME_DIR/state/legacy-1.meta" | sort | tr '\n' ' ')
 
   # The same spawn with no dispatch file at all is the baseline: the legacy
@@ -146,7 +147,7 @@ JSON
   rm "$HOME_DIR/config/crew-dispatch.json"
   out=$(spawn_ship legacy-2 --harness pi --model "$SONNET"); rc=$?
   expect_code 0 "$rc" "the baseline spawn should succeed: $out"
-  [ "$(sed 's/legacy-[12]/ID/g' "$CASE/launch.log")" = "$legacy_launch" ] || fail "a legacy dispatch file changed the launch command"
+  [ "$(sed -e 's/legacy-[12]/ID/g' -e 's/git-config\.[A-Za-z0-9._]*\.sh/git-config.sh/g' "$CASE/launch.log")" = "$legacy_launch" ] || fail "a legacy dispatch file changed the launch command"
   [ "$(cut -d= -f1 "$HOME_DIR/state/legacy-2.meta" | sort | tr '\n' ' ')" = "$legacy_keys" ] \
     || fail "a legacy dispatch file changed the task record keys"
   assert_not_contains "$legacy_launch" "PI_CODING_AGENT_DIR" "a legacy launch must not select a store"
@@ -326,6 +327,9 @@ spawn_mate() {
   local id=$1
   shift
   : > "$CASE/launch.log"
+  # The shared fake tmux remembers the window a spawn created; each spawn here
+  # is a fresh attempt, so forget it first.
+  : > "$FAKEBIN/.spawn-window"
   FM_FAKE_LAUNCH_LOG="$CASE/launch.log" \
     fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" "$id" "$SM" --secondmate "$@"
 }
