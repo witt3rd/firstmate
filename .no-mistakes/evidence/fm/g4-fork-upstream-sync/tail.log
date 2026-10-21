@@ -1,0 +1,14 @@
+==> fm-backend-tmux-smoke.log <==
+ok - real tmux: fm_backend_target_exists rejects a killed window while another session stays alive
+ok - real tmux: fm_backend_target_exists rejects a missing session while another session stays alive
+ok - real tmux: kill removes the window and the readable session inventory authoritatively classifies it missing
+
+==> fm-bootstrap.log <==
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+ok - bootstrap gates resolver fields and additive harnesses on the typed key
+
+==> fm-branch-supervision.log <==
+ok - relocated branch spawn admits only already-queued dispatchable work, including on a manual-backend home
+ok - the away spend cap is rechecked under the task-set lock so concurrent spawns cannot both publish
+ok - a quiet-mode record never caps a present captain's spawn, while the away record's cap still binds
