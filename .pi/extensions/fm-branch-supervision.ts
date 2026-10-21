@@ -199,7 +199,7 @@ const PROCESSING_INSTRUCTION =
   "Write that reply as if the settled outcomes had never been listed: leave them out entirely, without naming them, summarizing them, or saying they are settled, because checking them is all the processing they need. " +
   "When every outcome below is processed, call fm_branch_processed with through={N} exactly once. " +
   "Until that call the outcomes stay open and are presented again; an answer that does not make that call never counts as processing.";
-type MirrorItem = { tag: "captain" | "main"; text: string };
+type MirrorItem = { tag: "captain" | "main" | "main-summary"; text: string };
 type MirrorCursor = { file: string; index: number };
 type Verdict = "routine" | "captain";
 type LockOwnership = "owned" | "other" | "missing";
@@ -490,6 +490,35 @@ type ReadonlyEntries = {
   getEntries(): Array<{ type: string; customType?: string; data?: unknown }>;
 };
 
+// Main's own context is its latest compaction summary plus the entries from
+// that compaction's firstKeptEntryId on; getEntries() still lists everything
+// that summary replaced. A fresh anchor therefore folds the replaced span into
+// main's own summary instead of replaying it entry by entry, so the mirror a
+// new branch conversation receives is exactly as large as main's own context
+// and cannot grow past it however long the main session has lived. Nothing is
+// cut: the summary stands for the folded dialog. A compaction whose retained
+// boundary cannot be resolved folds nothing.
+function mainCompactionBoundary(
+  entries: ReturnType<ReadonlyEntries["getEntries"]>,
+): { summary: string; keepFrom: number } | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index] as { type: string; id?: unknown; summary?: unknown; firstKeptEntryId?: unknown };
+    if (entry.type !== "compaction") continue;
+    if (typeof entry.summary !== "string" || !entry.summary.trim() || typeof entry.firstKeptEntryId !== "string") return null;
+    // A retain-none compaction names itself, so nothing before it is kept.
+    const keepFrom = entries.findIndex((candidate, at) => at <= index && (candidate as { id?: unknown }).id === entry.firstKeptEntryId);
+    return keepFrom < 0 ? null : { summary: entry.summary, keepFrom };
+  }
+  return null;
+}
+
+// Pi reports a prompt over the model's window as an ordinary settled provider
+// error. It is a statement about the conversation's size, not about provider
+// health, so it is recovered from rather than counted toward the latch.
+function isPromptTooLongError(detail: string): boolean {
+  return /model_max_prompt_tokens_exceeded|prompt is too long|prompt too long|context[_ ]length[_ ]exceeded|exceeds? the context window|maximum context length|input is too long|request too large/i.test(detail);
+}
+
 function parseOutcomeRow(value: unknown): OutcomeRow | null {
   if (!value || typeof value !== "object") return null;
   const row = value as Record<string, unknown>;
@@ -544,8 +573,16 @@ function collectMainDialog(sessionManager: ReadonlyEntries, collection: MirrorCo
   const file = sessionManager.getSessionFile() ?? "";
   const entries = sessionManager.getEntries();
   const anchor = collection.collectAnchor ?? readMirrorCursor();
-  const start = collection.reanchor || anchor.file !== file ? 0 : Math.min(anchor.index, entries.length);
+  let start = collection.reanchor || anchor.file !== file ? 0 : Math.min(anchor.index, entries.length);
   collection.reanchor = false;
+  const items: MirrorItem[] = [];
+  if (start === 0) {
+    const boundary = mainCompactionBoundary(entries);
+    if (boundary) {
+      items.push({ tag: "main-summary", text: boundary.summary });
+      start = boundary.keepFrom;
+    }
+  }
   let currentCaptainIndex = -1;
   for (let index = entries.length - 1; index >= start; index -= 1) {
     const entry = entries[index];
@@ -557,7 +594,6 @@ function collectMainDialog(sessionManager: ReadonlyEntries, collection: MirrorCo
     currentCaptainIndex = index;
     break;
   }
-  const items: MirrorItem[] = [];
   for (let index = start; index < entries.length; index += 1) {
     const entry = entries[index];
     if (entry.type !== "message") continue;
@@ -1470,6 +1506,30 @@ ${context.command}
     }
   }
 
+  // Replaces an over-long branch conversation with a fresh one for the same
+  // main session. The mirror re-anchors with it (main's compaction summary and
+  // the dialog it kept), exactly as at a main session start, so the new
+  // conversation is as large as main's own context and no larger.
+  async function rebuildBranchConversation(expectedGeneration: number, recoveryProbe: boolean): Promise<BranchSession> {
+    const stale = branch;
+    branch = null;
+    branchSessionFile = "";
+    pendingMirror.length = 0;
+    mirrorCollection.collectAnchor = null;
+    mirrorCollection.pendingCursor = null;
+    mirrorCollection.stagedCaptain = null;
+    mirrorCollection.reanchor = true;
+    try {
+      stale?.session.dispose();
+    } catch {
+      // Already gone.
+    }
+    if (!collectCurrentMainDialog()) throw new Error("could not re-collect main's dialog for the replacement branch conversation");
+    const rebuilt = await ensureBranch(expectedGeneration, recoveryProbe);
+    await flushMirror(rebuilt.session, expectedGeneration);
+    return rebuilt;
+  }
+
   // The away posture at the tail of a wake: the record's own read-back (the
   // captain's words verbatim, the spend cap, expected return, and reach line)
   // carried byte-for-byte, trailing blank lines included, plus the standing
@@ -1508,8 +1568,8 @@ ${context.command}
           }
           throw new Error("could not reconcile unread supervision outcomes into main");
         }
-        const branchForWake = await ensureBranch(acceptedGeneration, recoveryProbe);
-        const { session, sessionManager } = branchForWake;
+        let branchForWake = await ensureBranch(acceptedGeneration, recoveryProbe);
+        let { session, sessionManager } = branchForWake;
         await flushMirror(session, acceptedGeneration);
         if (!(await actingAsOwner(acceptedGeneration))) throw new Error("supervision session no longer owns the fleet lock");
         const heartbeat = /^heartbeat($|:)/.test(message);
@@ -1552,7 +1612,6 @@ ${context.command}
         // A row can still arrive between this re-check and the model starting
         // the drain; that residual is accepted by the confused-agent-grade boundary.
         const reportRevisionBeforePrompt = durableReportRevision;
-        const entryOffset = sessionManager.getEntries().length;
         // A claimed check row names no task, so a prompt carrying one is not
         // scoped by task (only possible in the away posture).
         wakeTaskScope = heartbeat || scope.checkSeqs.length > 0 || scope.heartbeatSeqs.length > 0
@@ -1562,12 +1621,40 @@ ${context.command}
         // lets this prompt proceed; the guarded scripts revalidate, and the
         // durable queue keeps every row (bin/fm-lease-lib.sh role-partition).
         const postureTail = afk ? await awayPostureTail() : "";
+        const wakePrompt = branchWakePrompt(message, "fm_branch_report", postureTail);
+        let providerError: string | null = null;
         try {
-          await session.prompt(branchWakePrompt(message, "fm_branch_report", postureTail));
+          let entryOffset = sessionManager.getEntries().length;
+          await session.prompt(wakePrompt);
+          providerError = settledPromptProviderError(sessionManager, entryOffset);
+          // A prompt over the model's window says the conversation is too big,
+          // not that the provider is unhealthy: fold the conversation and run
+          // the same wake again, first by compacting it in place, then, when
+          // that cannot run, by opening a fresh conversation whose mirror is
+          // re-anchored at main's own compaction boundary. Each remedy gets
+          // one retry; only an error that survives both is a provider error.
+          for (const remedy of ["compact", "rebuild"] as const) {
+            if (!providerError || !isPromptTooLongError(providerError)) break;
+            if (!(await actingAsOwner(acceptedGeneration))) throw new Error("supervision session no longer owns the fleet lock");
+            if (branchForWake.generation !== generation || branchForWake.selectionRevision !== branchSelectionRevision) break;
+            if (remedy === "compact") {
+              if (typeof (session as { compact?: unknown }).compact !== "function") continue;
+              try {
+                await session.compact();
+              } catch {
+                continue;
+              }
+            } else {
+              branchForWake = await rebuildBranchConversation(acceptedGeneration, recoveryProbe);
+              ({ session, sessionManager } = branchForWake);
+            }
+            entryOffset = sessionManager.getEntries().length;
+            await session.prompt(wakePrompt);
+            providerError = settledPromptProviderError(sessionManager, entryOffset);
+          }
         } finally {
           wakeTaskScope = null;
         }
-        const providerError = settledPromptProviderError(sessionManager, entryOffset);
         if (providerError) {
           const detail = `supervision branch provider failed after construction: ${providerError}`;
           if (

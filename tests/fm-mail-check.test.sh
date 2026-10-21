@@ -456,6 +456,22 @@ test_missing_mail_plane_is_reported() {
   pass "fm-mail-check: a missing mail plane is reported, not assumed"
 }
 
+test_long_failure_is_folded_not_cut() {
+  local home out long joined
+  home=$(make_home longfold)
+  write_env "$home"
+  long=$(printf 'w%.0s' {1..700})
+  enter_mailbox "$home" "printf 'fm-mail poll error: $long\\n' >&2
+exit 1"
+  out="$home/out.txt"
+  run_check "$home" "$out" "$CHECK"
+  [ "$(wc -l < "$out" | tr -d '[:space:]')" -gt 1 ] || fail "a long report is folded across lines: $(cat "$out")"
+  case "$(cat "$out")" in *truncated*) fail "a long report carries a truncation marker" ;; esac
+  joined=$(sed '2,$s/^  | //' "$out" | tr -d '\n')
+  assert_contains "$joined" "$long" "the folded report rejoins to the full text"
+  pass "fm-mail-check: a long report is folded, never cut"
+}
+
 test_help_and_usage
 test_arm_writes_and_binds_the_check_and_disarm_removes_it
 test_arm_resolves_a_relative_home_into_the_shim
@@ -473,3 +489,4 @@ test_large_poll_output_is_drained
 test_repeated_timeout_still_wakes
 test_repeated_heal_failure_stays_silent
 test_missing_mail_plane_is_reported
+test_long_failure_is_folded_not_cut

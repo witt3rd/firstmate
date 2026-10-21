@@ -236,6 +236,12 @@ export async function createAgentSession(options) {
       session.messages.push({ role: "user", content: text });
       await globalThis.__fmOnBranchPrompt?.({ session, text });
     },
+    async compact() {
+      session.ops.push({ kind: "compact" });
+      if (globalThis.__fmCompactError) throw new Error(globalThis.__fmCompactError);
+      await globalThis.__fmOnBranchCompact?.({ session });
+      return {};
+    },
     async sendCustomMessage(message, opts) {
       if (globalThis.__fmMirrorGate) {
         globalThis.__fmMirrorStarted = true;
@@ -3316,6 +3322,134 @@ EOF
   pass "dialog mirror filters tool and operational traffic, lands before wakes, and keeps a durable cursor"
 }
 
+test_branch_mirror_folds_history_into_main_compaction_summary() {
+  local repo home out status
+  repo="$TMP_ROOT/mirror-fold-root"
+  home="$TMP_ROOT/mirror-fold-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { fire, dispatch, settle, home }; })()`);
+const { fire, dispatch, settle, home } = globalThis.__t;
+
+// A long-lived main session: 600 dialog entries that main has since folded
+// into a compaction summary, a retained tail, and dialog after the compaction.
+const entries = [];
+for (let i = 0; i < 600; i += 1) {
+  entries.push({ type: "message", id: `old-${i}`, message: { role: i % 2 === 0 ? "user" : "assistant", content: `folded dialog ${i} ${"z".repeat(1500)}` } });
+}
+entries.push({ type: "message", id: "kept-1", message: { role: "user", content: "retained request" } });
+entries.push({ type: "message", id: "kept-2", message: { role: "assistant", content: "retained answer" } });
+entries.push({ type: "compaction", id: "cmp-1", summary: "SUMMARY: never merge task-7 without the captain's word", firstKeptEntryId: "kept-1" });
+entries.push({ type: "message", id: "new-1", message: { role: "user", content: "post-compaction request" } });
+const ctx = { sessionManager: { getSessionFile: () => `${home}/main-fold.jsonl`, getEntries: () => entries } };
+
+await fire("session_start", {}, ctx);
+await fire("turn_end", {}, ctx);
+dispatch("signal: after fold");
+await settle(() => (globalThis.__fmPrompts ?? []).length === 1, "branch wake prompt");
+const session = globalThis.__fmSessions[0];
+const mirrored = session.ops.filter((op) => op.kind === "custom").map((op) => op.message.content);
+const expected = [
+  "[main-summary] SUMMARY: never merge task-7 without the captain's word",
+  "[captain] retained request",
+  "[main] retained answer",
+  "[captain] post-compaction request",
+];
+if (JSON.stringify(mirrored) !== JSON.stringify(expected)) {
+  throw new Error(`a fresh anchor must fold the compacted span into main's summary: ${mirrored.length} items: ${JSON.stringify(mirrored.slice(0, 5))}`);
+}
+
+// Within the same conversation the cursor stays incremental and never folds.
+entries.push({ type: "message", id: "new-2", message: { role: "user", content: "later request" } });
+await fire("turn_end", {}, ctx);
+await settle(() => session.ops.filter((op) => op.kind === "custom").length === 5, "incremental mirror");
+if (session.ops.at(-1).message.content !== "[captain] later request") throw new Error("incremental mirror after a fold lost its cursor");
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "a fresh mirror anchor must fold history main already compacted: $out"
+  pass "a fresh mirror anchor folds main's compacted history into main's summary instead of replaying it"
+}
+
+test_branch_prompt_too_long_compacts_and_retries_without_latching() {
+  local repo home out status
+  repo="$TMP_ROOT/overflow-root"
+  home="$TMP_ROOT/overflow-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { fire, dispatch, settle, home, mainUserMessages, sentToMain, mainEntries }; })()`);
+const { fire, dispatch, settle, home, mainUserMessages, sentToMain, mainEntries } = globalThis.__t;
+
+const tooLong = { role: "assistant", content: [], stopReason: "error", errorMessage: "400 model_max_prompt_tokens_exceeded: prompt is too long: 3469877 tokens > 1000000 maximum" };
+const report = (session, label) => session.options.customTools.find((tool) => tool.name === "fm_branch_report")
+  .execute(label, { task: "branch-driver", verdict: "routine", summary: label }, undefined, undefined, {});
+const compactions = () => globalThis.__fmSessions.flatMap((s) => s.ops.filter((op) => op.kind === "compact"));
+mainEntries.push({ type: "message", id: "m1", message: { role: "user", content: "standing order" } });
+await fire("session_start", {}, { sessionManager: { getSessionFile: () => `${home}/main.jsonl`, getEntries: () => mainEntries } });
+
+// 1. The first prompt is over the window; compaction clears it and the retry
+// reports. No fallback to main, no latch, no health note.
+let prompts = 0;
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  prompts += 1;
+  if (prompts === 1) { session.messages.push(tooLong); return; }
+  await report(session, "retry after compaction");
+  session.messages.push({ role: "assistant", content: [], stopReason: "stop" });
+};
+const first = dispatch("signal: overflow then compact");
+if (!first.accepted) throw new Error("wake not accepted");
+await first.settlement;
+if (prompts !== 2 || compactions().length !== 1) throw new Error(`expected compact + one retry: prompts=${prompts} compactions=${compactions().length}`);
+if (mainUserMessages.length !== 0) throw new Error("a recovered overflow fell back to main");
+if (sentToMain.some((sent) => String(sent.message.content).includes("paused after repeated provider errors"))) throw new Error("overflow surfaced a latch note");
+
+// 2. Overflow twice in a row (twice-failing compaction path) must never latch:
+// compaction itself throws, so a fresh conversation takes the retry instead.
+prompts = 0;
+globalThis.__fmCompactError = "summarization prompt too long";
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  prompts += 1;
+  if (session === globalThis.__fmSessions[0]) { session.messages.push(tooLong); return; }
+  await report(session, "retry on a fresh conversation");
+  session.messages.push({ role: "assistant", content: [], stopReason: "stop" });
+};
+const sessionsBefore = globalThis.__fmSessions.length;
+const second = dispatch("signal: overflow then rebuild");
+if (!second.accepted) throw new Error("second wake not accepted");
+await second.settlement;
+if (globalThis.__fmSessions.length !== sessionsBefore + 1) throw new Error("a failed compaction did not open a fresh conversation");
+if (!globalThis.__fmSessions[0].disposed) throw new Error("the over-long conversation was not released");
+const replacement = globalThis.__fmSessions.at(-1);
+const mirrored = replacement.ops.filter((op) => op.kind === "custom").map((op) => op.message.content);
+if (!mirrored.includes("[captain] standing order")) throw new Error(`the fresh conversation was not re-mirrored: ${JSON.stringify(mirrored)}`);
+if (mainUserMessages.length !== 0) throw new Error("a recovered overflow fell back to main");
+
+// 3. An overflow that survives every remedy is the only kind that counts as a
+// provider error, and it counts once per wake, not once per retry.
+globalThis.__fmOnBranchPrompt = async ({ session }) => { session.messages.push(tooLong); };
+const third = dispatch("signal: unrecoverable overflow");
+const thirdFailure = await third.settlement.then(() => null, (error) => error);
+if (!(thirdFailure instanceof Error) || !thirdFailure.message.includes("provider failed after construction")) {
+  throw new Error(`an unrecoverable overflow did not fall back: ${String(thirdFailure)}`);
+}
+const fourth = dispatch("signal: still accepted after one counted error");
+if (!fourth.accepted) throw new Error("one unrecoverable overflow latched the branch");
+await fourth.settlement.then(() => null, () => null);
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "a prompt-too-long error must compact (or rebuild) and retry without latching: $out"
+  pass "a prompt-too-long error compacts or rebuilds the conversation and retries instead of latching the branch"
+}
+
 test_branch_mirror_reanchors_for_the_new_session_branch_conversation() {
   local repo home out status
   repo="$TMP_ROOT/mirror-reanchor-root"
@@ -6217,6 +6351,8 @@ test_selection_change_does_not_corrupt_inflight_provider_state
 test_main_owned_grant_result_falls_back_to_main
 test_branch_predrain_recheck_noops_already_drained_wake
 test_branch_mirror_filters_order_and_cursor
+test_branch_mirror_folds_history_into_main_compaction_summary
+test_branch_prompt_too_long_compacts_and_retries_without_latching
 test_branch_mirror_reanchors_for_the_new_session_branch_conversation
 test_branch_session_is_new_at_every_main_session_start
 test_branch_model_pin_applies_and_absent_pin_keeps_the_default

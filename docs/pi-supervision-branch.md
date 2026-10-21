@@ -205,6 +205,11 @@ An acknowledgement that consumed nothing reports that plainly, with the exact co
 3. After the cooldown, one wake may probe the branch while concurrent wakes still stay on main.
 4. Each probe that settles with another provider error doubles the next cooldown, up to one hour.
 
+A prompt-too-long error (`model_max_prompt_tokens_exceeded`) is not a provider outage and never counts toward the latch.
+The branch first compacts its conversation and runs the same wake again.
+If compaction cannot run, it opens a fresh conversation whose mirror is re-anchored at main's own compaction boundary and runs the wake once more there.
+Only an error that survives both remedies falls back to main and counts once.
+
 A prompt from the current branch generation and model or effort selection can clear the latch.
 It must append a durable `fm_branch_report` and then settle without a provider error.
 That clears both the latch and the provider-error streak and surfaces a one-line recovery note.
@@ -376,6 +381,9 @@ The cursor records what the PREVIOUS branch conversation received.
 Without the reset, a `/resume` or reload, which keeps main's own session file, would leave the new branch blind to dialog main itself still has.
 The reset is bounded by the current main session and costs only re-delivered read-only context.
 The cursor keeps advancing incrementally from there.
+Main's session file keeps every entry that a main compaction has replaced, so the re-anchor folds instead of replaying: when main has compacted, the new branch receives main's latest compaction summary as one `[main-summary]` message, then only the dialog main kept and everything after.
+The mirror a new conversation receives is therefore no larger than main's own context, however long the main session has lived.
+A compaction whose retained boundary cannot be resolved folds nothing, and a cursor that is already inside the session never folds.
 
 ### Mirrored text is context, not instructions
 
@@ -650,7 +658,7 @@ The generated prompt includes the [scout-completion](../.agents/skills/scout-com
 - Routine outcomes staying turn-free, task-level no-change notes staying hidden, absent-marker re-presentation, and malformed-age reporting without acknowledgement.
 - Idle and busy main state, and incident-shaped compaction and unrelated-assistant context.
 - Cold-start post-lock recovery, crash-before-cursor reload recovery, and repeated-reload idempotency.
-- Mirroring.
+- Mirroring, including the fold of compacted main history at a fresh anchor and the prompt-too-long compact-and-retry recovery.
 - Post-construction provider-error and no-report fallback, the consecutive-error latch, cooldown probe, exponential backoff, report-plus-settlement recovery, and report-before-error re-latch.
 - Cache key, and model and effort selection.
 - In `test_branch_dispatch_classifies_main_only_rows_and_writes_the_eligible_snapshot`: decision-owned signal and stale rows' exclusion from `eligibleSeqs`, their presence in `needsDecisionKeys`, task alias resolution, reserved-key configuration, status-log race and symlink refusal, non-vetoing behavior for unrelated eligible rows, and decision-only queues reading as ordinary main-only absence.

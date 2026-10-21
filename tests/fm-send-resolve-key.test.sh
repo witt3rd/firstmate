@@ -734,39 +734,29 @@ test_unclosable_reserved_key_refuses_before_send() {
   pass "fm-send --resolve-key: a reserved key this send cannot close refuses loudly before anything is sent"
 }
 
-test_long_decision_key_refuses_before_send() {
-  local dir fb log home err key rc out
+test_long_decision_key_closes_without_cut() {
+  local dir fb log home key rc out
   dir="$TMP_ROOT/long-key"; mkdir -p "$dir"
-  fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
   home=$(setup_home long-key)
   key=$(printf 'k%.0s' {1..230})
   fm_write_meta "$home/state/t1.meta" "window=sess:fm-t1" "kind=ship"
   printf 'needs-decision [key=%s]: choose safely\n' "$key" > "$home/state/t1.status"
 
-  : > "$log"
-  env PATH="$fb:$PATH" \
-    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
-    "$SEND" t1 --resolve-key "$key" "answer the long-key decision" >/dev/null 2>"$err"; rc=$?
-  [ "$rc" -ne 0 ] || fail "a key whose close prefix cannot fit should refuse before sending"
-  assert_contains "$(cat "$err")" "decision key of length 230" "the refusal should report the key-length cause"
-  assert_contains "$(cat "$err")" "220-character status-line cap" "the refusal should report the truncation limit"
-  assert_contains "$(cat "$err")" "nothing was sent" "the refusal should state nothing was sent"
-  [ ! -s "$log" ] || fail "a refused long-key close still typed text: $(cat "$log")"
-  [ ! -d "$home/state/t1.inbox" ] || fail "a refused long-key close still enqueued an inbox record"
-  if grep -F 'resolved' "$home/state/t1.status" >/dev/null; then
-    fail "a refused long-key close still wrote a malformed resolution: $(cat "$home/state/t1.status")"
-  fi
+  run_send "$fb" "$home" "$log" t1 --resolve-key "$key" "answer the long-key decision"; rc=$?
+  expect_code 0 "$rc" "a long key closes: nothing is cut, so the key delimiter survives"
+  grep -F "resolved [key=$key" "$home/state/t1.status" >/dev/null \
+    || fail "the full-length close is missing:"$'\n'"$(cat "$home/state/t1.status")"
   out=$(drain_out "$home")
-  printf '%s' "$out" | grep -F 'OPEN DECISIONS' >/dev/null \
-    || fail "the long-key decision disappeared after a refused close: $out"
-  pass "fm-send --resolve-key: an overlong decision key refuses before sending"
+  if printf '%s' "$out" | grep -F 'OPEN DECISIONS' >/dev/null; then
+    fail "the long-key decision stayed open after its close: $out"
+  fi
+  pass "fm-send --resolve-key: an overlong decision key closes whole"
 }
 
-# The cap bounds the line that is actually APPENDED. The self-announced append
-# stamps each close with its emission time, so a cap measured before the stamp
-# lets the stored line overrun it and every 220-capped rendering downstream
-# silently loses that much real note text.
-test_stamped_close_line_stays_within_the_status_line_cap() {
+# The close line is appended whole: a long answer is never cut, and the stamp
+# is added on top. Display folds it and loses nothing.
+test_long_close_note_is_kept_whole() {
   local dir fb log home rc answer line
   dir="$TMP_ROOT/cap-with-stamp"; mkdir -p "$dir"
   fb=$(make_stubs "$dir"); log="$dir/send.log"
@@ -776,16 +766,19 @@ test_stamped_close_line_stays_within_the_status_line_cap() {
   answer=$(printf 'x%.0s' {1..400})
 
   run_send "$fb" "$home" "$log" t1 --resolve-key api-shape "$answer"; rc=$?
-  expect_code 0 "$rc" "answering with an over-long note should succeed, not refuse"
+  expect_code 0 "$rc" "answering with an over-long note should succeed"
   line=$(grep -F 'resolved [key=api-shape]' "$home/state/t1.status") \
     || fail "the closing resolved line is missing:"$'\n'"$(cat "$home/state/t1.status")"
   case "$line" in
     *' [at='*']: '*) : ;;
     *) fail "the appended close carries no emission stamp: $line" ;;
   esac
-  [ "${#line}" -le 220 ] \
-    || fail "the appended close is ${#line} characters, past the 220-character cap: $line"
-  pass "fm-send --resolve-key: a stamped close line stays inside the status-line cap"
+  case "$line" in
+    *"$answer"*) : ;;
+    *) fail "the appended close lost part of the note: $line" ;;
+  esac
+  case "$line" in *truncated*) fail "the close carries a truncation marker: $line" ;; esac
+  pass "fm-send --resolve-key: a long close note is kept whole"
 }
 
 test_failed_close_recovery_command_is_shell_safe() {
@@ -924,8 +917,8 @@ test_flag_misuse_refuses
 test_reserved_pending_reply_key_closes_through_resolve_key
 test_unrelated_writer_cannot_close_or_hijack_reserved_key
 test_unclosable_reserved_key_refuses_before_send
-test_long_decision_key_refuses_before_send
-test_stamped_close_line_stays_within_the_status_line_cap
+test_long_decision_key_closes_without_cut
+test_long_close_note_is_kept_whole
 test_failed_close_recovery_command_is_shell_safe
 test_remote_reserved_pending_reply_key_closes_locally
 test_decision_answer_partition_relocates_under_the_record
