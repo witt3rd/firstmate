@@ -281,7 +281,7 @@ fm_spend_profile_guard() {
 
   # config/pi-account is a second source of truth for the same store, so it
   # may repeat the profile's account but never disagree with it.
-  file_pin=$(FM_WORKER_ACCOUNT_PROFILE_PIN='' fm_worker_account_resolve "$harness" "$config") || return 1
+  file_pin=$(FM_WORKER_ACCOUNT_PROFILE_PIN='' fm_worker_account_resolve "$harness" "$config" "config/pi-account") || return 1
   if [ -n "$file_pin" ]; then
     file_root=${file_pin#*$'\t'}
     file_providers=${file_root#*$'\t'}

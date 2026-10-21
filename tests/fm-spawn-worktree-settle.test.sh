@@ -39,6 +39,7 @@ make_settle_fakebin() {
 #!/usr/bin/env bash
 set -u
 [ -z "${FM_FAKE_TMUX_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
+window_file="${FM_FAKE_PANE_COUNTFILE:?FM_FAKE_PANE_COUNTFILE unset}.window"
 case "$*" in
   *"#{pane_current_path}"*)
     countfile="${FM_FAKE_PANE_COUNTFILE:?FM_FAKE_PANE_COUNTFILE unset}"
@@ -56,8 +57,18 @@ case "$*" in
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
-  list-windows) exit 0 ;;
-  has-session|new-session|new-window|kill-window) exit 0 ;;
+  list-windows) [ ! -s "$window_file" ] || cat "$window_file"; exit 0 ;;
+  new-window)
+    name=
+    previous=
+    for arg in "$@"; do
+      [ "$previous" = -n ] && name=$arg
+      previous=$arg
+    done
+    printf '%s\n' "$name" > "$window_file"
+    exit 0 ;;
+  kill-window) : > "$window_file"; exit 0 ;;
+  has-session|new-session) exit 0 ;;
   send-keys) exit 0 ;;
 esac
 exit 0
@@ -246,11 +257,33 @@ test_pane_that_never_reaches_the_worktree_refuses_and_returns_the_lease() {
   pass "a pane outside the worktree refuses at the launch boundary and the lease is returned"
 }
 
+test_unborn_head_project_is_refused_at_once() {
+  local rec id out status started elapsed
+  id=settle-unborn-head-z5
+  rec=$(make_settle_case settle-unborn "$id" 0)
+  read_settle_record "$rec"
+  PROJ_DIR="$TMP_ROOT/settle-unborn/unborn-project"
+  git init -q "$PROJ_DIR"
+
+  started=$SECONDS
+  out=$(run_settle_spawn "$id")
+  status=$?
+  elapsed=$((SECONDS - started))
+  expect_code 1 "$status" "spawn into a project with no commit should be refused"
+  assert_contains "$out" "unborn HEAD" "the refusal did not name the unborn HEAD cause"
+  assert_contains "$out" "make one commit" "the refusal did not name the remedy"
+  [ "$elapsed" -lt 30 ] || fail "refusal took ${elapsed}s instead of failing before the treehouse wait"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "refused spawn published task metadata"
+  [ -z "$(git -C "$PROJ_DIR" rev-list --all 2>/dev/null)" ] || fail "spawn committed into the project"
+  pass "a project with an unborn HEAD is refused at once with its cause named"
+}
+
 test_acquisition_leases_under_the_task_id
 test_exhausted_pool_refuses_immediately_before_any_endpoint_exists
 test_other_lease_failure_refuses_with_the_tools_message
 test_primary_checkout_lease_is_refused_and_returned
 test_transient_stale_cwd_at_the_launch_boundary_is_retried
 test_pane_that_never_reaches_the_worktree_refuses_and_returns_the_lease
+test_unborn_head_project_is_refused_at_once
 
 echo "# all fm-spawn-worktree-settle tests passed"
