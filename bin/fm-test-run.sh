@@ -729,6 +729,7 @@ tests/fm-calm-claude-mod-plugin.test.sh 77
 tests/fm-calm-claude-mod.test.sh 2527
 tests/fm-calm-pi-extension.test.sh 56463
 tests/fm-calm-pi-queue-retention-live-e2e.test.sh 1345
+tests/fm-capacity.test.sh 394
 tests/fm-caretaker-sweep.test.sh 3834
 tests/fm-check-unregister.test.sh 469
 tests/fm-ci-workflow.test.sh 5833
