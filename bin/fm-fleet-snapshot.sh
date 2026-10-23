@@ -746,7 +746,7 @@ task_json_lines() {
   local remote_host remote_root current_file endpoint_file observation_line index=0
   local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
-  local open_decisions_tsv open_decisions_json
+  local open_decisions_tsv open_decisions_json captured_end
 
   while [ "$index" -lt "$SNAPSHOT_TASK_META_COUNT" ]; do
     meta=${SNAPSHOT_TASK_METAS[index]}
@@ -815,7 +815,15 @@ task_json_lines() {
     # never clear another concern's keyed decision. A parked/blocked state, or a
     # non-authoritative status-log/none read on a still-live task, keeps the fold's
     # open decision surfacing.
-    open_decisions_tsv=$(status_open_decisions "$status_log" "$kind")
+    # The cursor-backed fold reads only what was appended since the last drain,
+    # bounded at the captured copy's end so it agrees with every other field here;
+    # re-folding a long-lived secondmate's whole log in bash cost about a minute and
+    # made every summary refresh blow its deadline. The whole-file fold remains the
+    # fallback when the cursor path cannot answer.
+    captured_end=0
+    [ ! -f "$status_log" ] || captured_end=$(wc -c < "$status_log" | tr -d '[:space:]')
+    open_decisions_tsv=$(status_open_decisions_incremental "$STATE/$id.status" "$captured_end") \
+      || open_decisions_tsv=$(status_open_decisions "$status_log" "$kind")
     if [ "$kind" != secondmate ] && \
        { { { [ "$current_source" = run-step ] || [ "$current_source" = pane ]; } \
            && [ "$current_state" != parked ] && [ "$current_state" != blocked ]; } \

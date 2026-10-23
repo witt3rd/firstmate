@@ -475,19 +475,16 @@ done
 [ -e "$LOCK_MARKER" ] || fail "could not hold the publication lock for timeout coverage"
 started=$(date +%s)
 PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$HOME_DIR" \
-  FM_HOME_SUMMARY_TIMEOUT=1 "$WRITER" --best-effort \
-  || fail "lock timeout changed the best-effort caller result"
+  FM_HOME_SUMMARY_TIMEOUT=30 "$WRITER" --best-effort \
+  || fail "a held publication lock changed the best-effort caller result"
 elapsed=$(( $(date +%s) - started ))
-[ "$elapsed" -lt 4 ] || fail "best-effort refresh waited $elapsed seconds on its lock"
-PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$HOME_DIR" \
-  FM_HOME_SUMMARY_TIMEOUT=1 "$WRITER" --best-effort \
-  || fail "repeated lock timeout changed the best-effort caller result"
-[ "$(grep -c 'refresh exceeded its 1-second deadline' "$HOME_DIR/state/.home-summary-refresh.log" 2>/dev/null || true)" -ge 2 ] \
-  || fail "repeated publication lock timeouts vanished from failure reporting"
+[ "$elapsed" -lt 4 ] || fail "best-effort refresh waited $elapsed seconds on a held lock"
+[ ! -s "$HOME_DIR/state/.home-summary-refresh.log" ] \
+  || fail "a single-flight skip was recorded as a failed attempt"
 kill "$LOCK_HOLDER_PID" >/dev/null 2>&1 || true
 wait "$LOCK_HOLDER_PID" >/dev/null 2>&1 || true
 LOCK_HOLDER_PID=
-pass "best-effort refresh bounds publication lock acquisition"
+pass "best-effort refresh is single-flight and never waits on a held lock"
 
 HANGBIN="$TMP_ROOT/hangbin"
 REAL_JQ=$(command -v jq)
@@ -1083,3 +1080,66 @@ case "$report_out" in
     ;;
 esac
 pass "repeated publication failure is reported at session start until it clears"
+
+# --- deadline-killed runs leave nothing behind, and runs are single-flight -----
+#
+# Live incident: a producer that outlived the refresh deadline was killed, and a
+# bash script cannot run its EXIT trap while a foreground child runs or after
+# SIGKILL, so every killed run leaked its temp directories into the RAM-backed
+# /tmp, while later triggers each started another producer on top of it. The
+# refresh must own a per-run directory handed to the producer as TMPDIR and
+# remove it itself however the producer died, and a second refresh while one
+# runs must exit at once instead of piling up another producer.
+LEAK_HOME="$TMP_ROOT/leak-home"
+LEAK_TMP="$TMP_ROOT/leak-tmp"
+LEAK_BIN="$TMP_ROOT/leak-bin"
+LEAK_STARTS="$TMP_ROOT/leak-starts"
+mkdir -p "$LEAK_HOME/state" "$LEAK_HOME/data" "$LEAK_HOME/config" "$LEAK_HOME/projects" \
+  "$LEAK_TMP" "$LEAK_BIN"
+cp -R "$ROOT/bin/." "$LEAK_BIN/"
+cat > "$LEAK_BIN/fm-fleet-snapshot.sh" <<'SH'
+#!/usr/bin/env bash
+# Stub producer: allocates temp the way the real one does, records its start,
+# ignores TERM, and runs a foreground child past any deadline.
+printf 'start\n' >> "$FM_TEST_LEAK_STARTS"
+dir=$(mktemp -d "${TMPDIR:-/tmp}/fm-fleet-tasks.XXXXXX") || exit 1
+head -c 65536 /dev/zero > "$dir/payload"
+trap '' TERM
+sleep 300
+SH
+chmod +x "$LEAK_BIN/fm-fleet-snapshot.sh"
+: > "$LEAK_STARTS"
+
+run_leak_refresh() {  # [env assignments...] -- extra writer args
+  TMPDIR="$LEAK_TMP" FM_TEST_LEAK_STARTS="$LEAK_STARTS" \
+    FM_ROOT_OVERRIDE="$LEAK_BIN/.." FM_HOME="$LEAK_HOME" FM_HOME_SUMMARY_TIMEOUT=3 \
+    "$LEAK_BIN/fm-home-summary-refresh.sh" --best-effort
+}
+
+run_leak_refresh &
+LEAK_FIRST_PID=$!
+i=0
+while [ ! -s "$LEAK_STARTS" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+[ -s "$LEAK_STARTS" ] || fail "the stub producer never started"
+started=$(date +%s)
+run_leak_refresh || fail "a second refresh while one runs changed the best-effort result"
+elapsed=$(( $(date +%s) - started ))
+[ "$elapsed" -lt 2 ] || fail "a second refresh waited $elapsed seconds instead of exiting at once"
+[ "$(wc -l < "$LEAK_STARTS" | tr -d '[:space:]')" -eq 1 ] \
+  || fail "a second refresh started another producer while one was running"
+wait "$LEAK_FIRST_PID" || fail "the deadline-killed refresh changed the best-effort result"
+[ "$(wc -l < "$LEAK_STARTS" | tr -d '[:space:]')" -eq 1 ] \
+  || fail "more than one producer ran for one refresh"
+grep -F 'exceeded its 3-second deadline' "$LEAK_HOME/state/.home-summary-refresh.log" >/dev/null \
+  || fail "the deadline-killed refresh was not recorded"
+leaked=$(find "$LEAK_TMP" -mindepth 1 2>/dev/null | head -5)
+[ -z "$leaked" ] || fail "a killed refresh left temp behind: $leaked"
+leaked=$(find "$LEAK_HOME/state" -name '.home-summary.json.*' -o -name '.home-summary-error.*' 2>/dev/null | head -5)
+[ -z "$leaked" ] || fail "a killed refresh left publication temp behind: $leaked"
+# A killed worker cannot release its lock; the lock must then be reclaimable
+# (dead holder), so the next trigger is never blocked by it.
+LEAK_HOLDER=$(cat "$LEAK_HOME/state/.home-summary-refresh.lock/pid" 2>/dev/null || true)
+if [ -n "$LEAK_HOLDER" ] && kill -0 "$LEAK_HOLDER" 2>/dev/null; then
+  fail "a finished refresh left its single-flight lock held by a live process"
+fi
+pass "a deadline-killed refresh leaves no temp and a second refresh does not pile up"
