@@ -1495,12 +1495,19 @@ snapshot_collection_cleanup() {
   SNAPSHOT_COLLECT_DIR=
   SNAPSHOT_SUMMARY_FILTER=
 }
+contribution_input_dir=
 snapshot_cleanup() {
+  [ -z "$contribution_input_dir" ] || rm -rf -- "$contribution_input_dir"
   snapshot_task_cleanup
   snapshot_collection_cleanup
   cleanup_json_files
 }
+# The one cleanup for every scratch dir this script makes; no later trap may
+# replace it (extend snapshot_cleanup instead). Signals exit so EXIT runs it.
 trap snapshot_cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 bounded_parent_activities_json() {  # <status-file>
   local f=$1 out rc reason script
@@ -1996,8 +2003,6 @@ if [ "$OUTPUT_MODE" = contribution-input ]; then
   # argument, so both documents ride temp files via --slurpfile instead of argv.
   contribution_tasks=$(contribution_tasks_json) || { echo "fm-fleet-snapshot: contribution task read failed" >&2; exit 1; }
   contribution_input_dir=$(mktemp -d "${TMPDIR:-/tmp}/fm-fleet-snapshot.contrib.XXXXXX") || { echo "fm-fleet-snapshot: contribution temp dir failed" >&2; exit 1; }
-  # shellcheck disable=SC2064  # The trap resolves this invocation's directory at exit.
-  trap 'rm -rf -- "$contribution_input_dir"' EXIT
   printf '%s' "$BACKLOG_JSON" > "$contribution_input_dir/backlog.json" || { echo "fm-fleet-snapshot: contribution backlog write failed" >&2; exit 1; }
   printf '%s' "$contribution_tasks" > "$contribution_input_dir/tasks.json" || { echo "fm-fleet-snapshot: contribution tasks write failed" >&2; exit 1; }
   jq -n --slurpfile backlog "$contribution_input_dir/backlog.json" --slurpfile tasks "$contribution_input_dir/tasks.json" '{backlog:$backlog[0],tasks:$tasks[0]}' || { echo "fm-fleet-snapshot: contribution input assembly failed" >&2; exit 1; }
