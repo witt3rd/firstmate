@@ -278,7 +278,51 @@ test_unborn_head_project_is_refused_at_once() {
   pass "a project with an unborn HEAD is refused at once with its cause named"
 }
 
+# make_pool_case <name> <id>: a settle case whose leased worktree sits in a
+# real Treehouse pool layout (<root>/<pool>/<slot>/<repo> beside a
+# treehouse-state.json), with slot 1 the one the stub leases, slot 2 an empty
+# numbered directory and slot 3 a populated slot claimed by task "live".
+make_pool_case() {
+  local name=$1 id=$2 rec pool
+  rec=$(make_settle_case "$name" "$id" 0)
+  read_settle_record "$rec"
+  pool="$CASE_DIR/poolroot/pool"
+  mkdir -p "$pool/1" "$pool/2" "$pool/3"
+  : > "$pool/treehouse-state.json"
+  git -C "$PROJ_DIR" worktree add --quiet --detach "$pool/1/proj"
+  git -C "$PROJ_DIR" worktree add --quiet --detach "$pool/3/proj"
+  printf 'task=live\nhome=%s\n' "$HOME_DIR" > "$pool/3/.fm-slot-owner"
+  fm_write_meta "$HOME_DIR/state/live.meta" "kind=ship" "worktree=$pool/3/proj"
+  fm_write_meta "$HOME_DIR/state/stale-holder.meta" "kind=ship" "worktree=$pool/1/proj" "branch=fm/stale"
+  WT_DIR="$pool/1/proj"
+  POOL_DIR=$pool
+  export TREEHOUSE_ROOT="$CASE_DIR/poolroot"
+}
+
+# Pool rule: the claim is the only truth. The spawn claims its slot and demotes
+# the older record that still names it, protects the slot of a task still on the
+# books by leasing it in place, and drops empty numbered directories first.
+test_pool_rule_claim_demote_protect_and_prune() {
+  local id out status
+  id=pool-rule-z1
+  make_pool_case pool-rule "$id"
+
+  out=$(run_settle_spawn "$id")
+  status=$?
+  unset TREEHOUSE_ROOT
+  expect_code 0 "$status" "spawn into a pool slot should succeed"$'\n'"$out"
+  assert_grep "task=$id" "$POOL_DIR/1/.fm-slot-owner" "the spawn must claim its slot"
+  assert_no_grep "worktree=$POOL_DIR/1/proj" "$HOME_DIR/state/stale-holder.meta" "the older record naming the slot must be demoted"
+  assert_grep "#stale-worktree-record(superseded-by=$id) $POOL_DIR/1/proj" "$HOME_DIR/state/stale-holder.meta" "the demoted record keeps the path as a comment"
+  assert_grep "branch=fm/stale" "$HOME_DIR/state/stale-holder.meta" "demotion changes nothing but the worktree line"
+  assert_grep "worktree=$POOL_DIR/3/proj" "$HOME_DIR/state/live.meta" "another slot's record is untouched"
+  assert_grep "lease 3 --lease-holder live" "$TREEHOUSE_LOG" "the slot of a task still on the books is leased in place before the get"
+  [ ! -d "$POOL_DIR/2" ] || fail "an empty numbered directory must be removed before the get"
+  pass "a spawn claims its slot, demotes older records, protects live slots and drops empty dirs"
+}
+
 test_acquisition_leases_under_the_task_id
+test_pool_rule_claim_demote_protect_and_prune
 test_exhausted_pool_refuses_immediately_before_any_endpoint_exists
 test_other_lease_failure_refuses_with_the_tools_message
 test_primary_checkout_lease_is_refused_and_returned

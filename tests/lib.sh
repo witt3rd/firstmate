@@ -82,6 +82,11 @@ export FM_UNGUARDED_RUNTIME_OK=fm-test-fixture
 # can find the CLI; a case that verifies detection sets these itself.
 unset REX_SESSION REX_BLOCK
 
+# bin/fm-wake-drain.sh starts a detached sweep that tears down finished tasks
+# (bin/fm-auto-teardown.sh). A suite that drains fixture homes must not have
+# one running against its fixtures; tests/fm-auto-teardown.test.sh owns the
+# sweep and sets FM_AUTO_TEARDOWN=1 itself.
+export FM_AUTO_TEARDOWN=0
 # Write the tracked default backlog configuration into a fixture home. Never copy
 # "$ROOT/.tasks.toml": an operator's primary checkout keeps a gitignored override
 # there (for example a beads backend at its live backlog), so a copy points the
