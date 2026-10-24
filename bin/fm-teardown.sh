@@ -423,6 +423,7 @@ for _teardown_source in \
   fm-tmux-lib.sh \
   fm-composer-lib.sh \
   fm-cursor-lib.sh \
+  fm-branch-retire-lib.sh \
   fm-nm-run-lib.sh \
   fm-wake-lib.sh \
   fm-path-lib.sh \
@@ -453,6 +454,8 @@ unset _teardown_source
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 # shellcheck source=bin/fm-secondmate-parent-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
+# shellcheck source=bin/fm-branch-retire-lib.sh
+. "$SCRIPT_DIR/fm-branch-retire-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
 # Archive paths live only in teardown; presentation/wake readers stay unaware.
@@ -1871,6 +1874,31 @@ retire_landed_branch() {  # <worktree> <branch>
   echo "retired branch $branch @ $tip - $proof" >&2
   mkdir -p "$DATA" 2>/dev/null && \
     printf '%s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$branch" "$tip" "$proof" >> "$DATA/retired-branches.md" || true
+}
+
+# Retire the task's branch everywhere it was proven landed: the local branch
+# (retire_landed_branch) and, with it, the head branch on origin
+# (bin/fm-branch-retire-lib.sh owns that delete and its protected names). The
+# remote branch goes only when this task's local tip is known and the work is
+# proven landed - the local branch was retired on its ancestor/patch-equivalence
+# proof, or the task's merged PR contains the local work (the squash-merge flow,
+# where the local branch is not an ancestor of the default branch). Evidence
+# branches are never touched, and a remote branch not at that exact tip stays.
+retire_landed_branches() {  # <worktree> <branch>
+  local wt=$1 branch=$2 tip landed=0 why
+  fm_branch_is_protected "$branch" "${BASE_BRANCH:-}" && return 0
+  tip=$(git -C "$wt" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null) || tip=
+  retire_landed_branch "$wt" "$branch"
+  [ -n "$tip" ] || return 0
+  if ! git -C "$wt" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null 2>&1; then
+    landed=1
+    why="landed on the default branch"
+  elif pr_is_merged "$branch"; then
+    landed=1
+    why="its PR is merged"
+  fi
+  [ "$landed" = 1 ] || return 0
+  fm_branch_remote_delete "$wt" "$branch" "$tip" "${BASE_BRANCH:-}" "$why" || true
 }
 
 # The completion links this teardown already holds locally. A scout's
@@ -4019,7 +4047,7 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
     branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
     if [ "$branch" != "HEAD" ]; then
       if git -C "$WT" checkout --detach -q 2>/dev/null; then
-        retire_landed_branch "$WT" "$branch"
+        retire_landed_branches "$WT" "$branch"
       fi
     fi
     rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" \
@@ -4038,7 +4066,7 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
   if [ "$branch" != "HEAD" ]; then
     if git -C "$WT" checkout --detach -q 2>/dev/null; then
-      retire_landed_branch "$WT" "$branch"
+      retire_landed_branches "$WT" "$branch"
     fi
   fi
   # Remove our hook and environment files so a reused pool worktree cannot fire
