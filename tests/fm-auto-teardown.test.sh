@@ -50,7 +50,7 @@ sweep() {  # <world> [args]
 
 test_done_task_is_torn_down_without_force() {
   local w out
-  w=$(make_world done)
+  w=$(make_world finished)
   add_task "$w" ship-a ship "state: done · source: run-step · passed"
   add_task "$w" scout-a scout "state: done · source: status-log · report"
   out=$(sweep "$w")

@@ -34,6 +34,31 @@ The foreground process's cwd is the right field.
 A pane's plain cwd is frozen at the directory the pane was created in, which is the primary clone by design, so reading it would either refuse every spawn or pass on a stale value.
 On Herdr that is `foreground_cwd`, not `cwd`; `tests/fm-backend-herdr.test.sh` pins the choice.
 
+## Slot rules and disposal
+
+Everything a task holds is removed by the home that created it, as the last step of that task, with no timer or sweep.
+
+- **Automatic teardown.** Every main wake drain starts one detached `bin/fm-auto-teardown.sh` sweep (rate limited, one at a time per home) that runs `bin/fm-teardown.sh <id>`, never with `--force`, for each ship or scout whose current state reads done.
+  Teardown's own landed-work refusals stand: an unmerged PR, a dirty copy or a scout without its report stays exactly as it was and is retried after a back-off.
+  `FM_AUTO_TEARDOWN=0` turns the sweep off.
+- **The claim file is the only truth.** `<pool>/<slot>/.fm-slot-owner` names the task holding a slot; a record's `worktree=` line is a copy of it.
+  When a spawn claims a slot it demotes every other record that still names that slot to a `#stale-worktree-record(superseded-by=<task>) <path>` comment, under the same project lock, so a later teardown of an older task can never reach the new task's slot.
+- **A slot still on the books is never offered.** Before each `treehouse get --lease`, a slot whose claimant still has a task record is leased in place under that task's id (`treehouse lease`, a state-only call), so the pool cannot hand it out.
+  Only teardown frees a slot: it removes the record and returns the lease together.
+- **Empty numbered directories** hold no slot: the spawn removes them before the get, and the slot ceiling never counts them.
+  `bin/fm-pool-lib.sh` owns these rules.
+- **Branches.** Teardown deletes the task's head branch on origin together with the local one, only when the work is proven landed (the local branch retired on its ancestor or patch-equivalence proof, or the task's merged PR contains the local work) and the remote branch is still at the proved tip; `bin/fm-pr-close.sh` closes a PR and deletes its head branch when it is still at `refs/pull/<n>/head`, which GitHub keeps.
+  Branches under `evidence/`, `archive/`, `shots/` and `capture/` are never deleted (`bin/fm-branch-retire-lib.sh`).
+
+## Host ceilings
+
+`bin/fm-spawn.sh` refuses a fresh worker while the host sits at a declared ceiling, before any lease, endpoint or record exists.
+Ceilings come from `~/.config/fleet/ceilings.env` (or `FM_CEILINGS_FILE`): `KEY=value` lines for `DISK_PCT`, `CONTAINERS`, `CONTAINERS_RUNNING`, `VOLUMES`, `IMAGE_TAGS`, `POOL_SLOTS` and `TMP_GB`.
+A key or file that is absent sets no ceiling.
+A value at or above its ceiling is over.
+Before refusing, the spawn runs one `bin/fm-auto-teardown.sh` sweep for this home's own finished tasks and measures again; a host still over refuses, naming each breach and what the sweep kept.
+`bin/fm-ceilings.sh` owns the measurements.
+
 ## Pool sizing
 
 `max_trees` in the repository's `treehouse.toml` is the limit that paces concurrent workers on a host.

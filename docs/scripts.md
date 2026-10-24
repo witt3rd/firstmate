@@ -172,6 +172,11 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-parent-channel-lib.sh` | Resolve a secondmate home's parent channel and append a captain-facing outcome line to it at most once |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode, write the ship instructions carrying that mode's definition of done, and supersede the task's brief so a later relaunch cannot revive stale scout delivery text |
 | `fm-teardown.sh`         | Fail-closed teardown: return landed ship worktrees, require completed scout deliverables, retire secondmate homes, remove the task temp root, clean the task docker lane |
+| `fm-auto-teardown.sh`    | Tear down this home's done-and-landed tasks without `--force`; the wake drain starts it detached and spawn runs it once as its reclaim |
+| `fm-ceilings.sh`         | Read the host ceilings file and report which measured values have reached their ceiling, which makes a spawn refuse |
+| `fm-pool-lib.sh`         | Treehouse pool slot rules a spawn applies under the project lock: demote stale slot records, lease claimed slots in place, drop empty numbered dirs |
+| `fm-pr-close.sh`         | Close a GitHub PR and delete its head branch when it is still at the PR head, never an evidence-prefixed branch |
+| `fm-branch-retire-lib.sh` | The one remote head-branch delete shared by teardown and `fm-pr-close.sh`, with the protected names and the proved-tip check |
 | `fm-harness.sh`          | Detect the running harness, resolve crew or secondmate harness, model, and effort, and validate the native-only `ultra` effort |
 | `fm-lock.sh`             | Per-home firstmate session lock                                                      |
 | `fm-x-lib.sh`            | Shared Relay config, relay, and reply-threading helpers                              |

@@ -32,7 +32,9 @@ usage() {
 PR=${1:-}
 [ -n "$PR" ] || usage
 shift
-REPO_DIR= REPO= BRANCH=
+REPO_DIR=""
+REPO=""
+BRANCH=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --repo-dir) REPO_DIR=${2:-}; shift ;;

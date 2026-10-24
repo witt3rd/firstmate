@@ -303,17 +303,17 @@ make_pool_case() {
 # the older record that still names it, protects the slot of a task still on the
 # books by leasing it in place, and drops empty numbered directories first.
 test_pool_rule_claim_demote_protect_and_prune() {
-  local id out status
-  id=pool-rule-z1
-  make_pool_case pool-rule "$id"
+  local tid out status
+  tid='pool-slot-z7'
+  make_pool_case pool-slot "$tid"
 
-  out=$(run_settle_spawn "$id")
+  out=$(run_settle_spawn "$tid")
   status=$?
   unset TREEHOUSE_ROOT
   expect_code 0 "$status" "spawn into a pool slot should succeed"$'\n'"$out"
-  assert_grep "task=$id" "$POOL_DIR/1/.fm-slot-owner" "the spawn must claim its slot"
+  assert_grep "task=$tid" "$POOL_DIR/1/.fm-slot-owner" "the spawn must claim its slot"
   assert_no_grep "worktree=$POOL_DIR/1/proj" "$HOME_DIR/state/stale-holder.meta" "the older record naming the slot must be demoted"
-  assert_grep "#stale-worktree-record(superseded-by=$id) $POOL_DIR/1/proj" "$HOME_DIR/state/stale-holder.meta" "the demoted record keeps the path as a comment"
+  assert_grep "#stale-worktree-record(superseded-by=$tid) $POOL_DIR/1/proj" "$HOME_DIR/state/stale-holder.meta" "the demoted record keeps the path as a comment"
   assert_grep "branch=fm/stale" "$HOME_DIR/state/stale-holder.meta" "demotion changes nothing but the worktree line"
   assert_grep "worktree=$POOL_DIR/3/proj" "$HOME_DIR/state/live.meta" "another slot's record is untouched"
   assert_grep "lease 3 --lease-holder live" "$TREEHOUSE_LOG" "the slot of a task still on the books is leased in place before the get"
