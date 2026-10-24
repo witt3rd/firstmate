@@ -4410,6 +4410,29 @@ if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] &&
   echo "error: spawn refused: project $PROJ_ABS has no commit yet (unborn HEAD), so there is nothing to branch a worktree from; make one commit in the project, for example 'git -C $PROJ_ABS commit --allow-empty -m \"chore: initial commit\"', then spawn again" >&2
   exit 1
 fi
+# Host ceilings (bin/fm-ceilings.sh owns the file and the measurements): a fresh
+# worker is refused while the host sits at a declared ceiling, so regrowth stops
+# at the creator. Before refusing, this home gets ONE reclaim of its own
+# leftovers - a single sweep that tears down its done-and-landed tasks
+# (bin/fm-auto-teardown.sh, never forced) - and the ceilings are measured again.
+# A host still at a ceiling refuses, naming the breach and what the reclaim kept,
+# before any brief render, endpoint, worktree, record, or backlog move exists.
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+  if ! SPAWN_CEILING_OUT=$("$SCRIPT_DIR/fm-ceilings.sh" check --project "$PROJ_ABS" 2>&1); then
+    SPAWN_RECLAIM_OUT=$(FM_AUTO_TEARDOWN_RETRY_SECS=0 "$SCRIPT_DIR/fm-auto-teardown.sh" 2>&1 </dev/null) || true
+    if ! SPAWN_CEILING_OUT=$("$SCRIPT_DIR/fm-ceilings.sh" check --project "$PROJ_ABS" 2>&1); then
+      echo "error: spawn refused: this host is at a declared ceiling, so nothing new is created until it falls (bin/fm-ceilings.sh):" >&2
+      printf '%s\n' "$SPAWN_CEILING_OUT" >&2
+      if [ -n "$SPAWN_RECLAIM_OUT" ]; then
+        echo "one reclaim of this home's own leftovers ran first:" >&2
+        printf '%s\n' "$SPAWN_RECLAIM_OUT" >&2
+      else
+        echo "one reclaim of this home's own leftovers ran first and found no finished task it could tear down; tear down or ask about the tasks this home still holds, then spawn again" >&2
+      fi
+      exit 1
+    fi
+  fi
+fi
 # Project capacity admission (bin/fm-project-capacity-lib.sh owns the
 # declaration, what holds a place, and why this is race-safe). A fresh worker
 # for a project whose declared capacity is already held is deferred here, before

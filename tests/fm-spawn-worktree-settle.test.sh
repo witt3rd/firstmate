@@ -124,7 +124,7 @@ run_settle_spawn() {
     FM_FAKE_TREEHOUSE_PATH="${LEASE_PATH:-$WT_DIR}" \
     FM_FAKE_TREEHOUSE_GET_FAIL="${GET_FAIL:-}" \
     PATH="$FAKEBIN_DIR:$PATH" \
-    "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
+    "${SPAWN_BIN:-$SPAWN}" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
 }
 
 # Acquisition takes the durable lease under the task's own id and never the
@@ -321,7 +321,78 @@ test_pool_rule_claim_demote_protect_and_prune() {
   pass "a spawn claims its slot, demotes older records, protects live slots and drops empty dirs"
 }
 
+# Spawn gate: a host at a declared ceiling refuses a fresh worker before any
+# endpoint, lease or record exists, after exactly one reclaim of the home's own
+# done-and-landed leftovers (bin/fm-auto-teardown.sh); a reclaim that brings the
+# host under its ceiling lets the spawn through.
+# make_gate_case <name> <id> <containers>: a settle case with a docker stub that
+# reports the number in $CASE_DIR/containers and a ceiling of 3.
+make_gate_case() {
+  local name=$1 id=$2 rec
+  rec=$(make_settle_case "$name" "$id" 0)
+  read_settle_record "$rec"
+  printf '%s\n' "$3" > "$CASE_DIR/containers"
+  cat > "$FAKEBIN_DIR/docker" <<SH
+#!/usr/bin/env bash
+[ "\$*" = "ps -aq" ] && seq 1 "\$(cat "$CASE_DIR/containers")"
+exit 0
+SH
+  chmod +x "$FAKEBIN_DIR/docker"
+  printf 'CONTAINERS=3\n' > "$CASE_DIR/ceilings.env"
+  export FM_CEILINGS_FILE="$CASE_DIR/ceilings.env"
+}
+
+test_spawn_over_ceiling_refuses_before_anything_exists() {
+  local id out status
+  id=gate-refuse-z1
+  make_gate_case gate-refuse "$id" 5
+
+  out=$(run_settle_spawn "$id")
+  status=$?
+  unset FM_CEILINGS_FILE
+  expect_code 1 "$status" "a host over its ceiling must refuse the spawn"
+  assert_contains "$out" "over: CONTAINERS 5 >= 3" "the refusal must name the breach"
+  assert_contains "$out" "one reclaim of this home's own leftovers ran first" "the single reclaim must be reported"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "refused spawn published task metadata"
+  assert_no_grep "get" "$TREEHOUSE_LOG" "no lease may be taken for a refused spawn"
+  assert_no_grep "new-window" "$TMUX_LOG" "no endpoint may be created for a refused spawn"
+  pass "a spawn over a ceiling refuses before any lease, endpoint or record exists"
+}
+
+test_reclaim_of_own_leftovers_lets_the_spawn_through() {
+  local id out status bin
+  id=gate-reclaim-z2
+  make_gate_case gate-reclaim "$id" 5
+  # A copied bin/ whose crew-state reads the one finished task as done and whose
+  # teardown frees two containers, so the single reclaim brings the host under.
+  bin="$CASE_DIR/bin"
+  cp -R "$ROOT/bin" "$bin"
+  printf '#!/usr/bin/env bash\necho "state: done"\n' > "$bin/fm-crew-state.sh"
+  cat > "$bin/fm-teardown.sh" <<SH
+#!/usr/bin/env bash
+echo "\$*" >> "$CASE_DIR/teardown.calls"
+echo 2 > "$CASE_DIR/containers"
+rm -f "$HOME_DIR/state/\$1.meta"
+SH
+  chmod +x "$bin/fm-crew-state.sh" "$bin/fm-teardown.sh"
+  # A code root outside the repository has no history, which the role lib
+  # refuses; give it an unrelated one so the fixture project is not "firstmate".
+  git -C "$CASE_DIR" init -q
+  git -C "$CASE_DIR" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m code-root
+  fm_write_meta "$HOME_DIR/state/finished-old.meta" "kind=ship" "worktree=/nonexistent/finished-old"
+
+  out=$(SPAWN_BIN="$bin/fm-spawn.sh" FM_AUTO_TEARDOWN=1 run_settle_spawn "$id")
+  status=$?
+  unset FM_CEILINGS_FILE
+  expect_code 0 "$status" "a reclaim that clears the ceiling must let the spawn through"$'\n'"$out"
+  [ "$(cat "$CASE_DIR/teardown.calls")" = finished-old ] || fail "exactly the finished task is reclaimed, never forced"
+  assert_grep "new-window" "$TMUX_LOG" "the spawn proceeds to create its endpoint"
+  pass "one reclaim of the home's own finished tasks lets a spawn through"
+}
+
 test_acquisition_leases_under_the_task_id
+test_spawn_over_ceiling_refuses_before_anything_exists
+test_reclaim_of_own_leftovers_lets_the_spawn_through
 test_pool_rule_claim_demote_protect_and_prune
 test_exhausted_pool_refuses_immediately_before_any_endpoint_exists
 test_other_lease_failure_refuses_with_the_tools_message
