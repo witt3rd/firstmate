@@ -1627,6 +1627,30 @@ test_worker_role_scope
 # Rule 2 governs file edits rather than pool administration, so every crewmate
 # scaffold must prohibit the administrative act itself. The rule is emitted from
 # one shared string so the ship and scout copies cannot drift apart.
+test_scaffolds_carry_no_kill_rule() {
+  local home kind id brief
+  home="$TMP_ROOT/no-kill-home"
+  mkdir -p "$home/data"
+  for kind in ship scout secondmate; do
+    id="brief-no-kill-$kind"
+    case "$kind" in
+      ship) FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" alpha --mode local-only >/dev/null 2>&1 ;;
+      scout) FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" alpha --scout >/dev/null 2>&1 ;;
+      secondmate) FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects >/dev/null 2>&1 ;;
+    esac || fail "fm-brief.sh $kind exited non-zero"
+    brief="$home/data/$id/brief.md"
+    assert_grep "Signal only a process you started yourself in that same command" "$brief" \
+      "$kind brief lacks the signal-only-your-own-process rule"
+    assert_grep "Never derive a pid with" "$brief" "$kind brief lacks the derived-pid prohibition"
+    assert_grep "pkill -f" "$brief" "$kind brief lacks the pattern-kill prohibition"
+    assert_grep "kill %N" "$brief" "$kind brief lacks the background-job guidance"
+    assert_grep "Never signal systemd, herdr, Hyprland, SDDM" "$brief" \
+      "$kind brief lacks the session-process prohibition"
+    assert_grep "Never poll in a background loop" "$brief" "$kind brief lacks the no-background-poll rule"
+  done
+  pass "fm-brief.sh: ship, scout, and secondmate briefs carry the process-signal rule"
+}
+
 test_crewmate_scaffolds_forbid_pool_administration() {
   local home id brief mode ship_rule scout_rule
   home="$TMP_ROOT/pool-admin-home"
@@ -1863,4 +1887,5 @@ test_branch_prefix_is_refused_where_it_does_not_apply
 test_branch_prefix_value_is_validated
 test_branch_prefix_command_is_shell_safe
 test_crewmate_scaffolds_forbid_pool_administration
+test_scaffolds_carry_no_kill_rule
 test_secondmate_caretaker_charter

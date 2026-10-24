@@ -549,6 +549,15 @@ if [ -e "$CONFIG/wait-no-turns" ]; then
   WAIT_BLOCK="$WAIT_SECTION"$'\n\n'
 fi
 
+# One shared string keeps the process-signal rule identical across ship, scout, and secondmate briefs.
+IFS= read -r -d '' SHARED_NO_KILL_RULE <<'EOF' || true
+Signal only a process you started yourself in that same command.
+   Never derive a pid with `ps`, `ppid`, `pgrep`, or `pidof` and then signal it, and never use `pkill -f` or `killall` with a pattern: an orphan's parent is `systemd --user`, so that kill takes down the whole user session.
+   Never signal systemd, herdr, Hyprland, SDDM, or any session or user-manager process.
+   Never poll in a background loop; stop your own background jobs with `kill %N`, or avoid them with `timeout` and bounded foreground sleeps.
+EOF
+SHARED_NO_KILL_RULE=${SHARED_NO_KILL_RULE%$'\n'}
+
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
 idx=1
@@ -578,6 +587,7 @@ Act only on tasks the main firstmate routes to you.
 Never start a survey, audit, or "find improvements" sweep on your own initiative; that is not your job and it is unwanted.'
 IDLE_DOD='An empty queue is a healthy resting state, not a cue to invent work: never spawn a survey, audit, or any self-directed "find work" task on your own initiative.'
 CARETAKER_SECTIONS=
+
 if [ "$CARETAKER" -eq 1 ]; then
   IFS= read -r -d '' CARETAKER_BODY <<EOF || true
 $FM_CARETAKER_PRACTICE_HEADING
@@ -673,6 +683,9 @@ When a keyed phase ends without another reportable state, append \`resolved [key
 \`resolved\` separately closes an escalated decision or blocker, and only a \`resolved\` line carrying that decision's exact key closes it: a later \`done\` or \`working\` event never does, even when the answer is what started that work.
 The main firstmate's answer normally writes that closing line at answer time; when a blocker or wait clears WITHOUT an answer from the main firstmate, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (keyed with \`[key=<slug>]\` if you opened it with one) as your domain resumes.
 Routine internal supervision, heartbeats, retries, and crewmate churn stay inside your own home and must not touch that status file.
+
+# Rules
+1. $SHARED_NO_KILL_RULE
 
 # Definition of done
 You are persistent by default. Do not exit just because your queue is empty.
@@ -823,6 +836,7 @@ $CREWMATE_PAUSE_INSTRUCTIONS
    Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
 $SHARED_INFRA_RULE
 $SHARED_NO_CD_RULE
+9. $SHARED_NO_KILL_RULE
 
 $WAIT_BLOCK$INBOX_SECTION
 
@@ -908,6 +922,7 @@ $ASK_USER_BLOCK
    Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
 $SHARED_INFRA_RULE
 $SHARED_NO_CD_RULE
+9. $SHARED_NO_KILL_RULE
 
 $WAIT_BLOCK$INBOX_SECTION
 
