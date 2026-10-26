@@ -479,7 +479,7 @@ observe() { # canonical GitHub URL -> normalized JSON
               | (.created_at // .submitted_at // "") as $at | (.in_reply_to_id // .id) as $root | . as $e
               | {token:((._signal + ":") + (.id|tostring) + ":" + (.updated_at // .submitted_at // "") + ":" + (.state // "")),
                  type:._signal,source:.html_url,head:.commit_id,
-                 author:.user.login,body:(.body // "" | .[:500])}
+                 author:.user.login,body:(.body // "")}
                  + (if (.user.login | IN($bots[])) then {review_bot:true} else {} end)
                  + (if $track then {at:$at,
                    # A resolved inline thread counts as answered.
@@ -506,7 +506,7 @@ observe() { # canonical GitHub URL -> normalized JSON
         checks:[],reviews:[],events:($comments[0] | add // []
           | map(select(.user.login != $c.user.login and (.author_association | IN("OWNER","MEMBER","COLLABORATOR")))
             | {token:("comment:" + (.id|tostring) + ":" + (.updated_at // "")),type:"comment",source:.html_url,
-               head:null,author:.user.login,body:(.body // "" | .[:500])})
+               head:null,author:.user.login,body:(.body // "")})
           + [$timeline[0][] | .[] | select(.event == "labeled" and (.label.name | ascii_downcase) == ($label | ascii_downcase))
              | {token:("ready-for-pr:" + (.id | tostring)),type:"ready-for-pr",source:$c.html_url,head:null,body:"filed issue reached ready-for-pr"}])}' > "$TMP/observation.json" \
       || unobserved 'observation could not be assembled' || return 1

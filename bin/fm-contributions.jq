@@ -151,5 +151,5 @@ def summary($rows; $errors):
    missing_verdicts:([$rows[].missing_verdicts] | add // 0),
    unreadable_records:$errors,
    valid_until:([$rows[] | select(.final | not) | .checked_at | try (fromdateiso8601) catch 0] | min // 0),
-   captain:[$rows[] | select(.actor == "captain") | {task,url,kind,head,reason:(.reason[:240]),hold,
+   captain:[$rows[] | select(.actor == "captain") | {task,url,kind,head,reason:.reason,hold,
      verdict_freshness:.verdict.freshness,verdict_head:.verdict.head,verdict_source:.verdict.source,checked_at}]};
