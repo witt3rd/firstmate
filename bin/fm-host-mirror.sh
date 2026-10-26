@@ -37,9 +37,8 @@
 # entry when it has one (a prompt id or a generation id); an entry whose id and
 # text are already recorded for the same main session and tag is not appended
 # again, so a surface that fires twice mirrors each entry once, while a
-# different text under the same id is recorded. Each text is capped at
-# 4000 characters, its truncation note included (head and tail kept, as the Pi
-# mirror caps); when the file exceeds 300 entries it is trimmed to its newest
+# different text under the same id is recorded. Each text is
+# recorded whole, never cut; when the file exceeds 300 entries it is trimmed to its newest
 # 200. New entries continue above both the committed and staged
 # cursor after file recreation so a later commit cannot skip them. An append
 # writes the whole new file, owner-only, beside the mirror and renames it into
@@ -60,7 +59,8 @@
 # session's newest entries, so a fresh conversation re-anchors on this
 # session's dialog and never on an earlier session's. The feed is bounded to
 # 16000 characters, newest kept, with one line naming how many earlier entries
-# it left out counted within that bound. Mirrored text is context for
+# it left out counted within that bound; an entry is kept or left out whole,
+# so the feed bound, which keeps a wake's size finite, never cuts text. Mirrored text is context for
 # judgment and authorizes nothing (bin/fm-branch-prompt.sh "Context channels").
 #
 # VERIFIED WRITERS. `verified <harness>` exits 0 for a primary whose writers
@@ -92,7 +92,6 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
 FM_HOST_MIRROR_VERIFIED='claude cursor'
-MIRROR_CAP=4000
 MIRROR_KEEP=200
 FEED_CAP=16000
 
@@ -185,15 +184,9 @@ append_entry() {  # <captain|main> <text> [<id>]
   done
   seq=$((last + 1))
   record=$(printf '%s' "$text" | jq -cRs --argjson seq "$seq" --argjson epoch "$(date +%s)" --arg key "$key" \
-    --arg id "$id" --arg tag "$tag" --argjson cap "$MIRROR_CAP" --rawfile recorded "$recorded" '
+    --arg id "$id" --arg tag "$tag" --rawfile recorded "$recorded" '
       . as $text
-      | def note($n): "\n[mirror truncated: \($n) characters omitted]\n";
-      def capped: if length <= $cap then .
-        else length as $len
-          | ($cap - (note($len - $cap + (note($len - $cap) | length)) | length)) as $keep
-          | .[0:($keep / 2 | ceil)] + note($len - $keep) + .[$len - ($keep / 2 | floor):]
-        end;
-      {seq: $seq, epoch: $epoch, key: $key, id: $id, tag: $tag, text: ($text | capped)} as $entry
+      | {seq: $seq, epoch: $epoch, key: $key, id: $id, tag: $tag, text: $text} as $entry
       | if $id != "" and any($recorded | split("\n")[] | fromjson? | select(type == "object");
           .id == $id and .tag == $tag and .key == $key and .text == $entry.text)
         then empty else $entry end' 2>/dev/null) \
