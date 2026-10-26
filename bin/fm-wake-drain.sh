@@ -466,8 +466,8 @@ EOF
 # Bounded and silent: prints nothing when no decision is open, which is the
 # common case.
 print_open_decisions_section() {
-  local snapshot=${1:-} open task key verb note line global_bytes=4000
-  local output='' used=0 shown=0 omitted=0 bytes
+  local snapshot=${1:-} open task key verb note line
+  local output='' shown=0
 
   if [ -n "$snapshot" ]; then
     open=$(scan_open_decisions_snapshot "$STATE" "$snapshot") || return 1
@@ -481,29 +481,20 @@ print_open_decisions_section() {
     line="$task"
     [ "$key" = default ] || line="$line [key=$key]"
     line="$line $verb: $note"
-    # An item is folded across lines, never cut; the global budget drops whole
-    # items with a disclosed count, and the first item is always shown in full.
+    # An item is folded across lines, never cut, and every open decision is
+    # shown: a decision the captain owes must not vanish behind a byte budget.
     fm_fold_line_var "$line"
     line=$FM_FOLD_LINE
-    bytes=$(( ${#line} + 1 ))
-    if [ "$used" -gt 0 ] && [ $((used + bytes)) -gt "$global_bytes" ]; then
-      omitted=$((omitted + 1))
-      continue
-    fi
     output="$output$line
 "
-    used=$((used + bytes))
     shown=$((shown + 1))
   done <<EOF
 $open
 EOF
 
-  [ "$shown" -gt 0 ] || [ "$omitted" -gt 0 ] || return 0
+  [ "$shown" -gt 0 ] || return 0
   printf 'OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):\n' || return 1
   printf '%s' "$output" || return 1
-  if [ "$omitted" -gt 0 ]; then
-    printf 'OPEN DECISIONS: %d more omitted (byte cap)\n' "$omitted" || return 1
-  fi
   # Answerer-closes hint, printed at exactly the moment an answer gets written:
   # the send that answers a listed decision also closes it, so closure never
   # depends on the busy worker writing a matching resolved line (contract:
