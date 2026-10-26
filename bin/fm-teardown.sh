@@ -2093,7 +2093,7 @@ validate_worktree_teardown_safety() {
     echo "Restore the git index state, or get the captain's explicit OK to discard, then --force." >&2
     return 1
   fi
-  unpushed=$(printf '%s\n' "$unpushed_raw" | head -5)
+  unpushed=$unpushed_raw
 
   if [ -n "$unpushed" ] && [ "$MODE" = local-only ]; then
     DEFAULT=$(default_branch) || { echo "REFUSED: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master." >&2; return 1; }
@@ -2105,7 +2105,7 @@ validate_worktree_teardown_safety() {
       echo "Restore the git index state, or get the captain's explicit OK to discard, then --force." >&2
       return 1
     fi
-    unmerged=$(printf '%s\n' "$unmerged_raw" | head -5)
+    unmerged=$unmerged_raw
     if [ -n "$dirty" ] || [ -n "$unmerged" ]; then
       echo "REFUSED: local-only worktree $WT has work not yet merged into $DEFAULT and not on any remote." >&2
       [ -n "$dirty" ] && report_worktree_dirt "$dirty"
