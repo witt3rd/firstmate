@@ -471,6 +471,10 @@ assert_equals "unknown" "$can" "unknown lock plus unknown consumer is not can_re
 
 # A live lock holder whose ancestry names a known harness, plus a fresh
 # beacon, is the yes path: the inspected home can receive work.
+# Lock-holder classification reads the holder's comm and args through ps(1).
+# Without procps every live holder classifies as unknown, which is an
+# environment gap, not a classification bug: say so instead of a false "unknown".
+command -v ps >/dev/null 2>&1 || fail "ps (procps) is required to classify a lock holder; install procps"
 home=$(make_home ready-holder)
 # A process whose ps comm is the harness name, so lock inspect and
 # fm-harness.sh ancestry both classify it without PATH tricks.
