@@ -155,7 +155,7 @@ test_herdr_installs_pinned_build() {
   [ "$RC" -eq 0 ] || fail "herdr install failed: $OUT"
   [ -x "$w/dest/herdr" ] || fail "herdr binary not installed"
   assert_contains "$(cat "$w/urls")" \
-    "https://github.com/ogulcancelik/herdr/releases/download/v0.7.4/herdr-linux-x86_64" \
+    "https://github.com/herdrdev/herdr/releases/download/v0.7.4/herdr-linux-x86_64" \
     "herdr download URL is not the pinned official asset"
   assert_contains "$OUT" "protocol 16" "success output omitted the protocol"
   pass "herdr installer installs the pinned verified build"
