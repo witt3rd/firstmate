@@ -66,6 +66,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-remote-home-seed.sh` | Register and provision a whole secondmate home on an SSH-reachable host, on its route's backend |
 | `fm-caretaker-lib.sh`    | Single owner of a caretaker charter's machine-read headings, sweep cadence grammar, and recurrence-ledger format |
 | `fm-caretaker-sweep.sh`  | Schedule a caretaker's declared health sweep as a watcher check, record its runs, and print its read-only snapshot |
+| `fm-remote-route-backend.sh` | Read or set a remote route's backend (herdr or tmux) in `data/secondmates.md`, one field of one record, atomically and validated |
 | `fm-remote-readiness-lib.sh` | Shared remote second-mate readiness gate: check and, when needed, repair then re-check through `fm-remote-doctor.sh` |
 | [`fm-project-origin-lib.sh`](../bin/fm-project-origin-lib.sh) | Accepted origin-form owner shared by both remote provisioning boundaries |
 | `fm-spawn.sh`            | Spawn crewmates, scouts, `id=repo` batches, and secondmates on the resolved harness and runtime backend |
