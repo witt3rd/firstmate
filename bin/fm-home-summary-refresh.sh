@@ -14,10 +14,21 @@
 # ledger. After a failed, interrupted, or killed refresh, the ledger path holds
 # either the prior complete document or the new complete document, never torn output.
 # A home-local refresh lock serializes concurrent triggers so an older in-flight
-# summary cannot overwrite one computed after a later status change. The shared
-# timeout owner bounds the complete refresh with FM_HOME_SUMMARY_TIMEOUT
-# (default 60 seconds). No reader can observe temporary output through the
-# ledger path.
+# summary cannot overwrite one computed after a later status change. A
+# --best-effort trigger (and FM_HOME_SUMMARY_IF_IDLE=1) is single-flight: the
+# worker takes that lock without waiting and exits at once when a refresh is
+# already running, so triggers never pile up producers; only a direct call
+# waits its turn. The shared timeout owner bounds the complete refresh with
+# FM_HOME_SUMMARY_TIMEOUT (default 60 seconds). No reader can observe temporary
+# output through the ledger path.
+#
+# Every refresh is disposable by construction: the parent creates one per-run
+# directory, hands it to the worker and producer as TMPDIR, and removes it (plus
+# the run's publication temp files in the state directory) itself after the
+# worker ends, however it ended. A bash producer cannot run its own EXIT trap
+# while a foreground child runs or after SIGKILL, so the producer's cleanup is
+# never what bounds the leak; a straggler that outlives the run finds its
+# TMPDIR gone and cannot recreate anything.
 #
 # With --best-effort, a failure is appended to the bounded home-local
 # state/.home-summary-refresh.log when available, with stderr as the bounded
@@ -47,6 +58,9 @@ HOME_SUMMARY_FAILURE_STAMP=
 HOME_SUMMARY_TMP=
 HOME_SUMMARY_ERR_TMP=
 HOME_SUMMARY_LOCK_HELD=0
+HOME_SUMMARY_RUN_DIR=
+HOME_SUMMARY_RUN_ID=${FM_HOME_SUMMARY_RUN_ID:-}
+HOME_SUMMARY_CHILD_PID=
 
 # shellcheck source=bin/fm-timeout-lib.sh
 # shellcheck disable=SC1091
@@ -115,11 +129,11 @@ home_summary_refresh_once() {
     fm_lock_acquire_wait "$REFRESH_LOCK"
   fi
   HOME_SUMMARY_LOCK_HELD=1
-  HOME_SUMMARY_TMP=$(umask 077; mktemp "$STATE/.home-summary.json.XXXXXX") || {
+  HOME_SUMMARY_TMP=$(umask 077; mktemp "$STATE/.home-summary.json.${HOME_SUMMARY_RUN_ID:+$HOME_SUMMARY_RUN_ID.}XXXXXX") || {
     home_summary_fail "could not create an atomic publication file in $STATE"
     return 1
   }
-  HOME_SUMMARY_ERR_TMP=$(umask 077; mktemp "$STATE/.home-summary-error.XXXXXX") || {
+  HOME_SUMMARY_ERR_TMP=$(umask 077; mktemp "${TMPDIR:-$STATE}/.home-summary-error.XXXXXX") || {
     home_summary_fail "could not create a producer diagnostic file in $STATE"
     return 1
   }
@@ -215,16 +229,71 @@ if [ "$HOME_SUMMARY_MODE" = log-failure ]; then
   exit 0
 fi
 
+# Remove everything one parent run owns. Safe to call twice.
+# shellcheck disable=SC2329 # Invoked by the signal and EXIT traps below.
+home_summary_parent_cleanup() {
+  if [ -n "$HOME_SUMMARY_RUN_DIR" ]; then
+    rm -rf -- "$HOME_SUMMARY_RUN_DIR" 2>/dev/null || true
+    HOME_SUMMARY_RUN_DIR=
+  fi
+  if [ -n "$HOME_SUMMARY_RUN_ID" ]; then
+    rm -f -- "$STATE/.home-summary.json.$HOME_SUMMARY_RUN_ID".* 2>/dev/null || true
+  fi
+}
+
+# shellcheck disable=SC2329 # Invoked by the signal traps below.
+home_summary_parent_signal() {  # <exit-status>
+  # The worker runs in the background so this trap fires at once instead of
+  # after the foreground child; stop it, then let the EXIT trap clean up.
+  if [ -n "$HOME_SUMMARY_CHILD_PID" ]; then
+    kill -TERM "$HOME_SUMMARY_CHILD_PID" 2>/dev/null || true
+  fi
+  exit "$1"
+}
+
 if [ "$HOME_SUMMARY_MODE" = parent ]; then
   attempt_stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || attempt_stamp=
-  if fm_run_timed "$HOME_SUMMARY_TIMEOUT" env \
+  trap home_summary_parent_cleanup EXIT
+  trap 'home_summary_parent_signal 129' HUP
+  trap 'home_summary_parent_signal 130' INT
+  trap 'home_summary_parent_signal 143' TERM
+  # Single flight: a best-effort trigger never waits behind a running refresh.
+  # The worker takes the lock without waiting, so a stalled state directory is
+  # bounded by the same deadline as everything else the worker does.
+  if [ "$BEST_EFFORT" -eq 1 ]; then
+    HOME_SUMMARY_IF_IDLE=1
+  fi
+  if HOME_SUMMARY_RUN_DIR=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/fm-home-summary-run.XXXXXX" 2>/dev/null); then
+    HOME_SUMMARY_RUN_ID=${HOME_SUMMARY_RUN_DIR##*.}
+  else
+    HOME_SUMMARY_RUN_DIR=
+    refresh_rc=1
+    if [ "$BEST_EFFORT" -eq 1 ]; then
+      HOME_SUMMARY_ERROR="could not create a per-run directory under ${TMPDIR:-/tmp}"
+      home_summary_log_failure
+      exit 0
+    fi
+    printf 'fm-home-summary-refresh: could not create a per-run directory under %s\n' \
+      "${TMPDIR:-/tmp}" >&2
+    exit "$refresh_rc"
+  fi
+  # Everything the worker and producer allocate lands under the run directory.
+  TMPDIR=$HOME_SUMMARY_RUN_DIR fm_run_timed "$HOME_SUMMARY_TIMEOUT" env \
+    TMPDIR="$HOME_SUMMARY_RUN_DIR" \
+    FM_HOME_SUMMARY_RUN_ID="$HOME_SUMMARY_RUN_ID" \
     FM_HOME_SUMMARY_WORKER_BEST_EFFORT="$BEST_EFFORT" \
     FM_HOME_SUMMARY_IF_IDLE="$HOME_SUMMARY_IF_IDLE" \
-    "$SCRIPT_DIR/fm-home-summary-refresh.sh" --_worker; then
-    exit 0
+    "$SCRIPT_DIR/fm-home-summary-refresh.sh" --_worker &
+  HOME_SUMMARY_CHILD_PID=$!
+  if wait "$HOME_SUMMARY_CHILD_PID"; then
+    refresh_rc=0
   else
     refresh_rc=$?
   fi
+  HOME_SUMMARY_CHILD_PID=
+  # The worker is done or killed: nothing it allocated may outlive this run.
+  home_summary_parent_cleanup
+  [ "$refresh_rc" -ne 0 ] || exit 0
   if [ "$BEST_EFFORT" -eq 1 ]; then
     if [ "$refresh_rc" -eq 124 ]; then
       parent_error="refresh exceeded its ${HOME_SUMMARY_TIMEOUT}-second deadline"

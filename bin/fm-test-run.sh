@@ -730,8 +730,10 @@ tests/fm-agy-harness.test.sh 50959
 tests/fm-agy-primary-live-e2e.test.sh 75
 tests/fm-agy-primary.test.sh 45000
 tests/fm-agy-signals-live-e2e.test.sh 53
+tests/fm-auto-teardown.test.sh 12200
 tests/fm-approval-failover.test.sh 5410
 tests/fm-ask-user-authority.test.sh 171
+tests/fm-ceilings.test.sh 1000
 tests/fm-backend-cmux-smoke.test.sh 34
 tests/fm-backend-cmux.test.sh 3754
 tests/fm-backend-herdr-launch-line.test.sh 242
@@ -799,6 +801,7 @@ tests/fm-documentation-audiences.test.sh 1301
 tests/fm-dod-lib.test.sh 2035
 tests/fm-extension-binding.test.sh 11105
 tests/fm-fleet-ledger.test.sh 19980
+tests/fm-fleet-snapshot-tmp-leak.test.sh 1000
 tests/fm-fleet-snapshot-view.test.sh 23334
 tests/fm-fleet-sync.test.sh 40541
 tests/fm-forge-detect.test.sh 193
@@ -858,8 +861,10 @@ tests/fm-pi-seeded-home-trust-live-e2e.test.sh 45
 tests/fm-pi-watch-extension.test.sh 56515
 tests/fm-pi-windows-shell-invocation.test.sh 5121
 tests/fm-pipeline-spend.test.sh 2673
+tests/fm-pool-lib.test.sh 1000
 tests/fm-polytoken-harness.test.sh 21090
 tests/fm-polytoken-signals-live-e2e.test.sh 103
+tests/fm-pr-close.test.sh 2000
 tests/fm-pr-check-security.test.sh 300675
 tests/fm-pr-reviewers.test.sh 157
 tests/fm-pr-state-live-e2e.test.sh 47
@@ -1858,6 +1863,11 @@ families_for_changed_path() {
       families_for_test_reference git-config-helpers.sh lib.sh herdr-test-safety.sh \
         || printf '%s\n' "__unmapped__:$path"
       ;;
+    tests/home-isolation-helpers.sh)
+      # Sourced by lib.sh and by this runner, so it selects what those select.
+      families_for_test_reference home-isolation-helpers.sh lib.sh herdr-test-safety.sh \
+        || printf '%s\n' "__unmapped__:$path"
+      ;;
     tests/fixtures/*/*)
       # A fixture belongs to whichever suite reads its directory, found by the
       # same reference scan used for shared helpers. Keyed on the directory
@@ -2640,6 +2650,16 @@ run_script_bounded() {  # <script> <out> <stream> <id>
   local GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
   # shellcheck source=tests/git-config-helpers.sh
   . "$ROOT/tests/git-config-helpers.sh" || return
+  # Every suite runs under its own temporary HOME, removed when it ends, so a
+  # fixture cannot leave pool records or caches in the operator's home
+  # (tests/home-isolation-helpers.sh owns the contract and the opt-outs).
+  # The locals are seeded from the caller's values first: a bare `local` would
+  # hide them.
+  local outer_home=${HOME-} outer_real=${FM_TEST_REAL_HOME-} outer_iso=${FM_TEST_HOME_ISOLATED-}
+  local HOME=$outer_home FM_TEST_REAL_HOME=$outer_real FM_TEST_HOME_ISOLATED=$outer_iso FM_TEST_FAKE_HOME=
+  # shellcheck source=tests/home-isolation-helpers.sh
+  . "$ROOT/tests/home-isolation-helpers.sh" || return
+  fm_test_home_enter || return
   local rc
   : "$id"
   set +e
@@ -2666,6 +2686,7 @@ run_script_bounded() {  # <script> <out> <stream> <id>
       "$script" "$PER_SCRIPT_TIMEOUT_SECS" >>"$out"
     [ "$stream" -eq 1 ] && tail -1 "$out"
   fi
+  fm_test_home_leave
   return "$rc"
 }
 

@@ -999,6 +999,10 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-project-capacity-lib.sh
 . "$SCRIPT_DIR/fm-project-capacity-lib.sh"
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
+# shellcheck source=bin/fm-pool-lib.sh
+. "$SCRIPT_DIR/fm-pool-lib.sh"
 # shellcheck source=bin/fm-worker-account-lib.sh
 . "$SCRIPT_DIR/fm-worker-account-lib.sh"
 # shellcheck source=bin/fm-spend-profile-lib.sh
@@ -1887,8 +1891,25 @@ parse_orca_worktree_result() {
 # has to be torn down afterwards, so a refusal that arrives instantly cannot race
 # the backend's presentation steps or move the active workspace or tab. Any other
 # failure is refused the same way, naming the tool's message.
+# The state directories whose records can name a pool slot on this machine:
+# this home's own, plus every local registered home when the registry reads.
+spawn_pool_states() {
+  if declare -F fm_local_firstmate_state_dirs >/dev/null 2>&1 \
+     && fm_local_firstmate_state_dirs "$STATE" 2>/dev/null; then
+    printf '%s\n' "${FM_LOCAL_FIRSTMATE_STATES[@]}"
+  else
+    printf '%s\n' "$STATE"
+  fi
+}
+
 spawn_acquire_treehouse_lease() {
-  local lease_out lease_msg lease_exhausted SPAWN_LEASE_ERR_FILE
+  local lease_out lease_msg lease_exhausted SPAWN_LEASE_ERR_FILE pool_states
+  # Pool rule (bin/fm-pool-lib.sh): empty numbered directories hold no slot and
+  # must not count against max_trees, and a slot whose claimant still has a
+  # record is leased in place so the get below can never offer it.
+  mapfile -t pool_states < <(spawn_pool_states)
+  fm_pool_prune_empty "$PROJ_ABS" >/dev/null 2>&1 || true
+  fm_pool_protect_claimed "$PROJ_ABS" "${pool_states[@]}" >/dev/null 2>&1 || true
   SPAWN_LEASE_ERR_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-lease-err.XXXXXX") || {
     echo "error: could not create a scratch file to capture treehouse get's message for task $ID" >&2
     exit 1
@@ -4389,6 +4410,29 @@ if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] &&
   echo "error: spawn refused: project $PROJ_ABS has no commit yet (unborn HEAD), so there is nothing to branch a worktree from; make one commit in the project, for example 'git -C $PROJ_ABS commit --allow-empty -m \"chore: initial commit\"', then spawn again" >&2
   exit 1
 fi
+# Host ceilings (bin/fm-ceilings.sh owns the file and the measurements): a fresh
+# worker is refused while the host sits at a declared ceiling, so regrowth stops
+# at the creator. Before refusing, this home gets ONE reclaim of its own
+# leftovers - a single sweep that tears down its done-and-landed tasks
+# (bin/fm-auto-teardown.sh, never forced) - and the ceilings are measured again.
+# A host still at a ceiling refuses, naming the breach and what the reclaim kept,
+# before any brief render, endpoint, worktree, record, or backlog move exists.
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+  if ! SPAWN_CEILING_OUT=$("$SCRIPT_DIR/fm-ceilings.sh" check --project "$PROJ_ABS" 2>&1); then
+    SPAWN_RECLAIM_OUT=$(FM_AUTO_TEARDOWN_RETRY_SECS=0 "$SCRIPT_DIR/fm-auto-teardown.sh" 2>&1 </dev/null) || true
+    if ! SPAWN_CEILING_OUT=$("$SCRIPT_DIR/fm-ceilings.sh" check --project "$PROJ_ABS" 2>&1); then
+      echo "error: spawn refused: this host is at a declared ceiling, so nothing new is created until it falls (bin/fm-ceilings.sh):" >&2
+      printf '%s\n' "$SPAWN_CEILING_OUT" >&2
+      if [ -n "$SPAWN_RECLAIM_OUT" ]; then
+        echo "one reclaim of this home's own leftovers ran first:" >&2
+        printf '%s\n' "$SPAWN_RECLAIM_OUT" >&2
+      else
+        echo "one reclaim of this home's own leftovers ran first and found no finished task it could tear down; tear down or ask about the tasks this home still holds, then spawn again" >&2
+      fi
+      exit 1
+    fi
+  fi
+fi
 # Project capacity admission (bin/fm-project-capacity-lib.sh owns the
 # declaration, what holds a place, and why this is race-safe). A fresh worker
 # for a project whose declared capacity is already held is deferred here, before
@@ -6215,6 +6259,10 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
       exit 1
     fi
     SPAWN_SLOT_CLAIMED=1
+    # The claim is the only truth: every other record that still names this
+    # slot is a stale copy, demoted here under the same project lock.
+    mapfile -t SPAWN_POOL_STATES < <(spawn_pool_states)
+    fm_pool_demote_records "$WT" "$ID" "${SPAWN_POOL_STATES[@]}" >&2 || true
   fi
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != t3code ]; then

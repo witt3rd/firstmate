@@ -26,7 +26,7 @@ test_git_config_isolation() (
   git -C "$dir/caller" config commit.gpgsign false
   cd "$dir/caller" || exit 1
   cp "$ROOT/bin/fm-test-run.sh" "$ROOT/bin/fm-timeout-lib.sh" "$dir/runner/bin/"
-  cp "$ROOT/tests/git-config-helpers.sh" "$dir/runner/tests/"
+  cp "$ROOT/tests/git-config-helpers.sh" "$ROOT/tests/home-isolation-helpers.sh" "$dir/runner/tests/"
   fakebin=$(fm_fakebin "$dir/standalone")
   fm_fake_exit0 "$fakebin" pi
   cat > "$fakebin/tmux" <<'SH'
@@ -335,7 +335,7 @@ test_inherited_git_location_isolation() (
   fm_git_init_commit "$dir/ambient"
   git -C "$dir/ambient" worktree add -q --detach "$dir/linked" main
   cp "$ROOT/bin/fm-test-run.sh" "$ROOT/bin/fm-timeout-lib.sh" "$dir/runner/bin/"
-  cp "$ROOT/tests/git-config-helpers.sh" "$dir/runner/tests/"
+  cp "$ROOT/tests/git-config-helpers.sh" "$ROOT/tests/home-isolation-helpers.sh" "$dir/runner/tests/"
   cat > "$dir/setup.sh" <<'SH'
 case_dir=$(mktemp -d "${TMPDIR:-/tmp}/fm-git-location.XXXXXX")
 git init -q --bare "$case_dir/origin.git"
@@ -390,6 +390,55 @@ SH
   pass "shared helpers and runner keep fixture Git off an inherited repository location"
 )
 
+# A fixture that drives a tool which writes under $HOME (treehouse pools, caches)
+# must leave nothing in the operator's home: every suite runs under a temporary
+# HOME that is removed when it ends. The shared library and the runner both
+# isolate; a live-harness guard that proceeds gets the real home back.
+test_home_isolation() (
+  local dir="$TMP_ROOT/home-isolation" real out fake rc
+  real="$dir/real-home"
+  mkdir -p "$real" "$dir/tmp" "$dir/runner/bin" "$dir/runner/tests"
+
+  # shellcheck disable=SC2016 # expanded by the child bash
+  out=$(env -u FM_TEST_HOME_ISOLATED -u FM_TEST_REAL_HOME HOME="$real" TMPDIR="$dir/tmp" FM_TEST_KEEP_HOME= bash -c \
+    '. "$1"; mkdir -p "$HOME/.treehouse/proj-1/1"; printf "%s|%s" "$HOME" "$FM_TEST_REAL_HOME"' _ "$ROOT/tests/lib.sh")
+  fake=${out%%|*}
+  [ "$fake" != "$real" ] && [ -n "$fake" ] || fail "lib.sh must move HOME off the real home (got '$fake')"
+  assert_equals "$real" "${out#*|}" "the real home is kept in FM_TEST_REAL_HOME"
+  [ -z "$(ls -A "$real")" ] || fail "a fixture wrote into the real home: $(ls -A "$real")"
+  [ ! -e "$fake" ] || fail "the temporary home must be removed when the suite ends"
+
+  # shellcheck disable=SC2016 # expanded by the child bash
+  out=$(env -u FM_TEST_HOME_ISOLATED -u FM_TEST_REAL_HOME HOME="$real" TMPDIR="$dir/tmp" bash -c \
+    '. "$1"; fm_live_gate opt-in FM_TEST_NEVER_SET_LIVE; ' _ "$ROOT/tests/lib.sh" 2>&1 || true)
+  assert_contains "$out" "skip: live: opt-in" "an opted-out live guard still skips"
+  # shellcheck disable=SC2016 # expanded by the child bash
+  out=$(env -u FM_TEST_HOME_ISOLATED -u FM_TEST_REAL_HOME HOME="$real" TMPDIR="$dir/tmp" FM_TEST_NEVER_SET_LIVE=1 bash -c \
+    '. "$1"; fm_live_gate opt-in FM_TEST_NEVER_SET_LIVE; printf "%s" "$HOME"' _ "$ROOT/tests/lib.sh")
+  assert_equals "$real" "$out" "a live guard that proceeds runs under the real home"
+
+  # The runner isolates suites that never source lib.sh.
+  cp "$ROOT/bin/fm-test-run.sh" "$ROOT/bin/fm-timeout-lib.sh" "$dir/runner/bin/"
+  cp "$ROOT/tests/git-config-helpers.sh" "$ROOT/tests/home-isolation-helpers.sh" "$dir/runner/tests/"
+  cat > "$dir/runner/tests/fm-test-run.test.sh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$HOME" > "${FM_FIXTURE_HOME_OUT:?}"
+mkdir -p "$HOME/.treehouse/proj-2/1"
+SH
+  chmod +x "$dir/runner/tests/fm-test-run.test.sh"
+  rc=0
+  env -u FM_TEST_HOME_ISOLATED -u FM_TEST_REAL_HOME HOME="$real" TMPDIR="$dir/tmp" FM_FIXTURE_HOME_OUT="$dir/seen-home" \
+    "$dir/runner/bin/fm-test-run.sh" tests/fm-test-run.test.sh > "$dir/out.log" 2>&1 || rc=$?
+  [ "$rc" = 0 ] || fail "runner case failed: $(cat "$dir/out.log")"
+  fake=$(cat "$dir/seen-home")
+  [ "$fake" != "$real" ] || fail "the runner must give each suite a temporary HOME"
+  [ -z "$(ls -A "$real")" ] || fail "a runner suite wrote into the real home: $(ls -A "$real")"
+  [ ! -e "$fake" ] || fail "the runner must remove the suite's temporary home"
+  pass "suites run under a temporary HOME that leaves no pool records behind"
+)
+
+test_home_isolation || fail "temporary HOME isolation"
 test_git_config_isolation || fail "Git fixture config isolation"
 test_inherited_git_location_isolation || fail "Git fixture location isolation"
 test_agent_standin_survives_a_multicall_sleep || fail "agent stand-in multicall case"

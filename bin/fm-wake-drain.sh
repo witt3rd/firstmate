@@ -79,6 +79,13 @@ ELIGIBLE_ROWS_FILE="$STATE/.branch-eligible-rows"
 ELIGIBLE_OWNER_FILE="$STATE/.branch-eligible-owner"
 MAIN_ROWS_FILE="$STATE/.main-eligible-rows"
 
+# Every main wake-handling turn also starts one detached sweep that tears down
+# this home's tasks that are done AND landed (bin/fm-auto-teardown.sh owns the
+# rule, its refusals, and its rate limit). It never delays or fails the drain.
+if [ "$ACTOR" = main ]; then
+  "$SCRIPT_DIR/fm-auto-teardown.sh" --detach >/dev/null 2>&1 || true
+fi
+
 rows_file_valid() { fm_wake_grant_rows_valid "$1"; }
 
 # rotate_scratch_locked: remove scratch a dead drain left behind (header).

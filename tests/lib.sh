@@ -82,6 +82,11 @@ export FM_UNGUARDED_RUNTIME_OK=fm-test-fixture
 # can find the CLI; a case that verifies detection sets these itself.
 unset REX_SESSION REX_BLOCK
 
+# bin/fm-wake-drain.sh starts a detached sweep that tears down finished tasks
+# (bin/fm-auto-teardown.sh). A suite that drains fixture homes must not have
+# one running against its fixtures; tests/fm-auto-teardown.test.sh owns the
+# sweep and sets FM_AUTO_TEARDOWN=1 itself.
+export FM_AUTO_TEARDOWN=0
 # Write the tracked default backlog configuration into a fixture home. Never copy
 # "$ROOT/.tasks.toml": an operator's primary checkout keeps a gitignored override
 # there (for example a beads backend at its live backlog), so a copy points the
@@ -226,6 +231,19 @@ FM_TEST_OWNER_IDENTITY=$(fm_test_pid_identity "$$") || {
   rm -f "$FM_TEST_CLEANUP_REGISTRY"
   return 1
 }
+
+# Run under a temporary HOME (tests/home-isolation-helpers.sh owns why and the
+# opt-outs). The directory is registered like every other fixture root, so the
+# suite's own cleanup removes it; a runner that already isolated keeps its home.
+# shellcheck source=tests/home-isolation-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/home-isolation-helpers.sh"
+fm_test_home_enter || return 1
+if [ -n "${FM_TEST_FAKE_HOME:-}" ]; then
+  # The same owner marker fm_test_tmproot writes, so fm_test_reap_orphans removes
+  # the home of a suite killed too hard for its traps to run.
+  printf '%s\n%s\n' "$$" "$FM_TEST_OWNER_IDENTITY" > "$FM_TEST_FAKE_HOME/.fm-test-fixture" || return 1
+  printf '%s\n' "$FM_TEST_FAKE_HOME" >> "$FM_TEST_CLEANUP_REGISTRY"
+fi
 
 # --- process-event runner reaping -------------------------------------------
 #
@@ -541,6 +559,12 @@ fm_live_gate() {
   done
 
   export DISABLE_AUTOUPDATER=1
+  # A guard that really runs a vendor harness needs the operator's own home
+  # (credentials, config); every other suite keeps the temporary one.
+  if [ -n "${FM_TEST_REAL_HOME:-}" ]; then
+    HOME=$FM_TEST_REAL_HOME
+    export HOME
+  fi
   return 0
 }
 

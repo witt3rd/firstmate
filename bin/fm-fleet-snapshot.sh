@@ -746,7 +746,7 @@ task_json_lines() {
   local remote_host remote_root current_file endpoint_file observation_line index=0
   local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
-  local open_decisions_tsv open_decisions_json
+  local open_decisions_tsv open_decisions_json captured_end
 
   while [ "$index" -lt "$SNAPSHOT_TASK_META_COUNT" ]; do
     meta=${SNAPSHOT_TASK_METAS[index]}
@@ -815,7 +815,15 @@ task_json_lines() {
     # never clear another concern's keyed decision. A parked/blocked state, or a
     # non-authoritative status-log/none read on a still-live task, keeps the fold's
     # open decision surfacing.
-    open_decisions_tsv=$(status_open_decisions "$status_log" "$kind")
+    # The cursor-backed fold reads only what was appended since the last drain,
+    # bounded at the captured copy's end so it agrees with every other field here;
+    # re-folding a long-lived secondmate's whole log in bash cost about a minute and
+    # made every summary refresh blow its deadline. The whole-file fold remains the
+    # fallback when the cursor path cannot answer.
+    captured_end=0
+    [ ! -f "$status_log" ] || captured_end=$(wc -c < "$status_log" | tr -d '[:space:]')
+    open_decisions_tsv=$(status_open_decisions_incremental "$STATE/$id.status" "$captured_end") \
+      || open_decisions_tsv=$(status_open_decisions "$status_log" "$kind")
     if [ "$kind" != secondmate ] && \
        { { { [ "$current_source" = run-step ] || [ "$current_source" = pane ]; } \
            && [ "$current_state" != parked ] && [ "$current_state" != blocked ]; } \
@@ -1495,12 +1503,19 @@ snapshot_collection_cleanup() {
   SNAPSHOT_COLLECT_DIR=
   SNAPSHOT_SUMMARY_FILTER=
 }
+contribution_input_dir=
 snapshot_cleanup() {
+  [ -z "$contribution_input_dir" ] || rm -rf -- "$contribution_input_dir"
   snapshot_task_cleanup
   snapshot_collection_cleanup
   cleanup_json_files
 }
+# The one cleanup for every scratch dir this script makes; no later trap may
+# replace it (extend snapshot_cleanup instead). Signals exit so EXIT runs it.
 trap snapshot_cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 bounded_parent_activities_json() {  # <status-file>
   local f=$1 out rc reason script
@@ -1996,8 +2011,6 @@ if [ "$OUTPUT_MODE" = contribution-input ]; then
   # argument, so both documents ride temp files via --slurpfile instead of argv.
   contribution_tasks=$(contribution_tasks_json) || { echo "fm-fleet-snapshot: contribution task read failed" >&2; exit 1; }
   contribution_input_dir=$(mktemp -d "${TMPDIR:-/tmp}/fm-fleet-snapshot.contrib.XXXXXX") || { echo "fm-fleet-snapshot: contribution temp dir failed" >&2; exit 1; }
-  # shellcheck disable=SC2064  # The trap resolves this invocation's directory at exit.
-  trap 'rm -rf -- "$contribution_input_dir"' EXIT
   printf '%s' "$BACKLOG_JSON" > "$contribution_input_dir/backlog.json" || { echo "fm-fleet-snapshot: contribution backlog write failed" >&2; exit 1; }
   printf '%s' "$contribution_tasks" > "$contribution_input_dir/tasks.json" || { echo "fm-fleet-snapshot: contribution tasks write failed" >&2; exit 1; }
   jq -n --slurpfile backlog "$contribution_input_dir/backlog.json" --slurpfile tasks "$contribution_input_dir/tasks.json" '{backlog:$backlog[0],tasks:$tasks[0]}' || { echo "fm-fleet-snapshot: contribution input assembly failed" >&2; exit 1; }
