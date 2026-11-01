@@ -12,6 +12,7 @@ Firstmate does not support placing an individual worker remotely or failing a re
 | Task | Start here |
 | --- | --- |
 | Run a remote second mate without Herdr | [The tmux route](#the-tmux-route) |
+| Move a route between herdr and tmux | [Move a route between backends](#move-a-route-between-backends) |
 | Prepare the primary and the remote host | [Prerequisites](#prerequisites) and [non-interactive tool contract](#non-interactive-tool-contract) |
 | Check whether a host is ready, or repair it | [Readiness, repair, and the human steps](#readiness-repair-and-the-human-steps) |
 | Create the route and the remote home | [Provision a route](#provision-a-route) |
@@ -73,6 +74,47 @@ Unlike the herdr guard, it never takes a session over, because a foreign tmux se
 Ownership is read from the server's cgroup (`/system.slice/fm-remote-tmux.service`), a kernel fact, by [`bin/fm-remote-tmux-owner-lib.sh`](../bin/fm-remote-tmux-owner-lib.sh), which owns the fixed names and the classification.
 An endpoint on a server outside the unit, recorded on the other backend, or recorded without its server is unverified, and launch, liveness recovery, control, and retirement leave it untouched.
 A stopped server reads as missing, so the primary's liveness sweep relaunches the mate into the restarted server, exactly as for any dead endpoint.
+
+## Move a route between backends
+
+A route's backend changes only by this explicit sequence, one route at a time, and every step is reversible by running it the other way.
+The same sequence moves a route from herdr to tmux and back.
+
+### Before the first route
+
+1. Update the primary's own Firstmate to a commit that knows the `backend:` field.
+   An older primary treats a record that carries it as malformed, and `fm-on.sh` stops for every route while any record is malformed, so this comes first.
+2. Update each host's code root to the same commit with `bin/fm-on.sh <id> fm-remote-secondmate-control.sh update <id>` (the unit's guard and the doctor live in that root).
+3. Run the tmux doctor read-only: `bin/fm-on.sh <id> fm-remote-doctor.sh --backend tmux`.
+   It should report only fixable gaps (the unit, its activation, the server) or none.
+   A `human:` gap, a foreign tmux server on the socket, or an account that cannot `sudo -n` stops the migration of that host, and nothing has been changed yet.
+
+### One route
+
+1. Install and start the unit if this host has none: `bin/fm-on.sh <id> fm-remote-doctor.sh --backend tmux --fix`.
+   The first route on a host does this, and later routes on that host find it done.
+   It changes the unit and lingering only.
+2. Let the mate reach a quiet point: read `bin/fm-crew-state.sh <id>` and steer it to checkpoint with `bin/fm-send.sh`.
+   Its home, charter, backlog and any uncommitted work stay in place throughout.
+3. Flip the registry first: `bin/fm-remote-route-backend.sh <id> tmux`.
+   From this moment the liveness sweep sees a herdr endpoint under a tmux route, reports it as needing migration, and leaves it alone, so it cannot relaunch the mate onto herdr.
+4. Stop the agent and move its record off herdr: `bin/fm-on.sh <id> fm-remote-secondmate-control.sh migrate <id> tmux --stop`.
+   It proves the recorded endpoint under herdr's own rules, runs the verified `exit`, closes only that mate's pane, and archives the record as `<id>.meta.migrated-from-herdr-<epoch>`.
+5. Launch on tmux: `bin/fm-spawn.sh <id> --secondmate`, or let the liveness sweep do it.
+6. Verify before the next route: the state reads `alive` (`bin/fm-on.sh <id> fm-remote-secondmate-control.sh state <id>`), `bin/fm-peek.sh <id>` shows the mate, `bin/fm-send.sh fm-<id> '<request>'` records a steer and rings it, and the endpoint survives dropping an SSH client attached to the server (`ssh -tt <alias> tmux -S ~/.firstmate/remote-tmux/fm-remote-tmux.sock attach-session`, then kill the client and read the state again).
+
+### Going back
+
+Run the same sequence with herdr: `bin/fm-remote-route-backend.sh <id> herdr`, then `migrate <id> herdr --stop`, then `bin/fm-spawn.sh <id> --secondmate`.
+Setting herdr removes the field, so the registry returns byte for byte.
+Neither direction removes herdr from a host or the unit, which stays installed and idle.
+
+### Limits
+
+- A route whose endpoint is unverified (a foreign server, another Herdr session, a legacy record) is refused by `migrate` and left untouched, because moving it is an operator decision.
+- Migration needs the agent gone, so the mate is down between step 4 and step 5, normally under a minute.
+- One unit serves every tmux route on a host, and its server is one tmux process, so retiring a route closes only its own window.
+- A route's default backend is still herdr: a record with no field is herdr, and a seed without `--backend` writes none.
 
 ## Prerequisites
 
