@@ -2,15 +2,21 @@
 # Check, and optionally repair, one remote account's second-mate readiness.
 #
 # Usage:
-#   bin/fm-on.sh <secondmate-id|ssh-alias> fm-remote-doctor.sh [--fix]
+#   bin/fm-on.sh <secondmate-id|ssh-alias> fm-remote-doctor.sh [--fix] [--backend herdr|tmux]
+#   bin/fm-remote-doctor.sh --backend tmux --print-tmux-unit
+#
+# --backend names the route's remote backend and defaults to herdr, so every
+# existing invocation is unchanged. fm-remote-readiness-lib.sh passes the
+# route's own setting.
 #
 # Run it through fm-on.sh so the fixed entrypoint invokes this readiness owner
 # over its plain SSH bootstrap. The command reports the same filesystem-composed
 # PATH used by worker jobs while retaining authority to inspect and repair the
 # worker itself.
 #
-# A remote second mate always runs on the Herdr backend in the dedicated
-# fm-remote session. Its account therefore needs the Firstmate-owned Aqua Herdr
+# A remote second mate runs on its route's backend, herdr by default. On the
+# herdr backend (the rest of this paragraph) it runs in the dedicated
+# fm-remote session, and its account therefore needs the Firstmate-owned Aqua Herdr
 # agent plus the sibling dev.firstmate.remote-job worker that runs normal fm-on
 # commands through the Aqua or Linux job-worker path. On darwin, that Herdr
 # agent runs bin/fm-remote-herdr-guard.sh through the remote account's login
@@ -25,6 +31,19 @@
 # invokable over the plain-SSH bootstrap path to inspect and repair that worker.
 # SSH cannot create an Aqua session, so a host with no GUI login is a human
 # gap rather than something --fix attempts to bypass.
+#
+# On the tmux backend (Linux only; herdr is neither required nor inspected) the
+# remote agent lives in a tmux server that the system unit fm-remote-tmux.service
+# owns, so it survives every SSH disconnection and a signalled user manager. The
+# account needs tmux 3.3 or newer, user lingering, the unit installed and active,
+# and the server on its socket to be that unit's own process
+# (bin/fm-remote-tmux-owner-lib.sh classifies it; bin/fm-remote-tmux-guard.sh is
+# the unit's exec target and leaves any other server on the socket untouched).
+# The unit is a system unit with User=<account> because a user unit dies with a
+# signalled `systemd --user`, so installing it needs root: --fix uses `sudo -n`
+# and an account that cannot elevate gets a human gap carrying the exact
+# commands. A --fix that rewrites the unit file reloads systemd but never
+# restarts a running server, because that would close every live second mate.
 #
 # Line protocol, one fact per line, stable for script consumers:
 #   mode=check|fix
@@ -45,9 +64,10 @@
 # fixed. Any remaining fixable or human gap, and any missing required tool,
 # exits non-zero.
 #
-# --fix is idempotent and closes only automatable gaps: it writes and reloads
-# both Firstmate-owned Aqua agents, starts the Linux workers where no Aqua agent
-# applies, recreates the entrypoint symlink, and may add an owned ~/.local/bin
+# --fix is idempotent and closes only automatable gaps: on the herdr backend it
+# writes and reloads both Firstmate-owned Aqua agents, on the tmux backend it
+# installs and starts the system unit and enables lingering, it starts the Linux
+# workers where no Aqua agent applies, recreates the entrypoint symlink, and may add an owned ~/.local/bin
 # wrapper for a required tool it can discover under nvm, asdf, or mise. It never
 # installs packages, creates a login session, writes an auto-login password,
 # changes FileVault, stores an account password, or replaces a non-Firstmate
@@ -67,9 +87,9 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(CDPATH='' cd "$SCRIPT_DIR/.." && pwd -P)}"
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-remote-herdr-owner-lib.sh
 . "$SCRIPT_DIR/fm-remote-herdr-owner-lib.sh"
-REQUIRED_TOOLS=(git jq herdr tasks-axi treehouse)
+# shellcheck source=bin/fm-remote-tmux-owner-lib.sh
+. "$SCRIPT_DIR/fm-remote-tmux-owner-lib.sh"
 HARNESS_TOOLS=(claude codex opencode pi pi-signed grok kimi omp)
-OPTIONAL_TOOLS=(tmux no-mistakes gh)
 LAUNCH_AGENT_LABEL=dev.firstmate.herdr.fm-remote
 # The dedicated remote-secondmate session. The user's interactive Herdr work
 # remains in the separate default session, which this readiness check never
@@ -80,21 +100,47 @@ LAUNCH_AGENT_PLIST="$LAUNCH_AGENT_DIR/$LAUNCH_AGENT_LABEL.plist"
 LAUNCH_AGENT_LOG_DIR="${HOME:-}/Library/Logs"
 LAUNCH_AGENT_LOG="$LAUNCH_AGENT_LOG_DIR/$LAUNCH_AGENT_LABEL.log"
 ENTRYPOINT_LINK="${HOME:-}/.local/bin/fm-remote-entrypoint.sh"
+TMUX_UNIT_DIR=${FM_REMOTE_TMUX_UNIT_DIR:-/etc/systemd/system}
+TMUX_UNIT_PATH="$TMUX_UNIT_DIR/$FM_REMOTE_TMUX_UNIT"
+TMUX_UNIT_MARKER='# Firstmate-owned: fm-remote-tmux.service v1'
+TMUX_MIN_VERSION=3.3
 
 usage() { sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 MODE=check
-case "${1:-}" in
-  '') ;;
-  --fix) MODE=fix; shift ;;
-  --worker-tool-probe)
-    [ "${FM_REMOTE_JOB_ACTIVE:-}" = 1 ] || { printf 'error: worker tool probe requires the remote job worker\n' >&2; exit 64; }
-    MODE='worker-tool-probe'
-    shift
-    ;;
-  *) usage ;;
-esac
-[ "$#" -eq 0 ] || usage
+BACKEND=herdr
+WORKER_TOOL_PROBE=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --fix) MODE=fix; shift ;;
+    --worker-tool-probe)
+      [ "${FM_REMOTE_JOB_ACTIVE:-}" = 1 ] || { printf 'error: worker tool probe requires the remote job worker\n' >&2; exit 64; }
+      WORKER_TOOL_PROBE=1
+      shift
+      ;;
+    --backend)
+      [ "$#" -ge 2 ] || usage
+      BACKEND=$2
+      shift 2
+      ;;
+    --backend=*) BACKEND=${1#--backend=}; shift ;;
+    --print-tmux-unit) MODE=print-tmux-unit; shift ;;
+    *) usage ;;
+  esac
+done
+case "$BACKEND" in herdr|tmux) ;; *) usage ;; esac
+if [ "$WORKER_TOOL_PROBE" -eq 1 ]; then
+  [ "$MODE" = check ] || usage
+  MODE='worker-tool-probe'
+fi
+[ "$MODE" != print-tmux-unit ] || [ "$BACKEND" = tmux ] || usage
+if [ "$BACKEND" = tmux ]; then
+  REQUIRED_TOOLS=(git jq tmux tasks-axi treehouse)
+  OPTIONAL_TOOLS=(no-mistakes gh)
+else
+  REQUIRED_TOOLS=(git jq herdr tasks-axi treehouse)
+  OPTIONAL_TOOLS=(tmux no-mistakes gh)
+fi
 
 PLATFORM=$(fm_remote_job_platform)
 UID_NUM=$(id -u 2>/dev/null) || UID_NUM=
@@ -453,7 +499,7 @@ report_required_tools_from_worker() {
   local job_id probe_stdout probe_stderr probe_exit line fact name value
   local expected=6 count=0 valid=1 seen=' '
   if ! job_id=$(fm_remote_job_stage "${HOME:-}" "$FM_ROOT" "${FM_HOME:-}" \
-    fm-remote-doctor.sh --worker-tool-probe </dev/null); then
+    fm-remote-doctor.sh --worker-tool-probe --backend "$BACKEND" </dev/null); then
     set_check remote-job-probe "fixable: the remote job worker could not accept the required-tool probe" \
       "rerun this command with --fix to restart the worker"
     report_required_tools
@@ -475,7 +521,7 @@ report_required_tools_from_worker() {
     fact=${line#required }
     name=${fact%%=*}
     value=${fact#*=}
-    case "$name" in git|jq|herdr|tasks-axi|treehouse|harness) ;; *) valid=0; continue ;; esac
+    case "$name" in git|jq|herdr|tmux|tasks-axi|treehouse|harness) ;; *) valid=0; continue ;; esac
     case "$seen" in *" $name "*) valid=0; continue ;; esac
     seen="$seen$name "
     count=$((count + 1))
@@ -718,11 +764,316 @@ check_entrypoint_link() {
     "rerun this command with --fix to create it"
 }
 
+# --- tmux backend checks ------------------------------------------------------
+#
+# The tmux route (Linux only) keeps the remote agent in a tmux server owned by
+# the system unit fm-remote-tmux.service. bin/fm-remote-tmux-owner-lib.sh owns
+# the fixed names and the ownership classification; the checks below read them
+# and never restate them.
+
+tmux_version_ok() { # <tmux -V output>; succeeds when it is at least TMUX_MIN_VERSION
+  local raw=$1 ver major minor want_major want_minor
+  ver=$(printf '%s\n' "$raw" | sed -n 's/^tmux[[:space:]]*\(next-\)\{0,1\}\([0-9][0-9]*\.[0-9][0-9]*\).*/\2/p' | head -1)
+  [ -n "$ver" ] || return 2
+  major=${ver%%.*}
+  minor=${ver#*.}
+  want_major=${TMUX_MIN_VERSION%%.*}
+  want_minor=${TMUX_MIN_VERSION#*.}
+  [ "$major" -gt "$want_major" ] || { [ "$major" -eq "$want_major" ] && [ "$minor" -ge "$want_minor" ]; }
+}
+
+tmux_can_elevate() {
+  [ "$UID_NUM" = 0 ] && return 0
+  command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1
+}
+
+tmux_privileged() { # <command...>; runs it as root
+  if [ "$UID_NUM" = 0 ]; then "$@"; else sudo -n "$@"; fi
+}
+
+tmux_account() { id -un 2>/dev/null || true; }
+
+tmux_login_shell() { # prints the account's login shell, else $SHELL, else /bin/sh
+  local user shell=
+  user=$(tmux_account)
+  if [ -n "$user" ] && command -v getent >/dev/null 2>&1; then
+    shell=$(getent passwd "$user" 2>/dev/null | cut -d: -f7 || true)
+  fi
+  if [ -z "$shell" ] || [ ! -x "$shell" ]; then shell=${SHELL:-}; fi
+  if [ -z "$shell" ] || [ ! -x "$shell" ]; then shell=/bin/sh; fi
+  printf '%s' "$shell"
+}
+
+tmux_unit_safe_word() { # <value>; succeeds for a value a systemd command line carries verbatim
+  case "$1" in ''|*[!A-Za-z0-9._/+:@=-]*) return 1 ;; esac
+}
+
+# Renders the unit for the current account. The guard runs through the account's
+# login shell so the server and its panes inherit the account's own environment,
+# the same shape as the herdr launch agent. XDG_RUNTIME_DIR points at the
+# lingering account's runtime directory, which a system unit does not receive.
+render_tmux_unit() { # <tmux-bin> <login-shell> <user> <uid> <socket>
+  local tmux_bin=$1 shell=$2 user=$3 uid=$4 socket=$5
+  cat <<UNIT
+$TMUX_UNIT_MARKER
+[Unit]
+Description=Firstmate remote second-mate tmux server ($FM_REMOTE_TMUX_SESSION)
+After=network.target
+
+[Service]
+Type=simple
+User=$user
+WorkingDirectory=${HOME:-/}
+Environment=XDG_RUNTIME_DIR=/run/user/$uid
+ExecStart=$shell -l -c 'exec $FM_ROOT/bin/fm-remote-tmux-guard.sh $tmux_bin $socket $FM_REMOTE_TMUX_SESSION $FM_REMOTE_TMUX_UNIT'
+Restart=always
+RestartSec=5
+RestartPreventExitStatus=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+# Prints the rendered unit, or returns 1 with the reason in TMUX_UNIT_ERROR.
+tmux_unit_contract() {
+  local tmux_bin shell user socket word
+  TMUX_UNIT_ERROR=
+  tmux_bin=$(command -v tmux 2>/dev/null || true)
+  [ -n "$tmux_bin" ] && [ -x "$tmux_bin" ] || { TMUX_UNIT_ERROR="tmux does not resolve"; return 1; }
+  user=$(tmux_account)
+  [ -n "$user" ] && [ "$UID_NUM" != 0 ] || { TMUX_UNIT_ERROR="the tmux route needs a dedicated non-root account, and this one is ${user:-unreadable}"; return 1; }
+  socket=$(fm_remote_tmux_socket_path) || { TMUX_UNIT_ERROR="the account has no home directory for the socket"; return 1; }
+  shell=$(tmux_login_shell)
+  for word in "$tmux_bin" "$shell" "$user" "$socket" "$FM_ROOT/bin/fm-remote-tmux-guard.sh" "${HOME:-/}"; do
+    tmux_unit_safe_word "$word" || { TMUX_UNIT_ERROR="the path $word has characters a systemd command line cannot carry verbatim"; return 1; }
+  done
+  render_tmux_unit "$tmux_bin" "$shell" "$user" "$UID_NUM" "$socket"
+}
+
+tmux_unit_file_state() { # prints missing | owned-current | owned-stale | foreign
+  local want
+  if [ ! -e "$TMUX_UNIT_PATH" ] && [ ! -L "$TMUX_UNIT_PATH" ]; then printf 'missing\n'; return 0; fi
+  if [ -L "$TMUX_UNIT_PATH" ] || [ ! -f "$TMUX_UNIT_PATH" ] || [ "$(head -1 "$TMUX_UNIT_PATH" 2>/dev/null || true)" != "$TMUX_UNIT_MARKER" ]; then
+    printf 'foreign\n'
+    return 0
+  fi
+  want=$(tmux_unit_contract) || { printf 'owned-stale\n'; return 0; }
+  if [ "$(cat "$TMUX_UNIT_PATH" 2>/dev/null)" = "$want" ]; then printf 'owned-current\n'; else printf 'owned-stale\n'; fi
+}
+
+tmux_unit_install_action() { # the exact commands for an account that cannot elevate
+  printf 'as that account run %s/bin/fm-remote-doctor.sh --backend tmux --print-tmux-unit, install its output as %s as root, run systemctl daemon-reload, then systemctl enable --now %s; or give the account passwordless sudo and rerun --fix' \
+    "$FM_ROOT" "$TMUX_UNIT_PATH" "$FM_REMOTE_TMUX_UNIT"
+}
+
+tmux_unit_active() { command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$FM_REMOTE_TMUX_UNIT" 2>/dev/null; }
+
+tmux_server_class() { # prints "<class> [pid]"
+  local tmux_bin socket
+  tmux_bin=$(command -v tmux 2>/dev/null || true)
+  socket=$(fm_remote_tmux_socket_path) || { printf 'unproven\n'; return 0; }
+  fm_remote_tmux_owner "$tmux_bin" "$socket" "$FM_REMOTE_TMUX_UNIT"
+}
+
+check_tmux_platform() {
+  if [ "$PLATFORM" = linux ]; then
+    record tmux-platform "ok: $PLATFORM"
+  else
+    record tmux-platform "human: the tmux route is Linux-only and this host is $PLATFORM" \
+      "set this route's backend to herdr, or run the remote second mate on a Linux host"
+  fi
+}
+
+check_tmux() {
+  local resolved version rc
+  resolved=$(command -v tmux 2>/dev/null || true)
+  if [ -z "$resolved" ] || [ ! -x "$resolved" ]; then
+    record tmux "human: tmux does not resolve on the remote runtime PATH" \
+      "install tmux $TMUX_MIN_VERSION or newer on that account, or add a ~/.local/bin wrapper for it; the tmux route needs it for the server and every endpoint"
+    return 0
+  fi
+  version=$("$resolved" -V 2>/dev/null || true)
+  if tmux_version_ok "$version"; then
+    record tmux "ok: $resolved ($version)"
+    return 0
+  else
+    rc=$?
+  fi
+  if [ "$rc" -eq 2 ]; then
+    record tmux "human: the version of $resolved cannot be read ('${version:-no output}')" \
+      "run '$resolved -V' as that account and install tmux $TMUX_MIN_VERSION or newer if it is older"
+  else
+    record tmux "human: $resolved is $version, older than the required $TMUX_MIN_VERSION" \
+      "install tmux $TMUX_MIN_VERSION or newer; the foreground server the system unit runs needs tmux -D"
+  fi
+}
+
+check_linger() {
+  local user state
+  user=$(tmux_account)
+  if ! command -v loginctl >/dev/null 2>&1 || [ -z "$user" ]; then
+    record linger "human: loginctl or the account name is unavailable, so user lingering cannot be read" \
+      "install systemd's loginctl on that host and enable lingering for the account with 'loginctl enable-linger <account>'"
+    return 0
+  fi
+  state=$(loginctl show-user "$user" -p Linger --value 2>/dev/null || true)
+  if [ "$state" = yes ]; then
+    record linger "ok: lingering is enabled for $user"
+  else
+    record linger "fixable: lingering is not enabled for $user, so its runtime directory disappears at logout" \
+      "rerun this command with --fix to run 'loginctl enable-linger $user'"
+  fi
+}
+
+check_tmux_unit() {
+  local state
+  if ! tmux_unit_contract >/dev/null; then
+    record tmux-unit "human: the $FM_REMOTE_TMUX_UNIT unit cannot be rendered: $TMUX_UNIT_ERROR" \
+      "fix that first, then rerun this command"
+    record tmux-unit-active "skip: no unit can be installed yet"
+    return 0
+  fi
+  state=$(tmux_unit_file_state)
+  case "$state" in
+    owned-current) record tmux-unit "ok: $TMUX_UNIT_PATH matches the Firstmate-owned contract" ;;
+    foreign)
+      record tmux-unit "human: $TMUX_UNIT_PATH exists but is not Firstmate's own unit" \
+        "inspect that path yourself and move it aside; Firstmate never overwrites a unit it did not write"
+      record tmux-unit-active "skip: the unit file is not Firstmate's"
+      return 0
+      ;;
+    *)
+      if ! command -v systemctl >/dev/null 2>&1; then
+        record tmux-unit "human: systemctl does not resolve, so no system unit can be installed" \
+          "install systemd on that host; the tmux route needs a system unit to own its server"
+        record tmux-unit-active "skip: no unit can be installed yet"
+        return 0
+      elif tmux_can_elevate; then
+        record tmux-unit "fixable: $TMUX_UNIT_PATH is $([ "$state" = missing ] && printf missing || printf 'out of date')" \
+          "rerun this command with --fix to write it with sudo and reload systemd"
+      else
+        record tmux-unit "human: $TMUX_UNIT_PATH is $([ "$state" = missing ] && printf missing || printf 'out of date') and this account cannot elevate" \
+          "$(tmux_unit_install_action)"
+      fi
+      ;;
+  esac
+  if tmux_unit_active; then
+    record tmux-unit-active "ok: $FM_REMOTE_TMUX_UNIT is active"
+  elif [ "$state" = owned-current ] || tmux_can_elevate; then
+    record tmux-unit-active "fixable: $FM_REMOTE_TMUX_UNIT is not active" \
+      "rerun this command with --fix to enable and start it"
+  else
+    record tmux-unit-active "human: $FM_REMOTE_TMUX_UNIT is not active and this account cannot elevate" \
+      "as root run 'systemctl enable --now $FM_REMOTE_TMUX_UNIT'"
+  fi
+}
+
+check_tmux_server() {
+  local class pid socket
+  class=$(tmux_server_class)
+  pid=${class#* }
+  class=${class%% *}
+  socket=$(fm_remote_tmux_socket_path 2>/dev/null || true)
+  case "$class" in
+    unit) record tmux-server "ok: session $FM_REMOTE_TMUX_SESSION is served by pid $pid inside $FM_REMOTE_TMUX_UNIT" ;;
+    absent)
+      if tmux_unit_active; then
+        record tmux-server "fixable: $FM_REMOTE_TMUX_UNIT is active but no tmux server answers on $socket" \
+          "rerun this command with --fix to start it again"
+      else
+        record tmux-server "fixable: no tmux server is running on $socket" \
+          "rerun this command with --fix to start $FM_REMOTE_TMUX_UNIT"
+      fi
+      ;;
+    foreign)
+      record tmux-server "human: the tmux server on $socket (pid $pid) is not a process of $FM_REMOTE_TMUX_UNIT, so it is unverified and left untouched" \
+        "it may hold a live second mate, and a server outside the unit dies with its login session; retire its endpoints or migrate them, stop that server yourself, then rerun this command with --fix"
+      ;;
+    *)
+      record tmux-server "human: a tmux server may answer on $socket but its owner cannot be proven" \
+        "check that /proc/<pid>/cgroup is readable for that server and that tmux answers 'list-sessions -F #{pid}', then rerun this command"
+      ;;
+  esac
+}
+
+fix_enable_linger() {
+  local user
+  user=$(tmux_account)
+  if loginctl enable-linger "$user" >/dev/null 2>&1 || { tmux_can_elevate && tmux_privileged loginctl enable-linger "$user" >/dev/null 2>&1; }; then
+    fix_report linger applied "enabled lingering for $user"
+  else
+    fix_report linger failed "loginctl enable-linger $user was refused; run it as root"
+    return 1
+  fi
+}
+
+fix_tmux_unit() {
+  local want tmp
+  want=$(tmux_unit_contract) || { fix_report tmux-unit failed "$TMUX_UNIT_ERROR"; return 1; }
+  tmux_can_elevate || { fix_report tmux-unit failed "this account cannot elevate with sudo -n"; return 1; }
+  tmp=$(mktemp "${TMPDIR:-/tmp}/fm-remote-tmux-unit.XXXXXX") || { fix_report tmux-unit failed "cannot stage the unit file"; return 1; }
+  printf '%s\n' "$want" > "$tmp"
+  if ! tmux_privileged install -D -m 0644 "$tmp" "$TMUX_UNIT_PATH"; then
+    rm -f -- "$tmp"
+    fix_report tmux-unit failed "cannot install $TMUX_UNIT_PATH"
+    return 1
+  fi
+  rm -f -- "$tmp"
+  if ! tmux_privileged systemctl daemon-reload; then
+    fix_report tmux-unit failed "wrote $TMUX_UNIT_PATH but systemctl daemon-reload failed"
+    return 1
+  fi
+  fix_report tmux-unit applied "wrote $TMUX_UNIT_PATH and reloaded systemd; a running server keeps its current contract until the unit is restarted"
+}
+
+wait_for_tmux_server() {
+  local i=0 class
+  while [ "$i" -lt 20 ]; do
+    class=$(tmux_server_class)
+    [ "${class%% *}" != unit ] || return 0
+    i=$((i + 1))
+    sleep 0.5
+  done
+  return 1
+}
+
+fix_tmux_unit_active() {
+  local class
+  class=$(tmux_server_class)
+  case "${class%% *}" in
+    foreign|unproven)
+      fix_report tmux-unit-active failed "a tmux server this unit does not own holds the socket; leaving it untouched, so the unit was not started"
+      return 1
+      ;;
+  esac
+  tmux_can_elevate || { fix_report tmux-unit-active failed "this account cannot elevate with sudo -n"; return 1; }
+  if ! tmux_privileged systemctl enable --now "$FM_REMOTE_TMUX_UNIT" >/dev/null 2>&1; then
+    fix_report tmux-unit-active failed "systemctl enable --now $FM_REMOTE_TMUX_UNIT was refused"
+    return 1
+  fi
+  if ! wait_for_tmux_server; then
+    fix_report tmux-unit-active failed "$FM_REMOTE_TMUX_UNIT started but its tmux server did not come up within 10s"
+    return 1
+  fi
+  fix_report tmux-unit-active applied "enabled and started $FM_REMOTE_TMUX_UNIT"
+}
+
 run_checks() { # <resolved-login-shell>
   local shell=$1
   CHECK_NAMES=()
   CHECK_VALUES=()
   CHECK_ACTIONS=()
+  if [ "$BACKEND" = tmux ]; then
+    check_tmux_platform
+    check_tmux
+    check_linger
+    check_remote_job_worker
+    check_tmux_unit
+    check_tmux_server
+    check_entrypoint_link
+    return 0
+  fi
   check_herdr
   check_gui_session
   check_remote_job_worker
@@ -831,7 +1182,7 @@ link_entrypoint() {
 }
 
 apply_fixes() { # <resolved-login-shell>
-  local shell=$1 i name value launch_agent_written=0 launch_agent_reloaded=0 remote_job_fixed=0
+  local shell=$1 i name value launch_agent_written=0 launch_agent_reloaded=0 remote_job_fixed=0 tmux_started=0
   repair_required_wrappers
   i=0
   while [ "$i" -lt "${#CHECK_NAMES[@]}" ]; do
@@ -872,12 +1223,25 @@ apply_fixes() { # <resolved-login-shell>
         fi
         start_herdr_server || true
         ;;
+      linger) fix_enable_linger || true ;;
+      tmux-unit) fix_tmux_unit || true ;;
+      tmux-unit-active|tmux-server)
+        [ "$tmux_started" -eq 0 ] || continue
+        tmux_started=1
+        fix_tmux_unit_active || true
+        ;;
       entrypoint-link) link_entrypoint || true ;;
     esac
   done
 }
 
 # --- report -----------------------------------------------------------------
+
+if [ "$MODE" = print-tmux-unit ]; then
+  # The unit exactly as --fix would install it, for an account that cannot elevate.
+  tmux_unit_contract || { printf 'error: %s\n' "$TMUX_UNIT_ERROR" >&2; exit 1; }
+  exit 0
+fi
 
 if [ "$MODE" = worker-tool-probe ]; then
   report_required_tools
