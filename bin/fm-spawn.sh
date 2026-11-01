@@ -993,6 +993,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
+# shellcheck source=bin/fm-remote-tmux-owner-lib.sh
+. "$SCRIPT_DIR/fm-remote-tmux-owner-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-project-capacity-lib.sh
@@ -1418,7 +1420,7 @@ fi
 
 spawn_remote_secondmate() {
   local id=$1 remote host root home harness positional model effort backend out rc meta tmp
-  local remote_backend remote_target remote_harness remote_herdr_session registry_lock remote_lock remote_generation
+  local remote_backend remote_target remote_harness remote_herdr_session remote_tmux_session route_backend registry_lock remote_lock remote_generation
   local remote_traceparent remote_recorded_traceparent sm_primary_head sync_out sync_rc
   local sm_scope sm_plan sm_profile sm_account sm_account_root sm_account_provider remote_profile
   local account_config
@@ -1452,6 +1454,7 @@ spawn_remote_secondmate() {
   host=$(secondmate_registry_field "$DATA/secondmates.md" "$id" host)
   root=$(secondmate_registry_field "$DATA/secondmates.md" "$id" root)
   home=$(secondmate_registry_field "$DATA/secondmates.md" "$id" home)
+  route_backend=$(secondmate_registry_field "$DATA/secondmates.md" "$id" backend)
   positional=${POS[1]:-}
   if [ "${#POS[@]}" -gt 2 ]; then
     fm_lock_release "$registry_lock" || true
@@ -1543,16 +1546,20 @@ spawn_remote_secondmate() {
       [ -n "$effort" ] || effort=-
     fi
   fi
-  # A remote second mate always runs on Herdr: its server belongs to the host's
-  # own GUI login session, so the endpoint outlives every SSH connection that
-  # supervises it. bin/fm-remote-doctor.sh gates that host on the same
-  # requirement, and the remote home's config/backend never overrides it.
+  # A remote second mate runs on its route's backend, the one data/secondmates.md
+  # records (herdr unless the route says tmux): a Herdr server belongs to the
+  # host's own GUI login session and the tmux server to a system unit, so the
+  # endpoint outlives every SSH connection that supervises it.
+  # bin/fm-remote-doctor.sh gates that host on the same requirement, and the
+  # remote home's config/backend never overrides it. A --backend that disagrees
+  # with the route is refused: moving a route to the other backend is an
+  # explicit migration, never a launch flag.
   case "${BACKEND_ARG:--}" in
-  - | herdr) backend=herdr ;;
+  - | "$route_backend") backend=$route_backend ;;
   *)
     fm_lock_release "$registry_lock" || true
     fm_lock_release "$SPAWN_TASK_LOCK" || true
-    echo "error: a remote secondmate runs only on the herdr backend, not '$BACKEND_ARG'" >&2
+    echo "error: a remote secondmate runs only on its route's $route_backend backend, not '$BACKEND_ARG'" >&2
     return 1
     ;;
   esac
@@ -1682,6 +1689,7 @@ spawn_remote_secondmate() {
   remote_target=$(printf '%s\n' "$out" | sed -n 's/^target=//p' | tail -1)
   remote_harness=$(printf '%s\n' "$out" | sed -n 's/^harness=//p' | tail -1)
   remote_herdr_session=$(printf '%s\n' "$out" | sed -n 's/^herdr_session=//p' | tail -1)
+  remote_tmux_session=$(printf '%s\n' "$out" | sed -n 's/^tmux_session=//p' | tail -1)
   # The host reports the profile its launch actually ran under, so the record
   # below carries the confirmed one, and a host that did not apply the profile
   # (an older copy, a refused guard) is never recorded as if it had.
@@ -1693,11 +1701,11 @@ spawn_remote_secondmate() {
     echo "error: remote launch confirmed spend profile '${remote_profile:-none}', expected '${sm_profile:-none}'; preserving the remote route for reconciliation" >&2
     return 1
   fi
-  if [ "$remote_backend" != herdr ]; then
+  if [ "$remote_backend" != "$route_backend" ]; then
     fm_lock_release "$remote_lock" || true
     fm_lock_release "$registry_lock" || true
     fm_lock_release "$SPAWN_TASK_LOCK" || true
-    echo "error: remote launch returned backend '${remote_backend:-missing}', expected herdr; preserving the remote route for reconciliation" >&2
+    echo "error: remote launch returned backend '${remote_backend:-missing}', expected $route_backend; preserving the remote route for reconciliation" >&2
     return 1
   fi
   [ -n "$remote_target" ] && [ "$remote_harness" = "$harness" ] || {
@@ -1707,7 +1715,15 @@ spawn_remote_secondmate() {
     echo "error: remote launch returned malformed route metadata; preserving the remote route for reconciliation" >&2
     return 1
   }
-  if [ "$remote_herdr_session" != fm-remote ] || [ "${remote_target%%:*}" != "$remote_herdr_session" ]; then
+  if [ "$route_backend" = tmux ]; then
+    if [ "$remote_tmux_session" != "$FM_REMOTE_TMUX_SESSION" ] || [ "${remote_target%%:*}" != "$remote_tmux_session" ]; then
+      fm_lock_release "$remote_lock" || true
+      fm_lock_release "$registry_lock" || true
+      fm_lock_release "$SPAWN_TASK_LOCK" || true
+      echo "error: remote launch returned tmux session '${remote_tmux_session:-missing}', expected '$FM_REMOTE_TMUX_SESSION'; preserving the remote route for reconciliation" >&2
+      return 1
+    fi
+  elif [ "$remote_herdr_session" != fm-remote ] || [ "${remote_target%%:*}" != "$remote_herdr_session" ]; then
     fm_lock_release "$remote_lock" || true
     fm_lock_release "$registry_lock" || true
     fm_lock_release "$SPAWN_TASK_LOCK" || true
@@ -1743,7 +1759,11 @@ spawn_remote_secondmate() {
     echo "remote_host=$host"
     echo "remote_root=$root"
     echo "remote_backend=$remote_backend"
-    echo "remote_herdr_session=$remote_herdr_session"
+    if [ "$route_backend" = tmux ]; then
+      echo "remote_tmux_session=$remote_tmux_session"
+    else
+      echo "remote_herdr_session=$remote_herdr_session"
+    fi
     echo "remote_target=$remote_target"
     [ -z "$remote_recorded_traceparent" ] || echo "traceparent=$remote_recorded_traceparent"
   } >"$tmp"

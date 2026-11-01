@@ -2,7 +2,7 @@
 # Host-local lifecycle control for the remote secondmate home selected by fm-on.
 #
 # Usage:
-#   fm-remote-secondmate-control.sh launch <id> <harness> <model|-> <effort|-> herdr [--scope-profile=<name>] [traceparent]
+#   fm-remote-secondmate-control.sh launch <id> <harness> <model|-> <effort|-> herdr|tmux [--scope-profile=<name>] [traceparent]
 #   fm-remote-secondmate-control.sh relaunch <id> <harness> <model|default|-> <effort|default|-> [--scope-profile=<name>]
 #   fm-remote-secondmate-control.sh state <id>
 #   fm-remote-secondmate-control.sh route <id>
@@ -15,13 +15,19 @@
 #   fm-remote-secondmate-control.sh update <id>
 #   fm-remote-secondmate-control.sh retire <id> [--force]
 #
-# Remote placement ends here, but the second-mate agent always runs on the
-# Herdr backend in the dedicated fm-remote session, so launch refuses any other
-# selection rather than reading this home's config/backend. The interactive
-# default session remains for the user's work.
+# Remote placement ends here, but the second-mate agent runs on its route's
+# backend: Herdr in the dedicated fm-remote session, or tmux in the
+# fm-remote-tmux session of the server the fm-remote-tmux.service system unit
+# owns (bin/fm-remote-tmux-owner-lib.sh). The parent names the route's backend
+# on launch, and launch refuses any other selection rather than reading this
+# home's config/backend. The interactive default Herdr session remains for the
+# user's work. An endpoint recorded on the other backend, in another Herdr
+# session, or on a tmux server outside the unit is unverified and left untouched.
+# On the tmux backend every verb pins the host-local tmux calls to that one
+# server (FM_TMUX_SOCKET and FM_TMUX_SESSION, bin/fm-tmux-lib.sh).
 # fm-spawn/fm-send/fm-teardown keep owning the local endpoint mechanics.
 # The home's own workers keep their ordinary backend selection.
-# bin/fm-remote-doctor.sh owns that host's readiness for Herdr.
+# bin/fm-remote-doctor.sh owns that host's readiness for either backend.
 # docs/remote-secondmates.md owns why.
 #
 # With <parent-commit>, sync follows the PARENT PRIMARY's default-branch commit,
@@ -36,8 +42,8 @@
 # A private parent-route state directory stores only the remote secondmate
 # agent's endpoint record; the home's own
 # state/*.meta remains reserved for workers the secondmate supervises.
-# Retirement closes only this secondmate's panes or workspace and never
-# stops fm-remote or removes a sibling secondmate's workspace or panes.
+# Retirement closes only this secondmate's panes, workspace, or window and never
+# stops fm-remote or fm-remote-tmux or removes a sibling secondmate's.
 #
 # Relaunch is not a second lifecycle implementation: it runs the ORDINARY local
 # control plane here, because from this host the mate is a plain local
@@ -86,6 +92,8 @@ fi
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-remote-tmux-owner-lib.sh
+. "$SCRIPT_DIR/fm-remote-tmux-owner-lib.sh"
 # shellcheck source=bin/fm-ff-lib.sh
 . "$SCRIPT_DIR/fm-ff-lib.sh"
 # shellcheck source=bin/fm-pending-reply-lib.sh
@@ -105,8 +113,33 @@ validate_home() { # <id>
 
 meta_path() { printf '%s/%s.meta\n' "$CONTROL_STATE" "$1"; }
 
-remote_endpoint_load() {
-  local id=$1 herdr_session
+# Exports the pin that confines every host-local tmux call to the unit's server,
+# and reports the socket this home's tmux endpoints must name.
+remote_tmux_pin() {
+  REMOTE_TMUX_SOCKET=$(fm_remote_tmux_socket_path) || return 1
+  FM_TMUX_SOCKET=$REMOTE_TMUX_SOCKET
+  FM_TMUX_SESSION=$FM_REMOTE_TMUX_SESSION
+  export FM_TMUX_SOCKET FM_TMUX_SESSION
+}
+
+# Succeeds only for a server that is the unit's own process. An absent server is
+# not an error here: the endpoint then reads missing, which is what lets the
+# parent relaunch it. A server outside the unit, or one whose owner cannot be
+# read, is unverified.
+remote_tmux_server_verify() { # <tmux-bin>
+  local owner class
+  owner=$(fm_remote_tmux_owner "$1" "$REMOTE_TMUX_SOCKET" "$FM_REMOTE_TMUX_UNIT")
+  class=${owner%% *}
+  case "$class" in
+    unit|absent) return 0 ;;
+    foreign) REMOTE_ENDPOINT_ERROR="the tmux server on $REMOTE_TMUX_SOCKET (pid ${owner#* }) is not a process of $FM_REMOTE_TMUX_UNIT; it is unverified and left untouched" ;;
+    *) REMOTE_ENDPOINT_ERROR="the owner of the tmux server on $REMOTE_TMUX_SOCKET cannot be proven; it is left untouched" ;;
+  esac
+  return 1
+}
+
+remote_endpoint_load() { # <id> [expected-backend]
+  local id=$1 want=${2:-} herdr_session tmux_socket tmux_bin
   REMOTE_ENDPOINT_ERROR=
   REMOTE_ENDPOINT_META=$(meta_path "$id")
   if ! fm_backend_validate_task_endpoint "$REMOTE_ENDPOINT_META" "$id" 2>/dev/null; then
@@ -115,26 +148,54 @@ remote_endpoint_load() {
   fi
   REMOTE_ENDPOINT_BACKEND=$FM_BACKEND_VALIDATED_BACKEND
   REMOTE_ENDPOINT_TARGET=$FM_BACKEND_VALIDATED_TARGET
-  if [ "$REMOTE_ENDPOINT_BACKEND" != herdr ]; then
-    REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint is recorded on backend '$REMOTE_ENDPOINT_BACKEND', expected 'herdr'; refusing access until it is explicitly migrated"
+  if [ -n "$want" ] && [ "$REMOTE_ENDPOINT_BACKEND" != "$want" ]; then
+    REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint is recorded on backend '$REMOTE_ENDPOINT_BACKEND', expected '$want'; refusing access until it is explicitly migrated"
     return 1
   fi
-  herdr_session=$(fm_backend_meta_exact_value "$REMOTE_ENDPOINT_META" herdr_session 2>/dev/null || true)
-  if [ "$herdr_session" != "$REMOTE_HERDR_SESSION" ]; then
-    REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint is recorded in Herdr session '${herdr_session:-missing}', expected '$REMOTE_HERDR_SESSION'; refusing access until it is explicitly migrated"
-    return 1
-  fi
-  case "$REMOTE_ENDPOINT_TARGET" in
-    "$REMOTE_HERDR_SESSION":?*) ;;
+  case "$REMOTE_ENDPOINT_BACKEND" in
+    herdr)
+      herdr_session=$(fm_backend_meta_exact_value "$REMOTE_ENDPOINT_META" herdr_session 2>/dev/null || true)
+      if [ "$herdr_session" != "$REMOTE_HERDR_SESSION" ]; then
+        REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint is recorded in Herdr session '${herdr_session:-missing}', expected '$REMOTE_HERDR_SESSION'; refusing access until it is explicitly migrated"
+        return 1
+      fi
+      case "$REMOTE_ENDPOINT_TARGET" in
+        "$REMOTE_HERDR_SESSION":?*) ;;
+        *)
+          REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint target '$REMOTE_ENDPOINT_TARGET' is outside Herdr session '$REMOTE_HERDR_SESSION'; refusing access until it is explicitly migrated"
+          return 1
+          ;;
+      esac
+      ;;
+    tmux)
+      remote_tmux_pin || { REMOTE_ENDPOINT_ERROR="the tmux socket path cannot be resolved without an account home"; return 1; }
+      tmux_socket=$(fm_backend_meta_exact_value "$REMOTE_ENDPOINT_META" tmux_socket 2>/dev/null || true)
+      if [ "$tmux_socket" != "$REMOTE_TMUX_SOCKET" ]; then
+        REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint is recorded on a tmux server '${tmux_socket:-missing}', expected '$REMOTE_TMUX_SOCKET'; refusing access until it is explicitly migrated"
+        return 1
+      fi
+      case "$REMOTE_ENDPOINT_TARGET" in
+        "$FM_REMOTE_TMUX_SESSION":?*) ;;
+        *)
+          REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint target '$REMOTE_ENDPOINT_TARGET' is outside tmux session '$FM_REMOTE_TMUX_SESSION'; refusing access until it is explicitly migrated"
+          return 1
+          ;;
+      esac
+      tmux_bin=$(type -P tmux 2>/dev/null || true)
+      if ! remote_tmux_server_verify "$tmux_bin"; then
+        REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint: $REMOTE_ENDPOINT_ERROR; refusing access until it is explicitly migrated"
+        return 1
+      fi
+      ;;
     *)
-      REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint target '$REMOTE_ENDPOINT_TARGET' is outside Herdr session '$REMOTE_HERDR_SESSION'; refusing access until it is explicitly migrated"
+      REMOTE_ENDPOINT_ERROR="remote secondmate $id endpoint is recorded on backend '$REMOTE_ENDPOINT_BACKEND', expected 'herdr' or 'tmux'; refusing access until it is explicitly migrated"
       return 1
       ;;
   esac
 }
 
-remote_endpoint_require() {
-  remote_endpoint_load "$1" || die "$REMOTE_ENDPOINT_ERROR"
+remote_endpoint_require() { # <id> [expected-backend]
+  remote_endpoint_load "$@" || die "$REMOTE_ENDPOINT_ERROR"
 }
 
 state_value() { # <id>; prints recovery-grade state
@@ -162,7 +223,13 @@ print_route() { # <id>
   printf 'schema=fm-remote-secondmate-control.v1\n'
   printf 'backend=%s\n' "$REMOTE_ENDPOINT_BACKEND"
   printf 'target=%s\n' "$REMOTE_ENDPOINT_TARGET"
-  printf 'herdr_session=%s\n' "$REMOTE_HERDR_SESSION"
+  case "$REMOTE_ENDPOINT_BACKEND" in
+    tmux)
+      printf 'tmux_session=%s\n' "$FM_REMOTE_TMUX_SESSION"
+      printf 'tmux_socket=%s\n' "$REMOTE_TMUX_SOCKET"
+      ;;
+    *) printf 'herdr_session=%s\n' "$REMOTE_HERDR_SESSION" ;;
+  esac
   printf 'harness=%s\n' "$harness"
   printf 'model=%s\n' "$model"
   printf 'effort=%s\n' "$effort"
@@ -185,7 +252,7 @@ cmd_route() {
 
 cmd_launch() {
   local id=$1 harness=$2 model=$3 effort=$4 selected_backend=$5 traceparent='' scope_profile='' extra
-  local current meta out herdr_session
+  local current meta out herdr_session spawn_env=()
   shift 5
   for extra in "$@"; do
     case "$extra" in
@@ -204,14 +271,22 @@ cmd_launch() {
   if [ "$effort" = ultra ]; then
     "$SCRIPT_DIR/fm-harness.sh" validate-native-effort "$harness" "$model" "$effort" || return 1
   fi
-  # Herdr is required on this host, not merely preferred: its server belongs to
-  # the GUI login session, so the endpoint survives every SSH disconnection that
-  # a remote route depends on. bin/fm-remote-doctor.sh is the readiness owner.
-  case "$selected_backend" in herdr) ;; *) die "a remote secondmate runs only on the herdr backend, not '$selected_backend'" ;; esac
+  # The route's backend is required on this host, not merely preferred: a Herdr
+  # server belongs to the GUI login session and the tmux server to a system
+  # unit, so the endpoint survives every SSH disconnection that a remote route
+  # depends on. bin/fm-remote-doctor.sh is the readiness owner.
+  case "$selected_backend" in
+    herdr) spawn_env=(HERDR_SESSION="$REMOTE_HERDR_SESSION") ;;
+    tmux)
+      remote_tmux_pin || die "the tmux socket path cannot be resolved without an account home"
+      remote_tmux_server_verify "$(type -P tmux 2>/dev/null || true)" || die "$REMOTE_ENDPOINT_ERROR"
+      ;;
+    *) die "a remote secondmate runs only on the herdr or tmux backend, not '$selected_backend'" ;;
+  esac
   mkdir -p "$CONTROL_STATE" "$CONTROL_DATA"
   meta=$(meta_path "$id")
   if [ -f "$meta" ]; then
-    remote_endpoint_require "$id"
+    remote_endpoint_require "$id" "$selected_backend"
     current=$(fm_backend_agent_state "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null || printf 'unreadable\n')
     case "$current" in
       alive)
@@ -235,7 +310,7 @@ cmd_launch() {
   [ "$effort" = - ] || ARGS+=(--effort "$effort")
   [ -z "$scope_profile" ] || ARGS+=(--scope-profile "$scope_profile")
   [ -z "$traceparent" ] || ARGS+=(--traceparent "$traceparent")
-  if ! out=$(HERDR_SESSION="$REMOTE_HERDR_SESSION" FM_HOME="$FM_ROOT" FM_ROOT_OVERRIDE="$FM_ROOT" \
+  if ! out=$(env ${spawn_env[@]+"${spawn_env[@]}"} FM_HOME="$FM_ROOT" FM_ROOT_OVERRIDE="$FM_ROOT" \
     FM_STATE_OVERRIDE="$CONTROL_STATE" FM_DATA_OVERRIDE="$CONTROL_DATA" \
     FM_CONFIG_OVERRIDE="$TARGET_HOME/config" FM_SKIP_SECONDMATE_INHERIT=1 \
     FM_SKIP_SECONDMATE_SYNC=1 \
@@ -244,9 +319,14 @@ cmd_launch() {
     die "remote host-local secondmate launch failed"
   fi
   [ -f "$meta" ] || die "remote launch returned without endpoint metadata"
-  herdr_session=$(fm_meta_get "$meta" herdr_session)
-  [ "$herdr_session" = "$REMOTE_HERDR_SESSION" ] \
-    || die "remote launch recorded Herdr session '${herdr_session:-missing}', expected '$REMOTE_HERDR_SESSION'"
+  if [ "$selected_backend" = herdr ]; then
+    herdr_session=$(fm_meta_get "$meta" herdr_session)
+    [ "$herdr_session" = "$REMOTE_HERDR_SESSION" ] \
+      || die "remote launch recorded Herdr session '${herdr_session:-missing}', expected '$REMOTE_HERDR_SESSION'"
+  fi
+  # The record is the single source print_route reads, and remote_endpoint_load
+  # re-proves it against this host's pinned server or session.
+  remote_endpoint_require "$id" "$selected_backend"
   print_route "$id"
 }
 

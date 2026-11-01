@@ -2,7 +2,7 @@
 # Register and provision a whole secondmate home on an SSH-reachable host.
 #
 # Usage:
-#   fm-remote-home-seed.sh <id> <ssh-alias> <remote-root> <remote-home> {<project>[=<origin-url>]...|--no-projects}
+#   fm-remote-home-seed.sh <id> <ssh-alias> <remote-root> <remote-home> [--backend herdr|tmux] {<project>[=<origin-url>]...|--no-projects}
 #
 # The SSH alias must already reach a host whose non-interactive PATH exposes the
 # fixed fm-remote-entrypoint.sh from <remote-root>. The command records the
@@ -10,6 +10,13 @@
 # fm-remote-doctor.sh readiness before touching it, sends a bounded provisioning
 # manifest through fm-on.sh, and lets the remote host clone its own Firstmate
 # home and project origins. No project tree or secret environment is copied.
+#
+# --backend names the route's remote backend (default herdr, which writes
+# nothing, so an existing route's record is unchanged). tmux records
+# `backend: tmux` right after home: and gates the host on the tmux readiness of
+# bin/fm-remote-doctor.sh instead of herdr's. A route's backend never changes by
+# reseeding: re-running a registered route with a different backend is refused,
+# because moving a live mate between backends is an explicit migration.
 #
 # Each project needs an origin the remote account can clone. Firstmate resolves
 # that origin and names it as <project>=<origin-url>, so seeding never requires
@@ -83,8 +90,17 @@ case "$REMOTE_ROOT/" in "$REMOTE_HOME/"*) die "remote code root must not be insi
 NO_PROJECTS=0
 PROJECT_NAMES=()
 PROJECT_ORIGINS=()
+ROUTE_BACKEND=herdr
+EXPECT_BACKEND=0
 for arg in "$@"; do
-  if [ "$arg" = --no-projects ]; then
+  if [ "$EXPECT_BACKEND" -eq 1 ]; then
+    ROUTE_BACKEND=$arg
+    EXPECT_BACKEND=0
+  elif [ "$arg" = --backend ]; then
+    EXPECT_BACKEND=1
+  elif [ "${arg#--backend=}" != "$arg" ]; then
+    ROUTE_BACKEND=${arg#--backend=}
+  elif [ "$arg" = --no-projects ]; then
     NO_PROJECTS=1
   else
     name=${arg%%=*}
@@ -99,6 +115,8 @@ for arg in "$@"; do
     PROJECT_ORIGINS+=("$origin")
   fi
 done
+[ "$EXPECT_BACKEND" -eq 0 ] || die "--backend needs herdr or tmux"
+case "$ROUTE_BACKEND" in herdr|tmux) ;; *) die "invalid remote backend: $ROUTE_BACKEND (expected herdr or tmux)" ;; esac
 if [ "$NO_PROJECTS" -eq 1 ]; then
   [ "${#PROJECT_NAMES[@]}" -eq 0 ] || die "--no-projects cannot be combined with project names"
 else
@@ -120,6 +138,8 @@ if [ -e "$REG" ] || [ -L "$REG" ]; then
       && [ "$SECONDMATE_REGISTRY_ROOT" = "$REMOTE_ROOT" ] \
       && [ "$SECONDMATE_REGISTRY_HOME" = "$REMOTE_HOME" ] \
       || die "secondmate $ID is already registered to a different local or remote home"
+    [ "$SECONDMATE_REGISTRY_BACKEND" = "$ROUTE_BACKEND" ] \
+      || die "secondmate $ID is already registered on the $SECONDMATE_REGISTRY_BACKEND backend; reseeding does not change a route's backend, and moving a live mate is an explicit migration"
   fi
 fi
 
@@ -223,8 +243,10 @@ MANIFEST_BYTES=$(LC_ALL=C wc -c < "$TMP/manifest" | tr -d ' ')
 TODAY=$(date +%F)
 REG_TMP="$TMP/secondmates.next"
 if [ -f "$REG" ]; then grep -vE "^- $ID( |$)" "$REG" > "$REG_TMP" || true; else : > "$REG_TMP"; fi
-printf -- '- %s - %s (host: %s; root: %s; home: %s; scope: %s; projects: %s; added %s)\n' \
-  "$ID" "$SUMMARY" "$HOST" "$REMOTE_ROOT" "$REMOTE_HOME" "$SCOPE" "$PROJECTS_CSV" "$TODAY" >> "$REG_TMP"
+ROUTE_BACKEND_FIELD=
+[ "$ROUTE_BACKEND" = herdr ] || ROUTE_BACKEND_FIELD="backend: $ROUTE_BACKEND; "
+printf -- '- %s - %s (host: %s; root: %s; home: %s; %sscope: %s; projects: %s; added %s)\n' \
+  "$ID" "$SUMMARY" "$HOST" "$REMOTE_ROOT" "$REMOTE_HOME" "$ROUTE_BACKEND_FIELD" "$SCOPE" "$PROJECTS_CSV" "$TODAY" >> "$REG_TMP"
 mv -f -- "$REG_TMP" "$REG"
 if ! secondmate_registry_validate_bindings "$REG" secondmate_registry_path_key "$ID" "$REMOTE_HOME"; then
   if [ "$REG_EXISTED" -eq 1 ]; then cp "$TMP/registry.before" "$REG"; else rm -f -- "$REG"; fi
