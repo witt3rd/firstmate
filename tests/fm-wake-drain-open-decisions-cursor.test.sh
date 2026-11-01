@@ -408,6 +408,29 @@ test_kind_changes_invalidate_folded_decisions() {
   pass "folded decisions are rebuilt when task-kind evidence changes"
 }
 
+test_open_decisions_over_former_byte_cap_all_surface() {
+  local dir state out i payload
+  dir=$(make_case over-cap)
+  state="$dir/state"
+  out="$dir/drain.out"
+  payload=$(printf '%0180d' 0)
+  i=1
+  while [ "$i" -le 30 ]; do
+    printf 'needs-decision [key=k%02d]: question-%02d %s\n' "$i" "$i" "$payload" > "$state/task$i.status"
+    i=$((i + 1))
+  done
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed with many open decisions"
+  i=1
+  while [ "$i" -le 30 ]; do
+    grep -F "$(printf 'question-%02d' "$i")" "$out" >/dev/null || fail "open decision $i was dropped: $(cat "$out")"
+    i=$((i + 1))
+  done
+  if grep -F 'more omitted' "$out" | grep -F 'OPEN DECISIONS' >/dev/null; then
+    fail "OPEN DECISIONS still omitted items"
+  fi
+  pass "open decisions beyond the former byte cap all surface"
+}
+
 test_terminal_supersession_reaches_cached_drains
 test_kind_changes_invalidate_folded_decisions
 test_truncated_log_falls_back_to_a_full_refold_not_a_dropped_decision
@@ -417,3 +440,4 @@ test_cursor_cache_read_failure_refolds_without_replaying_unread_status
 test_pre_fix_cursor_refolds_corr_tagged_decision
 test_previous_fold_cache_is_refolded_under_current_semantics
 test_buried_decision_survives_many_growing_drains_and_resolution_clears_it
+test_open_decisions_over_former_byte_cap_all_surface
