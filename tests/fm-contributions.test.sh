@@ -1743,7 +1743,9 @@ test_many_reviews_stay_readable() {
   [ "$(wc -c < "$home/forge/reviews.json")" -gt 1048576 ] || fail 'the many-review fixture no longer exceeds the record cap'
   registered_checks "$home" >/dev/null
   size=$(wc -c < "$home/data/delivery/contributions.json" | tr -d " ")
-  [ "$size" -lt 524288 ] || fail "a many-review observation wrote a $size-byte record"
+  [ "$size" -lt 16777216 ] || fail "a many-review observation wrote a $size-byte record, over the record bound"
+  jq -e 'all(.records[0].observation.events[]; (.body | length) == 4000)' \
+    "$home/data/delivery/contributions.json" >/dev/null || fail 'a stored review body was cut'
   jq -e '.records[0].observation.reviews | length == 300
     and all(.[]; keys == ["commit_id","id","state","submitted_at","user"] and .user == {login:.user.login})' \
     "$home/data/delivery/contributions.json" >/dev/null || fail 'stored reviews carry more than the classified fields'
