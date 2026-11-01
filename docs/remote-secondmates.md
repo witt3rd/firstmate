@@ -11,6 +11,7 @@ Firstmate does not support placing an individual worker remotely or failing a re
 
 | Task | Start here |
 | --- | --- |
+| Run a remote second mate without Herdr | [The tmux route](#the-tmux-route) |
 | Prepare the primary and the remote host | [Prerequisites](#prerequisites) and [non-interactive tool contract](#non-interactive-tool-contract) |
 | Check whether a host is ready, or repair it | [Readiness, repair, and the human steps](#readiness-repair-and-the-human-steps) |
 | Create the route and the remote home | [Provision a route](#provision-a-route) |
@@ -21,15 +22,57 @@ Firstmate does not support placing an individual worker remotely or failing a re
 
 ## Where the remote agent runs
 
-The remote second-mate agent itself always runs on the [Herdr backend](herdr-backend.md) in the shared `fm-remote` session.
-Every path that provisions or launches one refuses a host that is not ready for it.
+The remote second-mate agent runs on its route's backend, a per-route setting that is either herdr or tmux.
+Every path that provisions or launches one refuses a host that is not ready for that backend.
 
+- A route runs on the [Herdr backend](herdr-backend.md) in the shared `fm-remote` session unless its record says otherwise.
+  Every existing route is a herdr route and needs no migration.
+- A route whose `data/secondmates.md` record carries `backend: tmux` runs on the tmux backend in the `fm-remote-tmux` session, described under [The tmux route](#the-tmux-route).
+- Both backends can serve different routes, even on one host.
+  Moving a route between them is an explicit migration, never a launch flag, so a route's backend is not changed by reseeding it.
 - `fm-remote` is reserved for remote fleet work and must not be used for personal work.
 - The user's interactive Herdr session remains `default` and is not a remote-secondmate prerequisite.
 - Herdr's remote-session server belongs to the host's own GUI login session rather than to the SSH connection.
   As a result, the agent's endpoint survives every disconnection the primary's supervision depends on.
 - Local second mates are unaffected and keep their ordinary backend and session selection.
   So do the workers a remote second mate supervises inside its own home.
+
+## The tmux route
+
+The tmux route runs the remote agent without Herdr and is Linux only.
+Its server is a tmux server that the system unit `fm-remote-tmux.service` owns, so the endpoint survives every SSH disconnection and a restart of the primary.
+
+- The unit is a system unit with `User=<account>`, not a user unit, because a user unit dies when `systemd --user` is signalled or exits, and a system unit does not.
+- Lingering must be on for the account, because the unit gives the server the account's runtime directory.
+- The server listens on one explicit socket, `~/.firstmate/remote-tmux/fm-remote-tmux.sock`, rather than a `tmux -L` name, because the default socket directory depends on `TMUX_TMPDIR` and `XDG_RUNTIME_DIR`, which a system unit and the SSH job worker do not share.
+  Its session is `fm-remote-tmux`, so it never collides with a herdr route's `fm-remote`.
+- Each remote second mate is one window, `fm-remote-tmux:fm-<id>`.
+  The host-local record under `state/parent-route/` names the window and the server (`tmux_socket=`), and every verb pins its tmux calls to that server.
+- The workers a remote second mate supervises keep the home's ordinary backend selection, so inside the mate's pane they use that same server.
+
+Select the route when seeding it:
+
+```sh
+bin/fm-remote-home-seed.sh <id> <ssh-alias> <remote-root> <remote-home> --backend tmux {<project>[=<origin-url>]...|--no-projects}
+```
+
+### How the guard converges on one server
+
+[`bin/fm-remote-tmux-guard.sh`](../bin/fm-remote-tmux-guard.sh) is the unit's exec target, run through the account's login shell.
+When nothing owns the socket it execs the server in the foreground, so the server is the unit's main process.
+When a server already holds the socket it exits with status 3, which the unit does not restart, and leaves that server exactly as it was.
+
+| Socket owner | Guard action | Doctor verdict |
+| --- | --- | --- |
+| Nothing | Execs the server. | Fixable. |
+| A process of the unit | Exits 3, nothing to start. | Ready. |
+| A server outside the unit (an SSH command, a login session, a client's autostart) | Exits 3, untouched. | Human gap. |
+| A server whose owner cannot be read | Exits 3, untouched. | Human gap. |
+
+Unlike the herdr guard, it never takes a session over, because a foreign tmux server may hold a live second mate.
+Ownership is read from the server's cgroup (`/system.slice/fm-remote-tmux.service`), a kernel fact, by [`bin/fm-remote-tmux-owner-lib.sh`](../bin/fm-remote-tmux-owner-lib.sh), which owns the fixed names and the classification.
+An endpoint on a server outside the unit, recorded on the other backend, or recorded without its server is unverified, and launch, liveness recovery, control, and retirement leave it untouched.
+A stopped server reads as missing, so the primary's liveness sweep relaunches the mate into the restarted server, exactly as for any dead endpoint.
 
 ## Prerequisites
 
@@ -265,6 +308,21 @@ Over the plain SSH doctor bootstrap, it writes and reloads two Firstmate-owned l
 
 Both are scoped with `LimitLoadToSessionType=Aqua` and bootstrapped in `gui/<uid>`.
 
+### Repair on a tmux route
+
+The doctor takes `--backend herdr|tmux` and defaults to herdr, so every herdr route's doctor call is unchanged.
+For a tmux route `fm-remote-readiness-lib.sh` passes `--backend tmux`, and herdr is neither required nor inspected.
+The tmux checks are `tmux-platform`, `tmux`, `linger`, `tmux-unit`, `tmux-unit-active`, and `tmux-server`, in the same line protocol.
+
+`--fix` closes the automatable gaps with `sudo -n`: it writes the unit, reloads systemd, enables lingering, and starts the unit.
+Its boundaries:
+
+- An account that cannot elevate gets a `human:` gap, and `bin/fm-remote-doctor.sh --backend tmux --print-tmux-unit` prints the exact unit to install as root.
+- A unit file without Firstmate's ownership marker is never overwritten.
+- A server outside the unit is a `human:` gap, and `--fix` does not start the unit over it.
+- Rewriting a drifted unit reloads systemd but never restarts a running server, which would close every live second mate.
+- A root account is refused, because the unit needs a dedicated non-root `User=`.
+
 ### How the Herdr launch agent starts its server
 
 The Herdr agent runs [`bin/fm-remote-herdr-guard.sh`](../bin/fm-remote-herdr-guard.sh) through a shell in login mode with separate `-l` and `-c` arguments.
@@ -327,6 +385,7 @@ A file at `~/.local/bin/fm-remote-entrypoint.sh` that is not Firstmate's own sym
 | Requirement | Tools |
 | --- | --- |
 | Always required | `git`, `jq`, `herdr`, compatible `tasks-axi`, and `treehouse` |
+| Required instead of `herdr` on a tmux route | `tmux` 3.3 or newer (the foreground server needs `tmux -D`) |
 | At least one of | `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, `kimi`, or `omp` |
 | Additionally required on macOS | `lsof`, so the doctor and guard can prove which process owns the session socket |
 
@@ -433,14 +492,16 @@ The primary then takes these steps:
 1. It resolves the verified secondmate harness and optional model and effort.
 2. It runs the same readiness gate the seed runs.
 3. It transfers the inherited-material allowlist.
-4. It asks the remote host to launch on Herdr in `fm-remote`.
+4. It asks the remote host to launch on the route's backend: Herdr in `fm-remote`, or tmux in `fm-remote-tmux`.
 
-All remote secondmates on one host share `fm-remote` and retain separate `2ndmate-<id>` workspaces inside it.
+On herdr, all remote secondmates on one host share `fm-remote` and retain separate `2ndmate-<id>` workspaces inside it.
+On tmux, they share `fm-remote-tmux` and retain separate `fm-<id>` windows, and a launch never creates the server or the session.
 
 ### Refused and unsupported launches
 
-- An explicit request for any other backend is refused rather than honored, and the remote host refuses one too.
+- An explicit request for a backend other than the route's is refused rather than honored, and the remote host refuses one too.
 - An existing remote endpoint recorded in another Herdr session, including `default`, is classified as unverified and left untouched.
+  So is one recorded on the other backend, or on a tmux server outside the unit.
   Launch, liveness recovery, control, and retirement refuse it until an operator explicitly migrates it, instead of attempting a live cutover.
 - A launch after a host has drifted out of readiness fails with the doctor's own gap text instead of leaving a half-created endpoint.
 - Raw launch commands are not accepted for remote secondmates.
@@ -684,8 +745,8 @@ It refuses while any of these holds:
 - The primary has an unfinished backlog outbox.
 - A routed reply remains unresolved.
 
-It closes only the retiring secondmate's panes or `2ndmate-<id>` workspace in `fm-remote`.
-It never stops the shared session or removes a sibling secondmate's workspace or panes.
+It closes only the retiring secondmate's panes or `2ndmate-<id>` workspace in `fm-remote`, or its `fm-<id>` window in `fm-remote-tmux`.
+It never stops the shared session or server or removes a sibling secondmate's workspace, panes, or window.
 SSH exit 255 preserves both the route and local records because completion is unknown.
 `--force` remains the explicit discard path and requires the same captain authority as local secondmate discard.
 
@@ -703,7 +764,7 @@ The portable tests use these pieces:
 - The real entrypoint protocol.
 - Real git repositories.
 - A deterministic SSH boundary.
-- A stateful host-local Herdr CLI fixture.
+- A stateful host-local Herdr CLI fixture, and for the tmux route a host-local tmux fixture (real tmux servers on a private socket plus a fake per-pid cgroup file, because a test cannot start a system unit).
 - A controlled account fixture for the readiness gate.
 
 [`fm-remote-job-launchagent.test.sh`](../tests/fm-remote-job-launchagent.test.sh) exercises the real worker with stubbed asynchronous `launchctl`, covering slow claim sweeps, missing readiness recovery during a sweep, stale readiness without reload, concurrent repair, untracked owners, interrupted repairs, and asynchronous service removal before bootstrap.
@@ -725,6 +786,12 @@ bin/fm-test-run.sh tests/fm-remote-job-launchagent.test.sh
 bin/fm-test-run.sh tests/fm-remote-transport-lanes.test.sh
 bin/fm-test-run.sh tests/fm-remote-doctor.test.sh
 bin/fm-test-run.sh tests/fm-remote-herdr-guard.test.sh
+bin/fm-test-run.sh tests/fm-remote-doctor-tmux.test.sh
+bin/fm-test-run.sh tests/fm-remote-tmux-guard.test.sh
+bin/fm-test-run.sh tests/fm-backend-tmux-socket.test.sh
+bin/fm-test-run.sh tests/fm-remote-route-backend.test.sh
+bin/fm-test-run.sh tests/fm-remote-secondmate-tmux.test.sh
+bin/fm-test-run.sh tests/fm-remote-secondmate-tmux-e2e.test.sh
 bin/fm-test-run.sh tests/fm-project-origin.test.sh
 bin/fm-test-run.sh tests/fm-secondmate-sync.test.sh
 bin/fm-test-run.sh tests/fm-remote-reply.test.sh
@@ -741,6 +808,7 @@ The doctor performs these account-level checks, and they are only ever exercised
 - A real Aqua login session.
 - A real `launchctl` domain.
 - A real herdr server.
+- A real systemd system unit, and a real reboot or logout of the account (the tmux route).
 
 So the readiness gate's behavior on a genuine Mac remains an operator-run smoke test.
 The audit-session facts the guard relies on are recorded with their commands in [runtime backend verification](verification/runtime-backends.md#fm-remote-server-birth-and-login-keychain-access).

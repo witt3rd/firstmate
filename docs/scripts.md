@@ -29,7 +29,9 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-remote-job-lib.sh`   | Shared bounded remote job queue, worker readiness, LaunchAgent contract, and filesystem-composed PATH |
 | `fm-remote-job-worker.sh` | Long-lived remote queue worker for tracked `fm-*.sh` commands in the account runtime |
 | `fm-remote-job-reap-orphans.sh` | Stop remote job workers left running by a pruned code root, never one whose checkout still exists |
-| `fm-remote-doctor.sh`    | Check, and with `--fix` repair, one remote account's second-mate readiness (remote job worker, Herdr, Aqua launch agents, PATH, and required tools) |
+| `fm-remote-doctor.sh`    | Check, and with `--fix` repair, one remote account's second-mate readiness for its route's backend (remote job worker, Herdr and Aqua launch agents or tmux, lingering and the system unit, PATH, and required tools) |
+| `fm-remote-tmux-guard.sh` | Exec target of the `fm-remote-tmux.service` system unit: become the tmux server or leave a server outside the unit untouched |
+| `fm-remote-tmux-owner-lib.sh` | Fixed names of the remote tmux route and the cgroup-based classification of who owns its server socket |
 | [`fm-backlog-handoff.sh`](../bin/fm-backlog-handoff.sh) | Move queued backlog items into a secondmate home; its header owns route-specific wake outcomes and retries |
 | `fm-backlog-receive.sh`  | Idempotently ingest one confined remote handoff outbox through tasks-axi             |
 | `fm-captain-hold.sh`     | Hold tasks for the captain, record the captain's answers, gate investigation completion, and report record divergence between the status log and the backlog |
@@ -61,7 +63,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-subagent-pretool-check.sh` | Primary-home delegation-shape PreToolUse guard (docs/subagent-guard.md) |
 | `fm-supervision-instructions.sh` | Render the session-start primary-harness supervision block or the one-line repair instruction |
 | `fm-home-seed.sh`        | Transactionally provision a local secondmate home and maintain `data/secondmates.md` |
-| `fm-remote-home-seed.sh` | Register and provision a whole secondmate home on an SSH-reachable host              |
+| `fm-remote-home-seed.sh` | Register and provision a whole secondmate home on an SSH-reachable host, on its route's backend |
 | `fm-caretaker-lib.sh`    | Single owner of a caretaker charter's machine-read headings, sweep cadence grammar, and recurrence-ledger format |
 | `fm-caretaker-sweep.sh`  | Schedule a caretaker's declared health sweep as a watcher check, record its runs, and print its read-only snapshot |
 | `fm-remote-readiness-lib.sh` | Shared remote second-mate readiness gate: check and, when needed, repair then re-check through `fm-remote-doctor.sh` |
