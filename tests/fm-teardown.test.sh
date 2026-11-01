@@ -1051,6 +1051,24 @@ test_local_only_truly_unpushed_refuses() {
   pass "local-only worktree with truly unpushed work is refused (safety preserved)"
 }
 
+test_refusal_lists_all_unpushed_and_unmerged_commits() {
+  local case_dir rc i
+  case_dir=$(make_case full-commit-lists)
+  write_meta "$case_dir" local-only ship
+  for i in 1 2 3 4 5 6 7 8; do wt_commit "$case_dir" "listed-commit-$i"; done
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "full-lists: teardown should refuse"
+  for i in 1 2 3 4 5 6 7 8; do
+    grep -q "listed-commit-$i" "$case_dir/stderr" || fail "full-lists: commit $i missing from refusal"
+  done
+  pass "refusal lists every unmerged commit, not just the first five"
+}
+
 test_local_only_merged_to_local_main_allows() {
   local case_dir rc
   case_dir=$(make_case merged-main)
@@ -6398,3 +6416,4 @@ test_ship_teardown_cleans_docker_lane
 test_refused_lane_clean_never_breaks_teardown
 test_secondmate_teardown_skips_docker_lane
 test_absent_lane_clean_tool_is_tolerated
+test_refusal_lists_all_unpushed_and_unmerged_commits
