@@ -51,6 +51,26 @@ _FM_TMUX_LIB_DIR=${BASH_SOURCE[0]%/*}
 . "${_FM_TMUX_LIB_DIR:-/}/fm-cursor-lib.sh"
 unset _FM_TMUX_LIB_DIR
 
+# FM_TMUX_SOCKET: when set to an absolute socket path, every tmux call made
+# through this library, the tmux adapter (bin/backends/tmux.sh), and the scripts
+# that source them addresses that one server (`tmux -S <path>`). Unset, tmux is
+# called exactly as before. The remote tmux route (docs/remote-secondmates.md)
+# sets it in bin/fm-remote-secondmate-control.sh so a remote second mate's
+# endpoint is read from the unit-owned fm-remote-tmux server, never from
+# whichever server the account's own TMUX_TMPDIR or $TMUX would pick. A shell
+# function rather than an edit of every call site, so a call site cannot be
+# missed; it shadows only when no `tmux` function exists already (a test's own
+# stub wins) and is never exported.
+if ! declare -F tmux >/dev/null 2>&1; then
+  tmux() {
+    if [ -n "${FM_TMUX_SOCKET:-}" ]; then
+      command tmux -S "$FM_TMUX_SOCKET" "$@"
+    else
+      command tmux "$@"
+    fi
+  }
+fi
+
 
 # fm_tmux_strip_ghost: thin adapter over the shared, fleet-wide ghost extractor
 # fm_composer_strip_ghost (bin/fm-composer-lib.sh). It drops de-emphasised

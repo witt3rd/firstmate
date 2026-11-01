@@ -41,6 +41,8 @@ remote_tmux_fixture_init() { # <fixture-dir>
 remote_tmux_start_outside() {
   mkdir -p "$(dirname "$RT_SOCKET")"
   env -u TMUX tmux -S "$RT_SOCKET" -f /dev/null new-session -d -s "$RT_SESSION" || return 1
+  # Windows run bash, not the runner's login shell, so an idle window reads as a shell.
+  env -u TMUX tmux -S "$RT_SOCKET" set-option -g default-shell "$(command -v bash)"
   RT_SERVER_PID=$(env -u TMUX tmux -S "$RT_SOCKET" list-sessions -F '#{pid}' | head -1)
 }
 
