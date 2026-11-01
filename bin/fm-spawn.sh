@@ -7384,6 +7384,12 @@ preserve_relaunch_meta() {
   # default path's meta stays byte-identical (absent backend= means tmux;
   # data/fm-backend-design-d7's P1 compatibility contract).
   [ "$BACKEND" = tmux ] || echo "backend=$BACKEND"
+  # A tmux task on a pinned server (FM_TMUX_SOCKET, bin/fm-tmux-lib.sh) records
+  # which one, so a later absence proof can name the server it read. Written
+  # only then, so every other tmux record stays byte-identical.
+  if [ "$BACKEND" = tmux ] && [ -n "${FM_TMUX_SOCKET:-}" ]; then
+    echo "tmux_socket=$FM_TMUX_SOCKET"
+  fi
   if [ "$BACKEND" = herdr ]; then
     echo "herdr_session=$HERDR_SES"
     echo "herdr_workspace_id=$HERDR_WORKSPACE_ID"

@@ -105,6 +105,15 @@ A second, baseline-gated conversion covers harnesses whose mid-turn screen the c
 Without that baseline, an `unknown` verdict is preserved untouched, so a busy-looking pane can never convert an unread composer into a confirmation.
 `tests/fm-tmux-submit-busy.test.sh` covers busy and idle panes with proven, ambiguous, and cleared composers.
 
+### Pinned server
+
+`FM_TMUX_SOCKET` set to an absolute socket path addresses every tmux call at that one server (`tmux -S <path>`), and `FM_TMUX_SESSION` pins the container session instead of `firstmate` or the current one.
+With both set, the server belongs to something else and a launch never creates it or the session: a missing session is an error, because a server started by a client would sit outside its owner and be unverified.
+A task record written on a pinned server carries `tmux_socket=<path>`, and only such a record lets absence be proven (`fm_control_endpoint_absence_verdict`), and only while this process addresses that same server.
+Unset, none of this changes anything.
+The [remote tmux route](remote-secondmates.md) is the one user.
+`tests/fm-backend-tmux-socket.test.sh` covers it.
+
 ## Limits and regression entry points
 
 - tmux is the reference path and supports secondmate homes.
@@ -112,6 +121,7 @@ Without that baseline, an `unknown` verdict is preserved untouched, so a busy-lo
 ```sh
 tests/fm-backend-tmux-smoke.test.sh
 tests/fm-tmux-agent-liveness.test.sh
+tests/fm-backend-tmux-socket.test.sh
 tests/fm-harness-liveness-drift-live-e2e.test.sh
 tests/fm-composer-ghost.test.sh
 tests/fm-kimi-harness.test.sh

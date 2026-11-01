@@ -393,7 +393,7 @@ family_for_basename() {
       printf '%s\n' live-harness-optin
       ;;
     fm-backend-herdr.test.sh|fm-backend-herdr-launch-line.test.sh|\
-    fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|\
+    fm-backend-tmux-smoke.test.sh|fm-backend-tmux-socket.test.sh|fm-backend.test.sh|\
     fm-backend-t3code.test.sh|fm-t3-mcp.test.sh|fm-tmux-agent-liveness.test.sh|\
     fm-control.test.sh|fm-control-relaunch.test.sh|\
     fm-herdr-session-cleanup.test.sh|fm-send-resolve-key.test.sh|fm-send-strict.test.sh|\
@@ -952,6 +952,7 @@ tests/fm-test-isolation-proof.test.sh 2866
 tests/fm-test-tap-verify.test.sh 1000
 tests/fm-timeout-lib.test.sh 10750
 tests/fm-tmux-agent-liveness.test.sh 3770
+tests/fm-backend-tmux-socket.test.sh 1500
 tests/fm-tool-update-check.test.sh 14383
 tests/fm-trace-context-lib.test.sh 221
 tests/fm-trace-context-spawn.test.sh 57488

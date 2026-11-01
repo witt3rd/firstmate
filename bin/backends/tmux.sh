@@ -90,8 +90,24 @@ fm_backend_tmux_own_session() {
 # firstmate itself runs inside tmux, else ensure a dedicated detached
 # "firstmate" session exists. Mirrors fm-spawn.sh's container-ensure block;
 # prints the resolved session name.
+#
+# FM_TMUX_SESSION pins the session instead, whatever $TMUX says. Together with
+# FM_TMUX_SOCKET (bin/fm-tmux-lib.sh) the server is owned by something else
+# (the remote route's systemd unit), so a missing session is an error and this
+# never starts a server: a server born from a client would sit outside the unit
+# and be unverified.
 fm_backend_tmux_container_ensure() {
-  if [ -n "${TMUX:-}" ]; then
+  if [ -n "${FM_TMUX_SESSION:-}" ]; then
+    if [ -n "${FM_TMUX_SOCKET:-}" ]; then
+      tmux has-session -t "=$FM_TMUX_SESSION" 2>/dev/null || {
+        echo "error: tmux session $FM_TMUX_SESSION is not served on $FM_TMUX_SOCKET; its server must be running before a launch" >&2
+        return 1
+      }
+    else
+      tmux has-session -t "=$FM_TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$FM_TMUX_SESSION"
+    fi
+    printf '%s' "$FM_TMUX_SESSION"
+  elif [ -n "${TMUX:-}" ]; then
     fm_backend_tmux_own_session
   else
     tmux has-session -t firstmate 2>/dev/null || tmux new-session -d -s firstmate
