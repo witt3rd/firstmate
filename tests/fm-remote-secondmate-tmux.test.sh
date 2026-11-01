@@ -53,8 +53,13 @@ git -C "$REMOTE_ROOT" add .
 git -C "$REMOTE_ROOT" commit -qm 'remote fixture root'
 
 # A stand-in harness: its kernel process name is codex (a #! script run directly
-# takes its own file name), it shows a prompt, and it blocks reading its pane.
-printf '#!/bin/bash\nprintf "\\xe2\\x9d\\xaf\\n"\nwhile read -r _; do :; done\n' > "$FAKEBIN/codex"
+# takes its own file name), it shows a prompt, and it blocks reading its pane
+# until it is told /quit, which is codex's exit command.
+cat > "$FAKEBIN/codex" <<'SH'
+#!/bin/bash
+printf '\xe2\x80\xba '
+while read -r line; do [ "$line" != /quit ] || exit 0; done
+SH
 chmod +x "$FAKEBIN/codex"
 
 provision_home() {
@@ -259,6 +264,45 @@ test_an_existing_server_is_required_and_never_created() {
   pass "a launch needs the unit's own server and never creates one"
 }
 
+test_migrate_moves_the_endpoint_record_off_the_backend() {
+  fresh_host
+  ctl migrate ios herdr
+  assert_equals "nothing-to-migrate: ios has no endpoint record" "$CTL_OUT" "a route with no endpoint was not a no-op"
+  start_unit_server
+  ctl launch ios codex - - tmux
+  expect_code 0 "$CTL_RC" "launch failed: $CTL_OUT"
+  wait_state alive "the agent was not alive"
+  ctl migrate ios tmux
+  assert_equals "already: ios is recorded on tmux" "$CTL_OUT" "migrating to the recorded backend was not a no-op"
+  ctl migrate ios herdr
+  expect_code 1 "$CTL_RC" "a live agent was migrated away"
+  assert_contains "$CTL_OUT" 'still has a live agent on tmux' "the refusal did not say why"
+  assert_present "$META" "a refused migration archived the record"
+  # A server outside the unit is unverified: nothing is stopped, closed, or archived.
+  outside_unit
+  ctl migrate ios herdr --stop
+  expect_code 1 "$CTL_RC" "an endpoint on a foreign server was migrated"
+  assert_present "$META" "a refused migration archived the record"
+  assert_equals fm-remote-tmux:fm-ios "$(windows)" "a refused migration closed the window"
+  in_unit
+  T new-window -d -t fm-remote-tmux: -n fm-sibling
+  ctl migrate ios herdr --stop
+  expect_code 0 "$CTL_RC" "a stopped-agent migration failed: $CTL_OUT"
+  assert_contains "$CTL_OUT" 'migrated: ios from tmux to herdr (archived ' "the migration did not report what it did"
+  assert_absent "$META" "the migrated endpoint record is still live"
+  assert_equals 1 "$(find "$REMOTE_HOME/state/parent-route" -maxdepth 1 -name 'ios.meta.migrated-from-tmux-*' | wc -l | tr -d ' ')" \
+    "the endpoint record was not archived exactly once"
+  assert_equals fm-remote-tmux:fm-sibling "$(windows)" "the migration closed more or less than the mate's own window"
+  assert_present "$REMOTE_HOME/AGENTS.md" "the migration touched the mate's home"
+  ctl state ios
+  assert_equals missing "$CTL_OUT" "a migrated route still read as having an endpoint"
+  # The way back is the same verb: launch on tmux again, now a fresh record.
+  ctl launch ios codex - - tmux
+  expect_code 0 "$CTL_RC" "relaunching on tmux after a migration failed: $CTL_OUT"
+  wait_state alive "the relaunched agent was not alive"
+  pass "migrate stops and closes only the mate's own endpoint, archives its record, and leaves the home alone"
+}
+
 fm_test_run \
   test_launch_pins_the_unit_server \
   test_state_send_and_capture_read_the_endpoint \
@@ -266,4 +310,5 @@ fm_test_run \
   test_a_server_outside_the_unit_is_unverified \
   test_endpoints_recorded_elsewhere_are_unverified \
   test_retire_closes_only_this_window \
-  test_an_existing_server_is_required_and_never_created
+  test_an_existing_server_is_required_and_never_created \
+  test_migrate_moves_the_endpoint_record_off_the_backend

@@ -4,6 +4,7 @@
 # Usage:
 #   fm-remote-secondmate-control.sh launch <id> <harness> <model|-> <effort|-> herdr|tmux [--scope-profile=<name>] [traceparent]
 #   fm-remote-secondmate-control.sh relaunch <id> <harness> <model|default|-> <effort|default|-> [--scope-profile=<name>]
+#   fm-remote-secondmate-control.sh migrate <id> herdr|tmux [--stop]
 #   fm-remote-secondmate-control.sh state <id>
 #   fm-remote-secondmate-control.sh route <id>
 #   fm-remote-secondmate-control.sh send <id> <message> [fire-and-forget]
@@ -29,6 +30,18 @@
 # The home's own workers keep their ordinary backend selection.
 # bin/fm-remote-doctor.sh owns that host's readiness for either backend.
 # docs/remote-secondmates.md owns why.
+#
+# migrate moves a route's recorded endpoint off its current backend so the next
+# launch can create one on <to>; the secondmate's home, brief, and every
+# uncommitted change are never touched. It first proves the recorded endpoint
+# under its own backend's identity rules (an unverified endpoint is refused), then
+# requires the agent to be gone: --stop runs the ordinary host-local `exit`, which
+# interrupts and exits the harness with a verified postcondition, and without it a
+# live agent is refused. A confirmed agent-less endpoint is closed through the
+# backend's identity-safe close, and the endpoint record is archived beside itself
+# as <id>.meta.migrated-from-<from>-<epoch> (a name no *.meta reader matches), so
+# going back is the registry line plus one more migrate. The parent, not this
+# verb, owns the registry's backend field and the relaunch.
 #
 # With <parent-commit>, sync follows the PARENT PRIMARY's default-branch commit,
 # which the parent resolves on its own checkout and passes in, so a remote home
@@ -76,7 +89,7 @@ CONTROL_DATA="$TARGET_HOME/data/.parent-route"
 REMOTE_HERDR_SESSION=fm-remote
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 validate_id() { case "$1" in ''|*[!A-Za-z0-9._-]*) die "invalid secondmate id: $1" ;; esac; }
 
 # Sourcing fm-wake-lib.sh through the libraries below creates "$FM_HOME/state",
@@ -386,6 +399,50 @@ cmd_relaunch() {
   print_route "$id"
 }
 
+cmd_migrate() { # <id> <to> [--stop]
+  local id=$1 to=$2 stop=${3:-} meta from current archive
+  validate_id "$id"
+  validate_home "$id"
+  case "$to" in herdr|tmux) ;; *) usage ;; esac
+  [ -z "$stop" ] || [ "$stop" = --stop ] || usage
+  meta=$(meta_path "$id")
+  if [ ! -e "$meta" ] && [ ! -L "$meta" ]; then
+    printf 'nothing-to-migrate: %s has no endpoint record\n' "$id"
+    return 0
+  fi
+  fm_backend_validate_task_endpoint "$meta" "$id" 2>/dev/null \
+    || die "remote secondmate $id endpoint metadata is invalid; refusing to migrate it"
+  from=$FM_BACKEND_VALIDATED_BACKEND
+  if [ "$from" = "$to" ]; then
+    printf 'already: %s is recorded on %s\n' "$id" "$to"
+    return 0
+  fi
+  # The recorded endpoint must be exactly what its own backend's route would
+  # have written: a legacy, foreign, or unverified one is an operator decision.
+  remote_endpoint_require "$id" "$from"
+  current=$(fm_backend_agent_state "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null || printf 'unreadable\n')
+  if [ "$current" = alive ]; then
+    [ "$stop" = --stop ] || die "remote secondmate $id still has a live agent on $from; stop it first or pass --stop"
+    HERDR_SESSION="$REMOTE_HERDR_SESSION" FM_HOME="$FM_ROOT" FM_ROOT_OVERRIDE="$FM_ROOT" \
+      FM_STATE_OVERRIDE="$CONTROL_STATE" FM_DATA_OVERRIDE="$CONTROL_DATA" \
+      FM_CONFIG_OVERRIDE="$TARGET_HOME/config" FM_SKIP_SECONDMATE_INHERIT=1 \
+      FM_SKIP_SECONDMATE_SYNC=1 \
+      "$SCRIPT_DIR/fm-control.sh" "$id" exit >&2 || die "the agent of $id did not stop; nothing was migrated"
+    current=$(fm_backend_agent_state "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null || printf 'unreadable\n')
+  fi
+  case "$current" in
+    dead)
+      fm_backend_kill "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null \
+        || die "could not close the confirmed agent-less $from endpoint; nothing was migrated"
+      ;;
+    missing) ;;
+    *) die "remote secondmate $id endpoint state is $current on $from; refusing to migrate" ;;
+  esac
+  archive="$meta.migrated-from-$from-$(date +%s)"
+  mv -- "$meta" "$archive" || die "could not archive the $from endpoint record"
+  printf 'migrated: %s from %s to %s (archived %s)\n' "$id" "$from" "$to" "$archive"
+}
+
 cmd_send_body() {
   local id=$1 message=$2 delivery_mode=${3:-} rec ring_rc=0 meta meta_lock
   validate_id "$id"
@@ -565,6 +622,7 @@ cmd_retire() {
 case "${1:-}" in
   launch) shift; [ "$#" -ge 5 ] && [ "$#" -le 7 ] || usage; cmd_launch "$@" ;;
   relaunch) shift; [ "$#" -ge 4 ] && [ "$#" -le 5 ] || usage; cmd_relaunch "$@" ;;
+  migrate) shift; [ "$#" -ge 2 ] && [ "$#" -le 3 ] || usage; cmd_migrate "$@" ;;
   state) shift; [ "$#" -eq 1 ] || usage; validate_id "$1"; validate_home "$1"; state_value "$1" ;;
   route) shift; [ "$#" -eq 1 ] || usage; cmd_route "$1" ;;
   send) shift; [ "$#" -ge 2 ] && [ "$#" -le 3 ] || usage; cmd_send "$@" ;;
