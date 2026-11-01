@@ -19,7 +19,10 @@
 #     be short: a unix socket path is limited to about 100 bytes.
 #   remote_tmux_start_outside
 #     Starts a server on RT_SOCKET the way an SSH command or a client autostart
-#     would, outside any unit. Sets RT_SERVER_PID.
+#     would, outside any unit. Sets RT_SERVER_PID. The server, and so every
+#     window it opens, runs under an empty environment with HOME=RT_HOME and
+#     PATH=$RT_SERVER_PATH (default: the caller's PATH), so a test can put a
+#     stand-in harness first and the account's own dotfiles never apply.
 #   remote_tmux_set_cgroup <pid> <cgroup-line-content>
 #     Writes <pid>'s fake /proc/<pid>/cgroup, for example
 #     '0::/system.slice/fm-remote-tmux.service'.
@@ -40,7 +43,8 @@ remote_tmux_fixture_init() { # <fixture-dir>
 # shellcheck disable=SC2034
 remote_tmux_start_outside() {
   mkdir -p "$(dirname "$RT_SOCKET")"
-  env -u TMUX tmux -S "$RT_SOCKET" -f /dev/null new-session -d -s "$RT_SESSION" || return 1
+  env -i HOME="$RT_HOME" PATH="${RT_SERVER_PATH:-$PATH}" TERM=xterm \
+    "$(command -v tmux)" -S "$RT_SOCKET" -f /dev/null new-session -d -s "$RT_SESSION" || return 1
   # Windows run bash, not the runner's login shell, so an idle window reads as a shell.
   env -u TMUX tmux -S "$RT_SOCKET" set-option -g default-shell "$(command -v bash)"
   RT_SERVER_PID=$(env -u TMUX tmux -S "$RT_SOCKET" list-sessions -F '#{pid}' | head -1)
