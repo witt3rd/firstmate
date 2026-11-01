@@ -171,8 +171,52 @@ test_spawn_refuses_a_flag_that_disagrees_with_the_route() {
   pass "a launch flag that disagrees with the route is refused before any host is touched"
 }
 
+route_backend() { # <args...>; output in RB_OUT, status in RB_RC
+  set +e
+  RB_OUT=$(FM_HOME="$PARENT" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-remote-route-backend.sh" "$@" 2>&1)
+  RB_RC=$?
+  set -e
+}
+
+test_route_backend_command_edits_only_the_one_field() {
+  local tricky='- tx - Tricky (host: a; root: /r; home: /h; scope: x) summary. (host: et; root: /opt/fm; home: /home/x/tx; scope: s (a; b: y); projects: ; added 2026-10-31)'
+  mkdir -p "$TMP_ROOT/lm"
+  printf '%s\n%s\n%s\n%s\n' "$HERDR_LINE" "$TMUX_LINE" "$tricky" "${LOCAL_LINE//\/home\/x\/lm/$TMP_ROOT/lm}" > "$REG"
+  cp "$REG" "$TMP_ROOT/reg.original"
+  route_backend hm
+  assert_equals herdr "$RB_OUT" "an unmarked record did not read herdr"
+  route_backend tm
+  assert_equals tmux "$RB_OUT" "a tmux record did not read tmux"
+  route_backend hm tmux
+  expect_code 0 "$RB_RC" "setting tmux failed: $RB_OUT"
+  assert_equals 'set: hm backend herdr -> tmux' "$RB_OUT" "the change was not reported"
+  assert_grep '(host: et; root: /opt/fm; home: /home/x/hm; backend: tmux; scope: herdr scope;' "$REG" "the field was not written in place"
+  assert_equals 3 "$(grep -c -v '^- hm ' "$REG")" "other records changed"
+  route_backend hm tmux
+  assert_equals 'already: hm is on tmux' "$RB_OUT" "a repeat was not a no-op"
+  route_backend hm herdr
+  expect_code 0 "$RB_RC" "setting herdr failed: $RB_OUT"
+  cmp -s "$TMP_ROOT/reg.original" "$REG" || fail "going back to herdr did not restore the registry byte for byte"
+  route_backend tm herdr
+  assert_not_contains "$(grep '^- tm ' "$REG")" 'backend:' "setting herdr left the field behind"
+  route_backend tm tmux
+  # Parenthesised, semicolon-bearing summary and scope text is never mistaken for the structured fields.
+  route_backend tx tmux
+  expect_code 0 "$RB_RC" "a record with look-alike text was refused: $RB_OUT"
+  assert_grep '(host: a; root: /r; home: /h; scope: x) summary. (host: et;' "$REG" "the summary text was disturbed"
+  assert_grep 'home: /home/x/tx; backend: tmux; scope: s (a; b: y); projects:' "$REG" "the structured field was not the one changed"
+  route_backend lm tmux
+  expect_code 1 "$RB_RC" "a local record was given a remote backend"
+  route_backend nobody tmux
+  expect_code 1 "$RB_RC" "an unknown id was accepted"
+  route_backend hm zellij
+  expect_code 2 "$RB_RC" "an unknown backend was accepted"
+  pass "the route-backend command rewrites exactly one field of one record and goes back byte for byte"
+}
+
 fm_test_run \
   test_registry_reads_the_route_backend \
+  test_route_backend_command_edits_only_the_one_field \
   test_readiness_passes_the_route_backend_to_the_doctor \
   test_seed_records_the_route_backend \
   test_seed_refuses_a_bad_or_changing_backend \
