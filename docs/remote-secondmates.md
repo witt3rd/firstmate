@@ -113,6 +113,9 @@ Neither direction removes herdr from a host or the unit, which stays installed a
 
 - A route whose endpoint is unverified (a foreign server, another Herdr session, a legacy record) is refused by `migrate` and left untouched, because moving it is an operator decision.
 - Migration needs the agent gone, so the mate is down between step 4 and step 5, normally under a minute.
+- A route that has no endpoint record on the host (it was never launched, or was retired) has nothing to stop: `migrate` prints `nothing-to-migrate`, and flipping the registry and then running `bin/fm-spawn.sh <id> --secondmate` is the whole move.
+- The SSH-drop check in step 6 can be run unattended: `timeout 8 ssh -tt <alias> tmux -S ~/.firstmate/remote-tmux/fm-remote-tmux.sock attach-session </dev/null`, then read the state again. The timeout ends the client, never the server.
+- Workers a mate supervises run on that home's own backend and are not part of the route, so a migration leaves them running.
 - One unit serves every tmux route on a host, and its server is one tmux process, so retiring a route closes only its own window.
 - A route's default backend is still herdr: a record with no field is herdr, and a seed without `--backend` writes none.
 
