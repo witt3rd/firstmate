@@ -54,7 +54,7 @@ git -C "$REMOTE_ROOT" config user.name Test
 git -C "$REMOTE_ROOT" add .
 git -C "$REMOTE_ROOT" commit -qm 'remote fixture root'
 
-printf '#!/bin/bash\nprintf "\\xe2\\x9d\\xaf\\n"\nwhile read -r _; do :; done\n' > "$FAKEBIN/codex"
+printf '#!/bin/bash\nprintf "\\xe2\\x80\\xba "\nwhile read -r line; do [ "$line" != /quit ] || exit 0; done\n' > "$FAKEBIN/codex"
 chmod +x "$FAKEBIN/codex"
 printf 'codex\n' > "$PARENT/config/secondmate-harness"
 

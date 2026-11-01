@@ -879,7 +879,7 @@ tests/fm-remote-backlog-handoff.test.sh 82063
 tests/fm-remote-doctor.test.sh 14460
 tests/fm-remote-doctor-tmux.test.sh 14000
 tests/fm-remote-route-backend.test.sh 1500
-tests/fm-remote-secondmate-tmux.test.sh 19000
+tests/fm-remote-secondmate-tmux.test.sh 26000
 tests/fm-remote-secondmate-tmux-e2e.test.sh 9000
 tests/fm-remote-entrypoint.test.sh 134
 tests/fm-remote-herdr-guard.test.sh 3140
