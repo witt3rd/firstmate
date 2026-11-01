@@ -1814,6 +1814,27 @@ TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --profile personal
 expect_code 2 "$code" "--profile on a legacy file exits 2"
 assert_contains "$err" 'declares no spend_profiles' "the legacy refusal says why"
 pass "under spend profiles the resolver request carries only the project's profile rules, built offline"
+# --- spend profiles carry the top-level shared_quota into the resolver ------
+cat > "$RULES" <<'JSON'
+{
+  "shared_quota": true,
+  "spend_profiles": {
+    "work": {
+      "pi_account": { "root": "ordinary", "providers": ["openrouter"] },
+      "rules": [ { "when": "SHARED-RULE hard design work.", "use": { "harness": "pi", "model": "openrouter/anthropic/claude-opus-5.5", "provider": "claude" } } ],
+      "default": { "harness": "pi", "model": "openrouter/anthropic/claude-sonnet-5.5", "provider": "claude" }
+    }
+  },
+  "project_profiles": { "spire": "work" }
+}
+JSON
+cp "$TMP_ROOT/spend-response.json" "$RESPONSE"
+reset_log
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --project spire
+expect_code 0 "$code" "spend profile with shared_quota resolves: $err"
+assert_contains "$out" 'quota ranking off' "spend profiles honor the top-level shared_quota"
+assert_absent "$LOG/quota-axi.calls" "spend profile with shared_quota never reads quota-axi"
+pass "spend profiles pass top-level shared_quota to the resolver"
 # --- shared-quota opt-out: no quota call, declared-order pick ----------------
 cp "$BASE_RULES" "$RULES"
 jq '.shared_quota = true' "$BASE_RULES" > "$RULES"
