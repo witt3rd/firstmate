@@ -153,9 +153,13 @@ fm_spend_profile_exists() {
 # fm_spend_profile_rules_doc <config-dir> <profile>
 # Prints the profile's own {rules, default} document, the same shape as a
 # legacy dispatch file, so bin/fm-dispatch-resolve.sh offers a task only the
-# rules its profile may use.
+# rules its profile may use. The top-level shared_quota and preferred_provider
+# are copied in too (a profile's own value wins), or the resolver never sees them.
 fm_spend_profile_rules_doc() {
-  jq --arg n "$2" '.spend_profiles[$n] | {rules: (.rules // []), default: .default}' "$1/crew-dispatch.json"
+  jq --arg n "$2" '. as $d | .spend_profiles[$n] as $p
+    | ({shared_quota: $d.shared_quota, preferred_provider: $d.preferred_provider} | with_entries(select(.value != null)))
+      + ($p | {rules: (.rules // []), default: .default}
+         + ({shared_quota: $p.shared_quota, preferred_provider: $p.preferred_provider} | with_entries(select(.value != null))))' "$1/crew-dispatch.json"
 }
 
 # fm_spend_profile_account <config-dir> <profile>

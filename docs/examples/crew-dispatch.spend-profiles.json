@@ -14,6 +14,7 @@
           "use": {
             "harness": "pi",
             "model": "openrouter/deepseek/deepseek-v4.1-flash",
+            "provider": "openrouter",
             "effort": "low"
           },
           "why": "Cheapest capable model for narrow, unambiguous work."
@@ -23,6 +24,7 @@
           "use": {
             "harness": "pi",
             "model": "openrouter/anthropic/claude-opus-5.5",
+            "provider": "openrouter",
             "effort": "high"
           },
           "why": "Strongest reasoning for work where a wrong call is expensive; pay for it only here."
@@ -32,6 +34,7 @@
           "use": {
             "harness": "pi",
             "model": "openrouter/z-ai/glm-5.3-flashx",
+            "provider": "openrouter",
             "effort": "low"
           },
           "why": "Reading and summarising does not need deep reasoning; a fast, cheap long-context model fits."
@@ -40,6 +43,7 @@
       "default": {
         "harness": "pi",
         "model": "openrouter/anthropic/claude-sonnet-5.5",
+        "provider": "openrouter",
         "effort": "medium"
       }
     },
@@ -57,6 +61,7 @@
           "use": {
             "harness": "pi",
             "model": "openrouter/deepseek/deepseek-v4.1-flash",
+            "provider": "openrouter",
             "effort": "low"
           },
           "why": "Cheapest capable model for narrow, unambiguous work."
@@ -66,6 +71,7 @@
           "use": {
             "harness": "pi",
             "model": "openrouter/deepseek/deepseek-v4.1-flash",
+            "provider": "openrouter",
             "effort": "high"
           },
           "why": "The personal key never pays for Opus or Sonnet: hard work stays on the cheap model at high effort."
@@ -75,6 +81,7 @@
           "use": {
             "harness": "pi",
             "model": "openrouter/deepseek/deepseek-v4.1-flash",
+            "provider": "openrouter",
             "effort": "low"
           },
           "why": "Reading and summarising does not need deep reasoning."
@@ -83,6 +90,7 @@
       "default": {
         "harness": "pi",
         "model": "openrouter/deepseek/deepseek-v4.1-flash",
+        "provider": "openrouter",
         "effort": "medium"
       }
     }
@@ -112,6 +120,7 @@
       "use": {
         "harness": "pi",
         "model": "openrouter/deepseek/deepseek-v4.1-flash",
+        "provider": "openrouter",
         "effort": "low"
       },
       "why": "Cheapest capable model for narrow, unambiguous work."
@@ -121,6 +130,7 @@
       "use": {
         "harness": "pi",
         "model": "openrouter/anthropic/claude-opus-5.5",
+        "provider": "openrouter",
         "effort": "high"
       },
       "why": "Strongest reasoning for work where a wrong call is expensive; pay for it only here."
@@ -130,6 +140,7 @@
       "use": {
         "harness": "pi",
         "model": "openrouter/z-ai/glm-5.3-flashx",
+        "provider": "openrouter",
         "effort": "low"
       },
       "why": "Reading and summarising does not need deep reasoning; a fast, cheap long-context model fits."
@@ -138,6 +149,7 @@
   "default": {
     "harness": "pi",
     "model": "openrouter/anthropic/claude-sonnet-5.5",
+    "provider": "openrouter",
     "effort": "medium"
   }
 }
