@@ -295,7 +295,7 @@ test_spawn_tmux_window_construction() {
 
   # Bug 2 fix (b): the move into the leased worktree and the launch-boundary
   # cwd read target the stable id, never the name.
-  assert_grep "send-keys -t @spawnwid cd -- " "$rec" \
+  assert_grep "send-keys -t @spawnwid builtin cd -- " "$rec" \
     "the cd into the leased worktree must be sent to the stable window id"
   assert_no_grep "treehouse get" "$rec" \
     "the interactive treehouse get must not be typed into the pane"
