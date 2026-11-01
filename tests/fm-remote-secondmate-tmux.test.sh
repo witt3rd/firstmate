@@ -55,7 +55,11 @@ git -C "$REMOTE_ROOT" commit -qm 'remote fixture root'
 # A stand-in harness: its kernel process name is codex (a #! script run directly
 # takes its own file name), it shows a prompt, and it blocks reading its pane
 # until it is told /quit, which is codex's exit command.
-printf '#!/bin/bash\nprintf "\\xe2\\x80\\xba "\nwhile read -r line; do [ "$line" != /quit ] || exit 0; done\n' > "$FAKEBIN/codex"
+cat > "$FAKEBIN/codex" <<'SH'
+#!/bin/bash
+printf '\xe2\x80\xba '
+while read -r line; do [ "$line" != /quit ] || exit 0; done
+SH
 chmod +x "$FAKEBIN/codex"
 
 provision_home() {
