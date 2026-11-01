@@ -813,10 +813,10 @@ case "$cmd" in
     ;;
   send-keys)
     case "$text" in
-      "cd -- "*)
+      "builtin cd -- "*)
         # The shell follows spawn's `cd` into the leased worktree.
         w=$(window_name "$target")
-        dest=${text#cd -- }
+        dest=${text#builtin cd -- }
         dest=${dest% Enter}
         dest=${dest#\'}
         dest=${dest%\'}
