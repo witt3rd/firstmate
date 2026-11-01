@@ -1443,6 +1443,30 @@ This proves that `herdr server` remains in the foreground as the launchd job, so
 
 `bin/fm-test-run.sh tests/fm-remote-herdr-guard.test.sh` pins the resulting decision table against real marker-carrying processes, and `tests/fm-remote-doctor.test.sh` pins the doctor's verdicts on the same markers.
 
+
+### fm-remote-tmux server on a real host
+
+Measured 2026-10-31 on a Linux host (kernel 7.2.8-9-omarchy, systemd, tmux 3.8, account lingering already on, passwordless `sudo -n`), the guarantee behind the remote tmux route (`docs/remote-secondmates.md` "The tmux route"): a remote second mate in a window of a tmux server that a system unit owns survives an SSH disconnect and a primary restart, comes back after a unit restart through the documented relaunch, and is retired without touching a sibling window.
+The primary was a throwaway home on another host reaching the account through its real SSH alias, the fixed entrypoint, and the remote job worker; the second mate's home and code root were throwaway directories.
+
+| Step | Command | Result |
+| --- | --- | --- |
+| Seed and repair | `bin/fm-remote-home-seed.sh <id> <alias> <root> <home> --backend tmux --no-projects` | The doctor repaired the host and the seed completed in 7.7 s. |
+| Doctor | `bin/fm-on.sh <id> fm-remote-doctor.sh --backend tmux` | Exit 0 with `check tmux=ok: /usr/bin/tmux (tmux 3.8)`, `linger=ok`, `tmux-unit=ok`, `tmux-unit-active=ok`, `tmux-server=ok: session fm-remote-tmux is served by pid 4026023 inside fm-remote-tmux.service`, no herdr line. |
+| Launch | `bin/fm-spawn.sh <id> --secondmate` | `spawned ... backend=tmux`; the record names `remote_tmux_session=fm-remote-tmux` and `remote_target=fm-remote-tmux:fm-<id>`. |
+| Read | `fm-remote-secondmate-control.sh state` and `route`, `bin/fm-send.sh`, `bin/fm-peek.sh` | `alive`; the steer was recorded as a durable inbox record and its doorbell rung. |
+| SSH disconnect | `ssh -tt <alias> tmux -S <sock> attach-session`, client killed after 6 s | Same pane pid before and after, `clients=0`, state `alive`. |
+| Primary restart | `bin/fm-spawn.sh <id> --secondmate` from a new process | Same pane pid, no second window, state `alive`. |
+| Unit restart | `sudo -n systemctl restart fm-remote-tmux.service` | New server pid in `0::/system.slice/fm-remote-tmux.service`, state `missing`; the liveness probe printed `status=relaunchable`; `bin/fm-spawn.sh <id> --secondmate` relaunched it to `alive`. |
+| Retirement | `bin/fm-teardown.sh <id> --force` with a sibling window present | Only `fm-<id>` closed; the sibling window and the server survived; the remote home and the parent's record were removed. |
+
+Two facts the portable tests cannot show.
+The windows ran the account's interactive shell (fish), whose `PATH` puts the version-manager shims ahead of `~/.local/bin`, so a stand-in harness placed in `~/.local/bin` was shadowed by the real harness; the launch reached that harness's first-run hook-review dialog, where it was inspected and later retired; the test typed nothing into it beyond the routed steer's doorbell.
+A host reboot was not measured: the host's disk is encrypted and needs someone at the keyboard, so only the unit restart above stands for "the server comes back".
+
+Side effects on the host were limited to the measured unit and its socket directory, a throwaway code root and home, a temporary retarget of `~/.local/bin/fm-remote-entrypoint.sh`, and the remote job worker, which the entrypoint replaces with one for the configured code root; all were restored or removed afterwards, and an already-running herdr `fm-remote` server (pid 178022) was untouched throughout.
+The remote job worker is one per account, so a route whose code root differs from the account's other routes replaces it on each call.
+
 ### Client selection
 
 Measured 2026-09-08 on a macOS aarch64 host running a Herdr 0.9.0 server (protocol 22) for the `fm-remote` session while `~/.local/bin/herdr` still held the self-updated 0.8.2 client (protocol 20) ahead of the Nix-managed 0.9.0 client on the remote-job `PATH`.
