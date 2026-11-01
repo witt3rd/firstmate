@@ -388,6 +388,15 @@ assert_equals "2" "$(printf '%s' "$binary" | json_len pending)" \
   "the undecodable note and the readable note are both listed"
 pass "a non-UTF-8 note does not break the receipts view"
 
+# --- long note summaries are shown whole ------------------------------------
+
+home=$(make_home longsummary)
+long=$(printf 'word%03d ' $(seq 1 60))
+long=${long% }
+queued=$(run_inbox "$home" note "$long") || fail "long note failed"
+assert_contains "$queued" "$long" "queued summary is not cut"
+pass "a long note body is echoed whole, not cut at 100 characters"
+
 # --- readiness projection, including unknown -------------------------------
 
 home=$(make_home ready-free)

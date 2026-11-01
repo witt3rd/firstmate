@@ -281,7 +281,7 @@ read_note_body() {  # <file>
 }
 
 note_summary_from_body() {
-  printf '%s' "$1" | tr '\n\t' '  ' | cut -c1-100
+  printf '%s' "$1" | tr '\n\t' '  '
 }
 
 write_note_file() {  # <path> <id> <source> <body> [extra] [request-id]
@@ -1050,7 +1050,7 @@ cmd_status() {
   if [ -f "$DATA/backlog.md" ]; then
     printf '\n--- in flight ---\n'
     awk '/^## In flight/{f=1;next} /^## /{f=0} f && /^- \[/{print}' \
-      "$DATA/backlog.md" | sed 's/^- \[ \] /  /' | cut -c1-150
+      "$DATA/backlog.md" | sed 's/^- \[ \] /  /'
   else
     printf '\n(no backlog at %s)\n' "$DATA/backlog.md"
   fi
@@ -1064,7 +1064,7 @@ cmd_status() {
     kind=$(sed -n 's/^kind=//p' "$m" | head -1)
     mode=$(sed -n 's/^mode=//p' "$m" | head -1)
     last=""
-    [ -f "$STATE/$id.status" ] && last=$(tail -1 "$STATE/$id.status" 2>/dev/null | cut -c1-100)
+    [ -f "$STATE/$id.status" ] && last=$(tail -1 "$STATE/$id.status" 2>/dev/null)
     printf '  %-42s %-6s %-10s %s\n' "$id" "${kind:-?}" "${mode:--}" "${last:-(no events yet)}"
   done
   [ "$any" -eq 1 ] || printf '\n(no workers on deck)\n'
