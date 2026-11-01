@@ -204,7 +204,7 @@ test_internal_whitespace_is_recorded_verbatim() {
 }
 
 test_entries_are_deduplicated_and_capped() {
-  local home long text kept
+  local home long text
   home=$(make_home capped)
   long=$(awk 'BEGIN { for (i = 0; i < 5000; i++) printf "x" }')
   LONG=$long as_session "$home" "$SAY"'
@@ -214,10 +214,9 @@ test_entries_are_deduplicated_and_capped() {
   ' || fail "a writer failed"
   [ "$(grep -c '"text":"once"' "$home/state/.host-mirror.jsonl")" -eq 1 ] || fail "an entry whose id is already recorded must not be appended again"
   text=$(jq -r 'select(.id == "long") | .text' "$home/state/.host-mirror.jsonl")
-  kept=$(printf '%s' "$text" | tr -cd x | wc -c | tr -d ' ')
-  assert_contains "$text" "[mirror truncated: $((5000 - kept)) characters omitted]" "a long entry must be capped with a truncation note naming what it left out"
-  [ "${#text}" -eq 4000 ] || fail "a capped entry must hold 4000 characters with its note, got ${#text}"
-  pass "mirror: a repeated entry is recorded once, and a long entry keeps its head and tail within the cap"
+  [ "$text" = "$long" ] || fail "a long entry must be recorded whole, got ${#text} of 5000 characters"
+  assert_not_contains "$text" "mirror truncated" "a long entry must carry no truncation note"
+  pass "mirror: a repeated entry is recorded once, and a long entry is recorded whole"
 }
 
 # A turn that continues after a blocked Stop fires Stop again under the same
