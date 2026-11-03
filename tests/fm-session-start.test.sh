@@ -1437,6 +1437,80 @@ EOF
   pass "herdr endpoint liveness is reported per task: alive, dead for exit 1, dead for any other probe status"
 }
 
+# --- DOWN section: a dead agent is loud, at the top, never a quiet line -------
+
+# line_of <text> <fixed-pattern>: first matching line number, or empty.
+line_of() { printf '%s\n' "$1" | grep -n -F -- "$2" | head -1 | cut -d: -f1; }
+
+test_down_section_leads_the_digest_for_a_dead_endpoint() {
+  local rec root home fakebin out down_line lock_line
+  rec=$(new_world down-section)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  make_fake_tmux "$fakebin" "fm-sess:live-window"
+  printf 'window=fm-sess:live-window\nkind=ship\n' > "$home/state/task-live.meta"
+  printf 'window=fm-sess:dead-window\nkind=ship\n' > "$home/state/task-dead.meta"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "DOWN, NOT IDLE: 1 agent(s) not running" "a dead endpoint did not raise a DOWN section"
+  assert_contains "$out" "DOWN: task-dead (ship)" "the DOWN section did not name the dead task"
+  assert_not_contains "$(printf '%s\n' "$out" | grep -F 'DOWN: ')" "task-live" "a live endpoint was listed as DOWN"
+  down_line=$(line_of "$out" "DOWN, NOT IDLE")
+  lock_line=$(printf '%s\n' "$out" | grep -n -x 'LOCK' | head -1 | cut -d: -f1)
+  [ -n "$down_line" ] && [ -n "$lock_line" ] && [ "$down_line" -lt "$lock_line" ] \
+    || fail "the DOWN section must lead the digest, ahead of LOCK (down=$down_line lock=$lock_line)"
+  assert_contains "$out" "endpoint: dead (backend=tmux window=fm-sess:dead-window) - DOWN, not idle" \
+    "the per-task endpoint line stayed a quiet 'dead'"
+  pass "session start: a dead endpoint raises a loud DOWN section ahead of everything else"
+}
+
+test_no_down_section_when_every_endpoint_is_alive() {
+  local rec root home fakebin out
+  rec=$(new_world down-none)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  make_fake_tmux "$fakebin" "fm-sess:live-window"
+  printf 'window=fm-sess:live-window\nkind=ship\n' > "$home/state/task-live.meta"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$out" "DOWN, NOT IDLE" "a healthy fleet raised a DOWN section"
+  assert_not_contains "$out" "DOWN: " "a healthy fleet listed a DOWN line"
+  pass "session start: no DOWN section when every endpoint is alive"
+}
+
+test_down_section_names_a_remote_mate_from_its_not_alive_episode() {
+  local rec root home fakebin out now
+  rec=$(new_world down-remote)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  cat > "$home/state/rsm1.meta" <<'MEOF'
+window=remote:rsm1
+kind=secondmate
+harness=claude
+remote_host=lab-host
+remote_backend=herdr
+remote_target=fm-remote:w1:p1
+MEOF
+  now=$(date +%s)
+  printf '%s\tunknown\t\n' "$((now - 4000))" > "$home/state/.secondmate-down-since-rsm1"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "DOWN: rsm1 (secondmate) host=lab-host" \
+    "a remote mate whose agent has not been confirmed alive was not listed as DOWN"
+  assert_contains "$(printf '%s\n' "$out" | grep -F 'DOWN: rsm1')" "since 20" \
+    "the DOWN line did not say since when"
+  pass "session start: a remote mate with an open not-alive episode is listed DOWN with host and since-when, without network"
+}
+
 test_endpoint_read_death_is_isolated_and_reported() {
   local rec root home fakebin out status=0
   [ -r /proc/self/stat ] || { echo "skip: /proc not readable (the read-death shape needs process ancestry)"; return 0; }
@@ -3114,6 +3188,9 @@ test_status_tail_line_fold
 test_orphan_status_logs_are_printed
 test_endpoint_liveness_tmux
 test_endpoint_liveness_herdr
+test_down_section_leads_the_digest_for_a_dead_endpoint
+test_no_down_section_when_every_endpoint_is_alive
+test_down_section_names_a_remote_mate_from_its_not_alive_episode
 test_endpoint_read_death_is_isolated_and_reported
 test_endpoint_read_hang_is_bounded_and_reported
 test_endpoint_bound_rejects_padded_zero

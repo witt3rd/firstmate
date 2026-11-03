@@ -823,6 +823,13 @@ secondmate_liveness_one() {  # <meta> <id>
     return 0
   fi
   fm_secondmate_liveness_probe "$meta" "$id" full
+  # Keep the not-alive episode marker the watcher and the session-start DOWN
+  # section read (bin/fm-secondmate-liveness-lib.sh owns its contract).
+  if fm_secondmate_liveness_verdict_is_down "$FM_SM_LIVE_STATUS" "$FM_SM_LIVE_STATE"; then
+    fm_secondmate_liveness_note_down "$id" "$FM_SM_LIVE_STATE" || true
+  elif [ "$FM_SM_LIVE_STATUS" != silent ]; then
+    fm_secondmate_liveness_clear_down "$id"
+  fi
   case "$FM_SM_LIVE_STATUS" in
     silent)
       ;;
@@ -831,6 +838,7 @@ secondmate_liveness_one() {  # <meta> <id>
       ;;
     relaunchable)
       if fm_secondmate_liveness_relaunch "$meta" "$id"; then
+        fm_secondmate_liveness_clear_down "$id"
         [ "$FM_SM_LIVE_RESUME" = 1 ] || secondmate_note_respawned "$id"
         report_relaunch "$id" "$FM_SM_LIVE_CAUSE" "$FM_SM_LIVE_WHERE"
       elif [ "$FM_SM_LIVE_STATUS" = skipped ]; then

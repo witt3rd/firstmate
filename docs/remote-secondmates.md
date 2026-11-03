@@ -559,6 +559,8 @@ The watcher's liveness tick applies the identical rule during ordinary supervisi
 - The remote endpoint is probed read-only once per cadence.
 - Only a positive `dead` or `missing` reply relaunches through that command.
 - An unreachable transport or inconclusive state is left untouched rather than replaced locally.
+- Each probe is bounded by `FM_SM_LIVE_PROBE_TIMEOUT`, so a host that accepts the connection and never answers reads as unreachable.
+- A mate that stays dead, missing, or unreachable past `FM_SECONDMATE_DOWN_SECS` raises one `DOWN, not idle` wake naming its host and since-when, and the session-start digest lists it in its `DOWN, NOT IDLE` section.
 
 ### Inventory reconcile for markerless routes
 

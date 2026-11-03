@@ -587,6 +587,7 @@ test_sweep_leaves_alive_secondmate_untouched() {
   assert_contains "$out" "BOOTSTRAP_INFO: secondmate sm1 already live (backend=tmux)" \
     "verbose diagnostics should identify the already-live outcome"
   [ ! -s "$log" ] || fail "verbose reporting must not touch an already-live secondmate: $(cat "$log")"
+  [ ! -e "$w/home/state/.secondmate-down-since-sm1" ] || fail "a live mate carries a not-alive marker"
   pass "sweep: an already-live secondmate is untouched and distinguishable in verbose diagnostics"
 }
 
@@ -651,6 +652,8 @@ test_sweep_never_acts_on_transient_unreadability() {
   assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: skipped: endpoint probe unreadable" \
     "a transiently unreadable target should be distinguished from an absent one"
   [ ! -s "$log" ] || fail "an unreadable target must never trigger kill or relaunch: $(cat "$log")"
+  [ "$(awk -F '\t' '{print $2}' "$w/home/state/.secondmate-down-since-sm1" 2>/dev/null)" = unreadable ] \
+    || fail "an unreadable endpoint must open a not-alive episode, since it cannot show a running agent"
   pass "sweep: transient target unreadability never licenses recovery"
 }
 
@@ -665,6 +668,8 @@ test_sweep_reports_missing_endpoint_relaunch_failure() {
 
   assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: respawn failed after recorded endpoint confidently missing" \
     "a failed missing-endpoint relaunch should retain its authorizing cause"
+  [ "$(awk -F '\t' '{print $2}' "$w/home/state/.secondmate-down-since-sm1" 2>/dev/null)" = missing ] \
+    || fail "a failed relaunch must leave the not-alive episode open for the DOWN section and watcher"
   pass "sweep: failed relaunch diagnostics distinguish a confidently missing endpoint"
 }
 
@@ -840,6 +845,52 @@ test_remote_poll_probe_unreachable_preserves_route() {
   pass "poll probe: unreachable or inconclusive remote reads preserve the route"
 }
 
+# --- library level: bounded remote probe and the not-alive-since marker -------
+# A remote host that accepts the connection and then never answers must not
+# hold the watcher tick: the probe's ssh is bounded, and a bound hit reads like
+# any other unreachable host (route preserved, never evidence of death).
+test_remote_probe_is_bounded_by_a_timeout() {
+  local w out start elapsed
+  w=$(make_remote_probe_world probe-hung)
+  cat > "$w/fakebin/ssh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FM_FAKE_SSH_LOG:?}"
+exec sleep 20
+SH
+  chmod +x "$w/fakebin/ssh"
+  start=$(date +%s)
+  out=$(probe_remote "$w" poll FM_SM_LIVE_PROBE_TIMEOUT=1)
+  elapsed=$(( $(date +%s) - start ))
+  [ "$elapsed" -lt 10 ] || fail "a hung remote probe was not bounded by FM_SM_LIVE_PROBE_TIMEOUT (took ${elapsed}s)"
+  [ "$out" = 'skipped|unknown|0|||remote host unavailable or endpoint state unknown; route preserved on lab-host' ] \
+    || fail "a hung remote probe must read as an unreachable host, got: $out"
+  pass "poll probe: a hung remote host is cut off at the probe bound and reads as unreachable"
+}
+
+test_down_marker_records_since_once_and_clears() {
+  local w since later state_word
+  w="$TMP_ROOT/down-marker"
+  mkdir -p "$w/state"
+  # shellcheck disable=SC2016 # positional params expand in the child shell.
+  run_marker() { STATE="$w/state" bash -c ". \"\$0/bin/fm-secondmate-liveness-lib.sh\"; \"\$@\"" "$ROOT" "$@"; }
+
+  [ -z "$(run_marker fm_secondmate_liveness_down_since sm1)" ] \
+    || fail "a mate never seen down must have no since-time"
+  run_marker fm_secondmate_liveness_note_down sm1 dead
+  since=$(run_marker fm_secondmate_liveness_down_since sm1)
+  case "$since" in ''|*[!0-9]*) fail "note_down recorded no epoch since-time: '$since'" ;; esac
+  sleep 1
+  run_marker fm_secondmate_liveness_note_down sm1 missing
+  later=$(run_marker fm_secondmate_liveness_down_since sm1)
+  [ "$since" = "$later" ] || fail "a later down reading moved the since-time ($since -> $later)"
+  state_word=$(run_marker fm_secondmate_liveness_down_state sm1)
+  [ "$state_word" = missing ] || fail "the marker did not keep the latest state word, got '$state_word'"
+  run_marker fm_secondmate_liveness_clear_down sm1
+  [ -z "$(run_marker fm_secondmate_liveness_down_since sm1)" ] \
+    || fail "clear_down did not forget the episode"
+  pass "down marker: the since-time is set once per episode, the state word follows, and clear forgets it"
+}
+
 test_tmux_agent_state_classifies
 test_tmux_agent_state_rejects_malformed_targets_before_probe
 test_herdr_agent_state_preserves_husk_classifier
@@ -863,5 +914,7 @@ test_relaunch_waits_for_other_mates_relaunch_lock
 test_sweep_refuses_relaunch_on_ledger_errors
 test_remote_poll_probe_maps_states
 test_remote_poll_probe_unreachable_preserves_route
+test_remote_probe_is_bounded_by_a_timeout
+test_down_marker_records_since_once_and_clears
 
 echo "# all fm-secondmate-liveness tests passed"

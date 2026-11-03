@@ -51,6 +51,19 @@
 # The attempt ledger (.secondmate-relaunch-<id>, one line per attempt plus one
 # per outcome) is both the durable relaunch record and the input to the
 # watcher's relaunch bound; teardown removes it.
+#
+# Not-alive episodes: a mate whose agent is gone (dead, missing) or cannot be
+# read at all (host unreachable, probe unreadable) is DOWN, not idle - a quiet
+# status log proves nothing about a mate with no agent. Each such reading keeps
+# one durable marker, .secondmate-down-since-<id> (since-epoch, last state word,
+# notified-epoch; tab-separated), whose since-time is set by the first reading of
+# an episode and survives restarts. Any live or merely-unrecognized reading
+# (alive, ambiguous, unverified) and any successful relaunch ends the episode.
+# The watcher raises its one "DOWN, not idle" wake from this marker once the
+# episode outlives FM_SECONDMATE_DOWN_SECS (default 600), and the session-start
+# digest lists marked mates in its DOWN section without any network read.
+# Remote probes run under FM_SM_LIVE_PROBE_TIMEOUT (default 30s): a host that
+# accepts the connection and then never answers reads as unreachable.
 
 set -u
 
@@ -115,6 +128,117 @@ fm_secondmate_liveness_recent_attempts() {  # <id> <window-secs>
     "$ledger" 2>/dev/null
 }
 
+# fm_sm_live_on <id> <fm-command> [args...]: bin/fm-on.sh under the probe bound.
+# The bound firing reads as exit 255 - unreachable transport, never death.
+fm_sm_live_on() {
+  local bound=${FM_SM_LIVE_PROBE_TIMEOUT:-30} rc=0
+  case "$bound" in ''|*[!0-9]*|0) bound=30 ;; esac
+  fm_run_timed "$bound" "$FM_SM_LIVE_LIB_DIR/fm-on.sh" "$@" < /dev/null 2>/dev/null || rc=$?
+  case "$rc" in 124|137) return 255 ;; esac
+  return "$rc"
+}
+
+# --- not-alive episode marker -------------------------------------------------
+
+fm_secondmate_liveness_down_file() {  # <id>
+  printf '%s/.secondmate-down-since-%s\n' "$STATE" "$1"
+}
+
+fm_sm_live_down_field() {  # <id> <1|2|3>
+  local f
+  f=$(fm_secondmate_liveness_down_file "$1")
+  [ -f "$f" ] && [ ! -L "$f" ] || return 0
+  awk -F '\t' -v n="$2" 'NR == 1 { print $n; exit }' "$f" 2>/dev/null
+}
+
+# Epoch the current not-alive episode began; empty when none is open.
+fm_secondmate_liveness_down_since() {  # <id>
+  local v
+  v=$(fm_sm_live_down_field "$1" 1)
+  case "$v" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s\n' "$v"
+}
+
+fm_secondmate_liveness_down_state() {  # <id>
+  fm_sm_live_down_field "$1" 2
+}
+
+# Epoch the DOWN wake for this episode was raised; empty before that.
+fm_secondmate_liveness_down_notified() {  # <id>
+  local v
+  v=$(fm_sm_live_down_field "$1" 3)
+  case "$v" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s\n' "$v"
+}
+
+# Record a not-alive reading: the first of an episode sets since-time, later
+# ones keep it and only refresh the state word.
+fm_secondmate_liveness_note_down() {  # <id> <state-word> [notified-epoch]
+  local id=$1 word=$2 f since notified tmp
+  f=$(fm_secondmate_liveness_down_file "$id")
+  since=$(fm_secondmate_liveness_down_since "$id")
+  notified=${3:-$(fm_secondmate_liveness_down_notified "$id")}
+  [ -n "$since" ] || { since=$(date +%s); notified=''; }
+  tmp="$f.tmp.$$"
+  if printf '%s\t%s\t%s\n' "$since" "$word" "$notified" > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null
+  return 1
+}
+
+fm_secondmate_liveness_clear_down() {  # <id>
+  rm -f "$(fm_secondmate_liveness_down_file "$1")" 2>/dev/null || true
+}
+
+# Whether a probe verdict (status + state word) is a not-alive reading.
+# Recovery-grade absence and an unreadable endpoint count; an existing but
+# unrecognized agent process (ambiguous) or an unverified harness does not.
+fm_secondmate_liveness_verdict_is_down() {  # <status> <state>
+  case "$1:$2" in
+    relaunchable:*) return 0 ;;
+    skipped:dead|skipped:missing|skipped:unknown|skipped:unreadable) return 0 ;;
+  esac
+  return 1
+}
+
+fm_secondmate_liveness_iso() {  # <epoch>
+  date -u -d "@$1" +%Y-%m-%dT%H:%MZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%MZ 2>/dev/null || printf 'epoch-%s\n' "$1"
+}
+
+fm_secondmate_liveness_where() {  # <meta>
+  local host
+  host=$(fm_meta_get "$1" remote_host)
+  if [ -n "$host" ]; then
+    printf 'host=%s\n' "$host"
+  else
+    printf 'backend=%s (this machine)\n' "$(fm_backend_of_meta "$1")"
+  fi
+}
+
+# fm_secondmate_liveness_down_text <id> <meta> <attempts> <max> <window-secs>
+# Plain-words body of the "DOWN, not idle" wake (without the `check:` prefix):
+# who, where, since when, what the state word means, and what recovery was done.
+fm_secondmate_liveness_down_text() {
+  local id=$1 meta=$2 attempts=$3 max=$4 window=$5 since word now mins meaning where tried
+  since=$(fm_secondmate_liveness_down_since "$id")
+  word=$(fm_secondmate_liveness_down_state "$id")
+  now=$(date +%s)
+  mins=$(( (now - ${since:-$now}) / 60 ))
+  where=$(fm_secondmate_liveness_where "$meta")
+  case "$word" in
+    dead) meaning="its agent process is gone and only a bare shell is left" ;;
+    missing) meaning="its window or pane no longer exists" ;;
+    *) meaning="its host could not be reached or read, so it cannot be confirmed running" ;;
+  esac
+  case "$word" in
+    dead|missing) tried="Automatic relaunch has been tried $attempts of $max times in the last $((window / 60)) minutes." ;;
+    *) tried="No relaunch was tried because the host's state is unknown; check the host." ;;
+  esac
+  printf 'secondmate %s DOWN, not idle: no running agent confirmed on %s since %s (%s min; %s). DOWN means nobody is working there - it is not waiting for work, and a quiet status log is not a sign of health. %s' \
+    "$id" "$where" "$(fm_secondmate_liveness_iso "${since:-$now}")" "$mins" "$meaning" "$tried"
+}
+
 # fm_secondmate_liveness_probe <meta> <id> <full|poll>
 #
 # Read-only probe of one registered secondmate's recorded endpoint. Populates:
@@ -163,7 +287,7 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
         return 0
       fi
     fi
-    if out=$("$FM_SM_LIVE_LIB_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null 2>/dev/null); then
+    if out=$(fm_sm_live_on "$id" fm-remote-secondmate-control.sh state "$id"); then
       remote_rc=0
     else
       remote_rc=$?
@@ -181,7 +305,7 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
     case "$agent_state" in
       alive)
         if [ "$mode" = full ]; then
-          if route_out=$("$FM_SM_LIVE_LIB_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh route "$id" < /dev/null 2>/dev/null); then
+          if route_out=$(fm_sm_live_on "$id" fm-remote-secondmate-control.sh route "$id"); then
             remote_rc=0
           else
             remote_rc=$?
