@@ -26,6 +26,12 @@
 # ORDERING, and why LOCK now runs before BOOTSTRAP (the old AGENTS.md order
 # was bootstrap-then-lock):
 #
+#   0. down          - read-only and first: every recorded endpoint is read once
+#                       (bounded, crash-isolated) and each agent that is not
+#                       running prints in a loud DOWN, NOT IDLE section; a
+#                       remote secondmate is listed from the watcher's durable
+#                       not-alive episode marker, since this digest makes no
+#                       network call. Silent when every agent is running.
 #   1. lock          - acquire the per-home session lock FIRST, before any
 #                       mutating step runs.
 #   1b. home role    - the resolved firstmate-repository role line
@@ -68,7 +74,7 @@
 #                       script points back to the emitted harness supervision
 #                       block and deliberately never arms the watcher itself.
 #
-# Those ten names are also the runtime-bound stage list below, so a truncated
+# Those eleven names are also the runtime-bound stage list below, so a truncated
 # startup can name exactly which of them never ran - and the parent banners
 # EVERY nonzero child exit, not only the bound: a child that dies or is killed
 # mid-stage must never truncate the digest silently.
@@ -279,7 +285,7 @@ done
 # The ordered stage list is the contract behind the truncation banner: the child
 # names the stage it is entering, and the parent reports every stage at or after
 # that one as never emitted. Keep it in the exact order the digest prints.
-SESSION_START_STAGES='lock role bootstrap wake-queue supervision-instructions read-once fleet-state network-checks context next-step'
+SESSION_START_STAGES='down lock role bootstrap wake-queue supervision-instructions read-once fleet-state network-checks context next-step'
 
 stage() {  # <stage-name>: breadcrumb for the parent's truncation banner
   [ -n "${FM_SESSION_START_STAGE_FILE:-}" ] || return 0
@@ -365,6 +371,8 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-secondmate-liveness-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-liveness-lib.sh"
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-public-followup-lib.sh
@@ -595,6 +603,24 @@ fm_session_start_endpoint_read() {  # <backend> <target> [expected-label]
   ' _ "$SCRIPT_DIR/fm-backend.sh" "$backend" "$target" "$label"
 }
 
+# fm_session_start_agent_state_read <backend> <target>: the same bounded,
+# crash-isolated shape for the detailed agent-state word (alive, dead, missing,
+# ambiguous, ...). A bare shell leaves its pane present, so presence alone calls
+# a dead secondmate alive. Prints nothing when the read dies or hits its bound.
+fm_session_start_agent_state_read() {  # <backend> <target>
+  local backend=$1 target=$2
+  # shellcheck disable=SC2016  # Positional parameters expand inside the child bash, not here.
+  fm_run_timed "$ENDPOINT_TIMEOUT" bash -c '
+    . "$1"
+    fm_backend_agent_state "$2" "$3"
+  ' _ "$SCRIPT_DIR/fm-backend.sh" "$backend" "$target" 2>/dev/null | tail -1
+}
+
+# One lookup into the DOWN pre-pass's cache: <id> <field 2|3>.
+down_cache_get() {
+  printf '%s' "$DOWN_CACHE" | awk -F '\t' -v id="$1" -v n="$2" '$1 == id { print $n; exit }'
+}
+
 hash_file_sha256() {
   local file=$1 digest
   [ -f "$file" ] || return 1
@@ -689,6 +715,71 @@ if [ "$REEMIT" -eq 1 ]; then
 else
   section "SESSION START - $FM_HOME"
 fi
+# --- 0b. DOWN: agents that are not running -------------------------------------
+# First in the digest on purpose: a dead agent is not an idle one, and this is the
+# part a truncated tail must never take. Every recorded endpoint is read here once
+# (bounded, crash-isolated; the fleet-state loop below reuses the result), and a
+# registered remote secondmate - which this no-network digest cannot probe - is
+# listed from the watcher's durable not-alive episode marker.
+stage down
+DOWN_CACHE=''
+DOWN_LINES=''
+DOWN_COUNT=0
+for meta in "$STATE"/*.meta; do
+  [ -f "$meta" ] || continue
+  id=$(basename "$meta" .meta)
+  window=$(fm_meta_get "$meta" window)
+  [ -n "$window" ] || continue
+  kind=$(fm_meta_get "$meta" kind)
+  [ -n "$kind" ] || kind=ship
+  remote_host=$(fm_meta_get "$meta" remote_host)
+  down_why=''
+  agent_word=''
+  endpoint_rc=remote
+  if [ -n "$remote_host" ]; then
+    down_where="host=$remote_host"
+    [ -z "$(fm_secondmate_liveness_down_since "$id")" ] ||
+      down_why="its agent has not been confirmed running by the liveness watch (last reading: $(fm_secondmate_liveness_down_state "$id"))"
+  else
+    backend=$(fm_backend_of_meta "$meta")
+    target=$(fm_backend_target_of_meta "$meta")
+    down_where="backend=$backend window=$window"
+    endpoint_rc=0
+    fm_session_start_endpoint_read "$backend" "${target:-$window}" "fm-$id" || endpoint_rc=$?
+    if [ "$endpoint_rc" -eq 0 ]; then
+      if [ "$kind" = secondmate ]; then
+        agent_word=$(fm_session_start_agent_state_read "$backend" "${target:-$window}")
+        case "$agent_word" in
+          dead) down_why="its agent process is gone and only a bare shell is left" ;;
+          missing) down_why="its window or pane no longer exists" ;;
+        esac
+      fi
+    elif [ "$endpoint_rc" -ne 124 ] && [ "$endpoint_rc" -lt 128 ]; then
+      down_why="its endpoint is gone"
+    fi
+  fi
+  DOWN_CACHE="$DOWN_CACHE$id	$endpoint_rc	$agent_word
+"
+  [ -n "$down_why" ] || continue
+  down_since=$(fm_secondmate_liveness_down_since "$id")
+  if [ -n "$down_since" ]; then
+    down_when="since $(fm_secondmate_liveness_iso "$down_since")"
+  else
+    down_when="first seen at this startup"
+  fi
+  DOWN_COUNT=$((DOWN_COUNT + 1))
+  DOWN_LINES="${DOWN_LINES}DOWN: $id ($kind) $down_where - $down_why; $down_when
+"
+done
+if [ "$DOWN_COUNT" -gt 0 ]; then
+  section "DOWN, NOT IDLE: $DOWN_COUNT agent(s) not running"
+  printf 'DOWN means nobody is working there. It is not waiting for work, and a quiet status\n'
+  printf 'log is not a sign of health. Deal with these before taking new work:\n\n'
+  printf '%s' "$DOWN_LINES"
+  printf '\nA dead secondmate is relaunched by the startup sweep (see NETWORK CHECKS) and then by\n'
+  printf 'the liveness watch, a few tries at most; a ship or scout worker needs recovery by you.\n'
+fi
+
 # --- 1. lock -----------------------------------------------------------
 stage lock
 subsection "LOCK"
@@ -934,21 +1025,31 @@ for meta in "$STATE"/*.meta; do
   cat "$meta"
 
   window=$(fm_meta_get "$meta" window)
-  target=$(fm_backend_target_of_meta "$meta")
   if [ -n "$window" ]; then
-    backend=$(fm_backend_of_meta "$meta")
-    endpoint_rc=0
-    fm_session_start_endpoint_read "$backend" "${target:-$window}" "fm-$id" || endpoint_rc=$?
-    # Only the timeout owner's own statuses mean the read itself failed: 124 is
-    # the bound firing and >=128 is a signal death. Every other nonzero status
-    # is the probe's own verdict that the endpoint is gone.
-    if [ "$endpoint_rc" -eq 0 ]; then
-      printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"
-    elif [ "$endpoint_rc" -eq 124 ] || [ "$endpoint_rc" -ge 128 ]; then
-      printf 'endpoint: error (backend=%s window=%s - the endpoint read died or hit its %ss bound; the digest continued past it)\n' \
-        "$backend" "$window" "$ENDPOINT_TIMEOUT"
+    # The DOWN pre-pass above already read this endpoint once; reuse its result.
+    endpoint_rc=$(down_cache_get "$id" 2)
+    if [ "$endpoint_rc" = remote ]; then
+      printf 'endpoint: remote (host=%s window=%s - not probed here: this digest makes no network call)\n' \
+        "$(fm_meta_get "$meta" remote_host)" "$window"
+      if [ -n "$(fm_secondmate_liveness_down_since "$id")" ]; then
+        printf 'agent: DOWN, not idle - see the DOWN section at the top\n'
+      fi
     else
-      printf 'endpoint: dead (backend=%s window=%s)\n' "$backend" "$window"
+      backend=$(fm_backend_of_meta "$meta")
+      # Only the timeout owner's own statuses mean the read itself failed: 124 is
+      # the bound firing and >=128 is a signal death. Every other nonzero status
+      # is the probe's own verdict that the endpoint is gone.
+      if [ "$endpoint_rc" -eq 0 ]; then
+        printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"
+        case "$(down_cache_get "$id" 3)" in
+          dead|missing) printf 'agent: DOWN, not idle - the agent is gone from its endpoint; see the DOWN section at the top\n' ;;
+        esac
+      elif [ "$endpoint_rc" -eq 124 ] || [ "$endpoint_rc" -ge 128 ]; then
+        printf 'endpoint: error (backend=%s window=%s - the endpoint read died or hit its %ss bound; the digest continued past it)\n' \
+          "$backend" "$window" "$ENDPOINT_TIMEOUT"
+      else
+        printf 'endpoint: dead (backend=%s window=%s) - DOWN, not idle\n' "$backend" "$window"
+      fi
     fi
   else
     printf 'endpoint: unknown (no window recorded)\n'

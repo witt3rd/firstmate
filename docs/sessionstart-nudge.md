@@ -148,6 +148,7 @@ So the whole digest still runs as one bounded child, default 120s via `FM_SESSIO
 Each per-task endpoint liveness read runs serially in its own crash-isolated child, bounded by `FM_SESSION_START_ENDPOINT_TIMEOUT` (default 10s; a non-numeric or zero value falls back to the default).
 So a read that hangs or dies becomes that task's own `endpoint: error` line and the digest continues.
 With a wedged backend the stage's ceiling is tasks times that per-read bound and can itself reach the digest bound.
+Those reads run first, in a `DOWN, NOT IDLE` section ahead of the lock section: a dead endpoint, a secondmate whose agent process is gone behind a live pane, and a remote secondmate with an open not-alive episode are listed there, and the fleet-state loop reuses the same reads.
 
 The per-item backlog row reads inside bootstrap's reconcile and close-replay sweeps are the exception.
 Each of those reads is bounded by `FM_BACKLOG_ROW_TIMEOUT_SECS` (default 10s) through `bin/fm-backlog-transition-lib.sh`.

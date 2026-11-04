@@ -3505,6 +3505,8 @@ test_secondmate_liveness_tick_attempt_bound_parks_then_rearm_on_alive() {
   wait_for_exit "$pid" 300 || fail "the watcher did not exit on its bound wake"
   grep -F 'check: secondmate sm1 auto-relaunch paused after 3 attempts in 3600s' "$dir/watch-bound.out" >/dev/null \
     || fail "a mate past its relaunch bound was not escalated once: $(cat "$dir/watch-bound.out" "$dir/watch-bound.err")"
+  grep -F 'DOWN, not idle' "$dir/watch-bound.out" >/dev/null \
+    || fail "the park wake did not say DOWN, not idle: $(cat "$dir/watch-bound.out")"
   [ -e "$state/.secondmate-relaunch-bound-sm1" ] || fail "the bound marker was not written"
   [ ! -s "$dir/tmux.log" ] || fail "a parked mate was relaunched anyway: $(cat "$dir/tmux.log")"
   [ "$(awk -F '\t' '$2 == "attempt"' "$ledger" | wc -l | tr -d ' ')" -eq 3 ] \
@@ -3735,6 +3737,140 @@ SH
   pass "watch liveness: an unreachable remote secondmate is probed, preserved, and never failed over"
 }
 
+# make_remote_down_case <name>: the liveness case with its local mate replaced
+# by one remote-route mate (rsm1 on lab-host) behind a fake ssh. The fake
+# answers FM_FAKE_REMOTE_REPLY when set, else exits FM_FAKE_REMOTE_RC (255).
+make_remote_down_case() {
+  local dir
+  dir=$(make_secondmate_liveness_case "$1")
+  rm -f "$dir/state/sm1.meta"
+  cat > "$dir/state/rsm1.meta" <<EOF
+window=remote:rsm1
+kind=secondmate
+harness=claude
+remote_host=lab-host
+remote_backend=herdr
+remote_herdr_session=fm-remote
+remote_target=fm-remote:w1:p1
+home=/remote/rsm1-home
+EOF
+  cat > "$dir/data/secondmates.md" <<EOF
+- rsm1 - Remote mate (host: lab-host; root: /remote/root; home: /remote/rsm1-home; scope: remote work; projects: alpha; added 2026-01-01)
+EOF
+  cat > "$dir/fakebin/ssh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FM_FAKE_SSH_LOG:?}"
+[ -z "${FM_FAKE_REMOTE_REPLY:-}" ] || { printf '%s\n' "$FM_FAKE_REMOTE_REPLY"; exit 0; }
+exit "${FM_FAKE_REMOTE_RC:-255}"
+SH
+  chmod +x "$dir/fakebin/ssh"
+  : > "$dir/ssh.log"
+  printf '%s\n' "$dir"
+}
+
+# A remote mate that cannot be confirmed alive is not quiet: the first not-alive
+# reading starts an episode (a since-time, no wake yet), and once the episode is
+# older than the grace the watcher raises ONE "DOWN, not idle" check wake naming
+# the mate, its host and since-when. The next tick stays silent; an alive
+# reading ends the episode.
+test_secondmate_liveness_tick_raises_down_wake_after_grace() {
+  local dir state pid out down since now
+  dir=$(make_remote_down_case liveness-down-grace)
+  state="$dir/state"
+  down="$state/.secondmate-down-since-rsm1"
+
+  # First reading: unreachable, but only just - an episode starts, nothing wakes.
+  run_liveness_leg "$dir" fresh FM_SSH_BIN="$dir/fakebin/ssh" FM_FAKE_SSH_LOG="$dir/ssh.log"; pid=$LIVENESS_PID
+  sleep 4
+  is_live_non_zombie "$pid" \
+    || fail "the watcher woke on a mate that was unreachable for only seconds: $(cat "$dir/watch-fresh.out" "$dir/watch-fresh.err")"
+  kill_liveness_leg "$pid"
+  [ -s "$down" ] || fail "an unreachable remote mate did not start a not-alive episode"
+  [ ! -s "$state/.wake-queue" ] || fail "a fresh not-alive episode woke before the grace: $(cat "$state/.wake-queue")"
+
+  # The episode is now older than the 10-minute grace: one DOWN wake.
+  now=$(date +%s)
+  since=$((now - 700))
+  printf '%s\tunknown\t\n' "$since" > "$down"
+  rm -f "$state/.secondmate-liveness-tick"
+  run_liveness_leg "$dir" aged FM_SSH_BIN="$dir/fakebin/ssh" FM_FAKE_SSH_LOG="$dir/ssh.log"; pid=$LIVENESS_PID
+  wait_for_exit "$pid" 300 || fail "the watcher did not wake for a mate down past the grace"
+  out="$dir/watch-aged.out"
+  grep -F 'check: secondmate rsm1 DOWN, not idle' "$out" >/dev/null \
+    || fail "the DOWN wake did not say DOWN, not idle: $(cat "$out" "$dir/watch-aged.err")"
+  grep -F 'host=lab-host' "$out" >/dev/null || fail "the DOWN wake did not name the host: $(cat "$out")"
+  grep -E 'since [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}' "$out" >/dev/null \
+    || fail "the DOWN wake did not say since when: $(cat "$out")"
+  [ "$(grep -c 'secondmate-down-rsm1-' "$state/.wake-queue")" -eq 1 ] \
+    || fail "the DOWN wake row was not queued exactly once: $(cat "$state/.wake-queue")"
+
+  # Same episode, next tick: no repeat.
+  drain_liveness_wakes "$dir"
+  rm -f "$state/.secondmate-liveness-tick"
+  run_liveness_leg "$dir" repeat FM_SSH_BIN="$dir/fakebin/ssh" FM_FAKE_SSH_LOG="$dir/ssh.log"; pid=$LIVENESS_PID
+  sleep 4
+  is_live_non_zombie "$pid" \
+    || fail "the watcher repeated the DOWN wake inside one episode: $(cat "$dir/watch-repeat.out")"
+  kill_liveness_leg "$pid"
+  [ "$(grep -c 'secondmate-down-rsm1-' "$state/.wake-queue" 2>/dev/null || true)" -eq 0 ] \
+    || fail "a second DOWN row was queued for the same episode: $(cat "$state/.wake-queue")"
+
+  # An alive reading ends the episode.
+  rm -f "$state/.secondmate-liveness-tick"
+  run_liveness_leg "$dir" alive FM_SSH_BIN="$dir/fakebin/ssh" FM_FAKE_SSH_LOG="$dir/ssh.log" FM_FAKE_REMOTE_REPLY=alive; pid=$LIVENESS_PID
+  sleep 4
+  kill_liveness_leg "$pid"
+  [ ! -e "$down" ] || fail "an alive reading did not clear the not-alive episode"
+  [ ! -e "$state/.secondmate-relaunch-rsm1" ] || fail "an unreachable host was treated as a relaunchable death"
+  pass "watch liveness: a mate not alive past the grace raises one DOWN, not idle wake with host and since-when"
+}
+
+test_secondmate_liveness_tick_down_wake_for_dead_mate_whose_relaunch_fails() {
+  local dir state pid now
+  dir=$(make_secondmate_liveness_case liveness-down-dead)
+  state="$dir/state"
+  now=$(date +%s)
+  printf '%s\tdead\t\n' "$((now - 700))" > "$state/.secondmate-down-since-sm1"
+
+  run_liveness_leg "$dir" dead FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_TEST_FAIL_NEW_WINDOW=1; pid=$LIVENESS_PID
+  wait_for_exit "$pid" 300 || fail "the watcher did not wake for a dead mate that would not relaunch"
+  [ "$(grep -c 'secondmate-down-sm1-' "$state/.wake-queue")" -eq 1 ] \
+    || fail "a dead, un-relaunchable mate past the grace did not queue a DOWN row: $(cat "$state/.wake-queue")"
+  grep -F 'DOWN, not idle' "$state/.wake-queue" | grep -F 'backend=tmux' >/dev/null \
+    || fail "the DOWN row did not name where the mate lives: $(cat "$state/.wake-queue")"
+  [ "$(awk -F '\t' '$2 == "attempt"' "$state/.secondmate-relaunch-sm1" | wc -l | tr -d ' ')" -eq 1 ] \
+    || fail "the watcher did not try the guarded relaunch first: $(cat "$state/.secondmate-relaunch-sm1")"
+  pass "watch liveness: a dead mate that cannot be relaunched is escalated as DOWN with its backend"
+}
+
+test_secondmate_liveness_tick_ambiguous_endpoint_is_never_down() {
+  local dir state pid now
+  dir=$(make_secondmate_liveness_case liveness-down-ambiguous)
+  state="$dir/state"
+  now=$(date +%s)
+  printf '%s\tdead\t\n' "$((now - 5000))" > "$state/.secondmate-down-since-sm1"
+  run_liveness_leg "$dir" ambiguous FM_FAKE_TMUX_CURRENT_COMMAND=node; pid=$LIVENESS_PID
+  sleep 4
+  is_live_non_zombie "$pid" \
+    || fail "the watcher raised DOWN for an existing, merely unrecognized agent process: $(cat "$dir/watch-ambiguous.out")"
+  kill_liveness_leg "$pid"
+  [ ! -e "$state/.secondmate-down-since-sm1" ] \
+    || fail "an existing agent process left a not-alive episode open"
+  [ ! -s "$state/.wake-queue" ] || fail "an ambiguous endpoint queued a wake: $(cat "$state/.wake-queue")"
+  pass "watch liveness: an existing but unrecognized agent process is never reported DOWN"
+}
+
+test_secondmate_liveness_tick_relaunch_clears_the_down_episode() {
+  local dir state pid
+  dir=$(make_secondmate_liveness_case liveness-down-relaunch)
+  state="$dir/state"
+  run_liveness_leg "$dir" relaunch FM_FAKE_TMUX_CURRENT_COMMAND=zsh; pid=$LIVENESS_PID
+  wait_for_exit "$pid" 300 || fail "the watcher did not auto-relaunch the dead mate"
+  [ ! -e "$state/.secondmate-down-since-sm1" ] \
+    || fail "a successful relaunch left the not-alive episode open: $(cat "$state/.secondmate-down-since-sm1")"
+  pass "watch liveness: a successful relaunch ends the not-alive episode"
+}
+
 test_branch_grant_requires_lock_acquisition
 test_self_held_lock_reclaims_instead_of_deadlocking
 test_lock_wait_returns_when_its_directory_is_removed
@@ -3807,3 +3943,7 @@ test_secondmate_liveness_tick_error_keeps_scanning_and_wakes
 test_secondmate_liveness_tick_unqueued_outcome_is_an_error_not_a_wake
 test_secondmate_liveness_tick_skips_mate_whose_lock_is_held
 test_secondmate_liveness_tick_preserves_unreachable_remote
+test_secondmate_liveness_tick_raises_down_wake_after_grace
+test_secondmate_liveness_tick_down_wake_for_dead_mate_whose_relaunch_fails
+test_secondmate_liveness_tick_ambiguous_endpoint_is_never_down
+test_secondmate_liveness_tick_relaunch_clears_the_down_episode

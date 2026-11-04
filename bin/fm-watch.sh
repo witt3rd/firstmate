@@ -186,6 +186,16 @@
 #                          budget and is parked until a probe reads it live
 #                          again (FM_SECONDMATE_LIVENESS_MAX_ATTEMPTS and
 #                          FM_SECONDMATE_LIVENESS_WINDOW_SECS)
+#   check: secondmate <id> DOWN, not idle: no running agent confirmed on <host=..|backend=..> since <UTC time> (<n> min; <meaning>). ...
+#                          the mate's agent has been gone or unreadable for
+#                          longer than FM_SECONDMATE_DOWN_SECS (default 600):
+#                          nobody is working there, and a quiet status log is
+#                          not health. <meaning> says whether the agent process
+#                          is gone, its window is gone, or its host could not
+#                          be reached or read. One wake per not-alive episode
+#                          (state/.secondmate-down-since-<id>), raised beside
+#                          any relaunch row; the auto-relaunch paused wake
+#                          above carries the same "DOWN, not idle" words
 # For normal supervision, resume the session-start primary-harness protocol
 # after each printed reason. Direct duplicate invocations of this script still
 # no-op through the watcher singleton lock. A live holder whose beacon is stale
@@ -416,6 +426,11 @@ SECONDMATE_LIVENESS_MAX_ATTEMPTS=${FM_SECONDMATE_LIVENESS_MAX_ATTEMPTS:-}
 case "$SECONDMATE_LIVENESS_MAX_ATTEMPTS" in ''|*[!0-9]*|0) SECONDMATE_LIVENESS_MAX_ATTEMPTS=3 ;; esac
 SECONDMATE_LIVENESS_WINDOW_SECS=${FM_SECONDMATE_LIVENESS_WINDOW_SECS:-}
 case "$SECONDMATE_LIVENESS_WINDOW_SECS" in ''|*[!0-9]*|0) SECONDMATE_LIVENESS_WINDOW_SECS=3600 ;; esac
+# A mate whose agent is gone or unreadable for longer than this raises one
+# "DOWN, not idle" wake per episode (bin/fm-secondmate-liveness-lib.sh owns the
+# episode marker).
+SECONDMATE_DOWN_SECS=${FM_SECONDMATE_DOWN_SECS:-}
+case "$SECONDMATE_DOWN_SECS" in ''|*[!0-9]*|0) SECONDMATE_DOWN_SECS=600 ;; esac
 # A crew that declared a pause is idling on a known external wait, so its stale
 # pane is absorbed rather than wedge-escalated.
 # A captain-held or paused crew whose agent has confidently exited uses the same
@@ -1132,12 +1147,27 @@ EOF
 # budget. The per-mate liveness lock serializes this tick against a concurrent
 # session-start sweep, so neither side can kill or re-probe an endpoint the
 # other is mid-relaunch on.
+# Queue one durable check row (deduplicated against rows still queued) and
+# remember the first reason of the tick for its single wake. Reads and sets
+# first_reason in secondmate_liveness_tick's scope.
+secondmate_liveness_queue_row() {  # <notify-key> <reason>
+  local queued
+  queued=$(fm_wake_queued_keys check)
+  if printf '%s\n' "$queued" | grep -Fx "$1" >/dev/null 2>&1 \
+    || fm_wake_append check "$1" "$2"; then
+    [ -n "$first_reason" ] || first_reason=$2
+    return 0
+  fi
+  return 1
+}
+
 secondmate_liveness_tick() {
   local tick_marker="$STATE/.secondmate-liveness-tick"
   [ "$(age_of "$tick_marker")" -ge "$SECONDMATE_LIVENESS_SECS" ] || return 0
   touch "$tick_marker" || return 1
   local now=$(( $(date +%s) )) meta id kind
-  local bound_marker attempts notify_key reason queued err first_reason='' failed=0
+  local bound_marker attempts notify_key reason err first_reason='' failed=0
+  local down_since
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
     kind=$(fm_meta_get "$meta" kind 2>/dev/null || true)
@@ -1149,6 +1179,15 @@ secondmate_liveness_tick() {
     fm_secondmate_liveness_probe "$meta" "$id" poll
     bound_marker="$STATE/.secondmate-relaunch-bound-$id"
     reason='' notify_key='' err=''
+    # Not-alive episode: any reading that cannot show a running agent keeps the
+    # since-time; anything else (alive, an unrecognized but existing process)
+    # ends it. A mate with no recorded endpoint is not this tick's business.
+    if fm_secondmate_liveness_verdict_is_down "$FM_SM_LIVE_STATUS" "$FM_SM_LIVE_STATE"; then
+      fm_secondmate_liveness_note_down "$id" "$FM_SM_LIVE_STATE" \
+        || err="not-alive marker could not be written"
+    elif [ "$FM_SM_LIVE_STATUS" != silent ]; then
+      fm_secondmate_liveness_clear_down "$id"
+    fi
     case "$FM_SM_LIVE_STATUS" in
       relaunchable)
         if [ -e "$bound_marker" ] || [ -L "$bound_marker" ]; then
@@ -1157,14 +1196,16 @@ secondmate_liveness_tick() {
           err="relaunch ledger is unreadable; endpoint left $FM_SM_LIVE_STATE"
         elif [ "$attempts" -ge "$SECONDMATE_LIVENESS_MAX_ATTEMPTS" ]; then
           if printf '%s\t%s\n' "$now" "$FM_SM_LIVE_STATE" > "$bound_marker"; then
-            reason="check: secondmate $id auto-relaunch paused after $SECONDMATE_LIVENESS_MAX_ATTEMPTS attempts in ${SECONDMATE_LIVENESS_WINDOW_SECS}s; endpoint still $FM_SM_LIVE_STATE - relaunch it manually or retire the route"
+            reason="check: secondmate $id auto-relaunch paused after $SECONDMATE_LIVENESS_MAX_ATTEMPTS attempts in ${SECONDMATE_LIVENESS_WINDOW_SECS}s; DOWN, not idle: endpoint still $FM_SM_LIVE_STATE on $(fm_secondmate_liveness_where "$meta") since $(fm_secondmate_liveness_iso "$(fm_secondmate_liveness_down_since "$id")") - relaunch it manually or retire the route"
             notify_key="secondmate-relaunch-bound-$id"
+            fm_secondmate_liveness_note_down "$id" "$FM_SM_LIVE_STATE" "$now" || true
           else
             err="relaunch park marker could not be written; endpoint left $FM_SM_LIVE_STATE"
           fi
         elif fm_secondmate_liveness_relaunch "$meta" "$id" "$SECONDMATE_LIVENESS_TIMEOUT"; then
           reason="check: secondmate $id auto-relaunched after $FM_SM_LIVE_CAUSE ($FM_SM_LIVE_WHERE)"
           notify_key="secondmate-relaunch-$id-$now"
+          fm_secondmate_liveness_clear_down "$id"
         elif [ "$FM_SM_LIVE_STATUS" = skipped ]; then
           err=$FM_SM_LIVE_REASON
         else
@@ -1188,10 +1229,21 @@ secondmate_liveness_tick() {
         ;;
     esac
     if [ -n "$reason" ]; then
-      queued=$(fm_wake_queued_keys check)
-      if printf '%s\n' "$queued" | grep -Fx "$notify_key" >/dev/null 2>&1 \
-        || fm_wake_append check "$notify_key" "$reason"; then
-        [ -n "$first_reason" ] || first_reason=$reason
+      secondmate_liveness_queue_row "$notify_key" "$reason" \
+        || err="check wake row could not be queued: $reason"
+    fi
+    # DOWN, not idle: the episode has outlived the grace. It is raised beside
+    # any relaunch row, never instead of one, but not when the park wake above
+    # already carried the same words (it stamps the episode as notified).
+    down_since=$(fm_secondmate_liveness_down_since "$id")
+    if [ -z "$err" ] && [ -n "$down_since" ] \
+      && [ -z "$(fm_secondmate_liveness_down_notified "$id")" ] \
+      && [ ! -e "$bound_marker" ] && [ ! -L "$bound_marker" ] \
+      && [ $(( now - down_since )) -gt "$SECONDMATE_DOWN_SECS" ]; then
+      attempts=$(fm_secondmate_liveness_recent_attempts "$id" "$SECONDMATE_LIVENESS_WINDOW_SECS" 2>/dev/null) || attempts=0
+      reason="check: $(fm_secondmate_liveness_down_text "$id" "$meta" "$attempts" "$SECONDMATE_LIVENESS_MAX_ATTEMPTS" "$SECONDMATE_LIVENESS_WINDOW_SECS")"
+      if secondmate_liveness_queue_row "secondmate-down-$id-$down_since" "$reason"; then
+        fm_secondmate_liveness_note_down "$id" "$FM_SM_LIVE_STATE" "$now" || true
       else
         err="check wake row could not be queued: $reason"
       fi
