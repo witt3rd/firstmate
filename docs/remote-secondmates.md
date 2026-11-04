@@ -114,6 +114,8 @@ Neither direction removes herdr from a host or the unit, which stays installed a
 - A route whose endpoint is unverified (a foreign server, another Herdr session, a legacy record) is refused by `migrate` and left untouched, because moving it is an operator decision.
 - Migration needs the agent gone, so the mate is down between step 4 and step 5, normally under a minute.
 - One unit serves every tmux route on a host, and its server is one tmux process, so retiring a route closes only its own window.
+- Migration moves only the second mate. A worker already recorded on herdr in the mate's home keeps herdr when it is relaunched in place, because relaunch reads the recorded endpoint; only a fresh spawn follows the home's `config/backend`. Move such a worker by retiring it and spawning its next unit.
+- `--stop` refuses when the mate's pi composer reads `unknown`, which happens while herdr still reports the agent `working` although the mate's own busy record says idle. Confirm the pane is idle and the composer empty, exit the harness by hand, then rerun `migrate` without needing `--stop` to act.
 - A route's default backend is still herdr: a record with no field is herdr, and a seed without `--backend` writes none.
 
 ## Prerequisites
