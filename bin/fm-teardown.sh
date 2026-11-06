@@ -2122,7 +2122,8 @@ teardown_herdr_release_pane_cwd() {  # <worktree> <project>
 teardown_cargo_clean_released() {  # <worktree> <project>
   local wt=$1 proj=$2 wt_abs proj_abs
   [ "${FM_TEARDOWN_CARGO_CLEAN:-1}" != 0 ] || return 0
-  [ "$FORCE" != "--force" ] || return 0
+  # Build output is never work: a --force teardown discards the worktree anyway, so it cleans too
+  # (the --force skip left rung pool slots holding 42-66 GB of target/ on chef, 2026-11).
   [ -f "$wt/Cargo.toml" ] || return 0
   command -v cargo >/dev/null 2>&1 || return 0
   wt_abs=$(CDPATH='' cd -- "$wt" 2>/dev/null && pwd -P) || return 0
