@@ -1999,6 +1999,14 @@ test_refused_launch_turn_archives_thread_and_returns_lease() {
     t3_case "spawn-launch-turn-refused-$harness"
     t3_world_set 'w.failTools = { t3_thread_send: { code: "turn_refused", message: "launch turn refused" } }'
     t3_worker_setup "$id"
+    printf '%s\n' '[package]' 'name = "t"' > "$WORKER_WT/Cargo.toml"
+    git -C "$WORKER_WT" add Cargo.toml
+    git -C "$WORKER_WT" -c user.name=t -c user.email=t@t commit -q -m "add Cargo.toml"
+    cat > "$FAKEBIN/cargo" <<SH
+#!/usr/bin/env bash
+printf '%s %s\\n' "\$(pwd -P)" "\$*" >> "$CASE_DIR/cargo.log"
+SH
+    chmod +x "$FAKEBIN/cargo"
     out=$(t3_worker_spawn "$id" "$harness" --model "$model"); rc=$?
     expect_code 1 "$rc" "a refused $harness launch turn must abort spawn"$'\n'"$out"
     assert_contains "$out" "T3 refused the launch turn" "the refusal is reported"
@@ -2011,6 +2019,7 @@ test_refused_launch_turn_archives_thread_and_returns_lease() {
     assert_absent "$WORKER_WT/CLAUDE.local.md" "a returned $harness slot must not keep the aborted spawn's channel statement"
     assert_absent "$WORKER_WT/.codex/config.toml" "a returned $harness slot must not keep the aborted spawn's Codex environment"
   done
+  rm -f "$FAKEBIN/cargo"
   pass "fm-spawn.sh --backend t3code: a refused launch turn archives the thread, removes its environment files, then returns the lease"
 }
 

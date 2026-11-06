@@ -1951,6 +1951,7 @@ spawn_acquire_treehouse_lease() {
 # Treehouse resolves the right pool, exactly as bin/fm-teardown.sh does.
 spawn_return_treehouse_lease() {
   command -v treehouse >/dev/null 2>&1 || return 1
+  fm_pool_cargo_clean_released "$WT" "$PROJ_ABS"
   ( cd "$PROJ_ABS" && treehouse return --force --if-lease-holder "$ID" "$WT" >/dev/null 2>&1 )
 }
 
@@ -2100,6 +2101,7 @@ spawn_abort_cleanup() {
       || { [ "$T3CODE_CLAUDE_CHANNEL_WRITTEN" = 1 ] && [ -e "$WT/CLAUDE.local.md" ]; }; then
       echo "warning: could not remove the T3 environment files this spawn wrote into $WT for $ID, so it stays leased; remove them, then run 'treehouse return --force $WT' from $PROJ_ABS" >&2
     else
+      fm_pool_cargo_clean_released "$WT" "$PROJ_ABS"
       (cd "$PROJ_ABS" && treehouse return --force "$WT") >/dev/null 2>&1 \
         || echo "warning: could not return the leased worktree $WT for $ID; run 'treehouse return --force $WT' from $PROJ_ABS" >&2
     fi
