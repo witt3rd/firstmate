@@ -1999,9 +1999,11 @@ test_refused_launch_turn_archives_thread_and_returns_lease() {
     t3_case "spawn-launch-turn-refused-$harness"
     t3_world_set 'w.failTools = { t3_thread_send: { code: "turn_refused", message: "launch turn refused" } }'
     t3_worker_setup "$id"
-    printf '%s\n' '[package]' 'name = "t"' > "$WORKER_WT/Cargo.toml"
-    git -C "$WORKER_WT" add Cargo.toml
-    git -C "$WORKER_WT" -c user.name=t -c user.email=t@t commit -q -m "add Cargo.toml"
+    # Committed upstream so the spawn's base refresh keeps it in the leased slot.
+    printf '%s\n' '[package]' 'name = "t"' > "$WORKER_PROJ/Cargo.toml"
+    git -C "$WORKER_PROJ" add Cargo.toml
+    git -C "$WORKER_PROJ" -c user.name=t -c user.email=t@t commit -q -m "add Cargo.toml"
+    git -C "$WORKER_PROJ" push -q origin HEAD
     cat > "$FAKEBIN/cargo" <<SH
 #!/usr/bin/env bash
 printf '%s %s\\n' "\$(pwd -P)" "\$*" >> "$CASE_DIR/cargo.log"
@@ -2009,6 +2011,7 @@ SH
     chmod +x "$FAKEBIN/cargo"
     out=$(t3_worker_spawn "$id" "$harness" --model "$model"); rc=$?
     expect_code 1 "$rc" "a refused $harness launch turn must abort spawn"$'\n'"$out"
+    assert_grep "clean -q --target-dir" "$CASE_DIR/cargo.log" "the rolled-back $harness slot was returned with its cargo build output"
     assert_contains "$out" "T3 refused the launch turn" "the refusal is reported"
     [ "$(t3_log_line_of 'r.tool === "t3_thread_organize"')" -gt "$(t3_log_line_of 'r.tool === "t3_thread_send"')" ] \
       || fail "the idle thread of a rolled-back $harness dispatch must be archived"$'\n'"$out"
