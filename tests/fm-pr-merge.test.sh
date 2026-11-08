@@ -4169,8 +4169,9 @@ test_away_record_does_not_bypass_red_or_identity() {
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" "$head"
   printf '\npr=https://github.com/example/repo/pull/99\n' >> "$case_dir/state/task-x1.meta"
+  write_github_outcome "$case_dir" OPEN false false main
   set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/85 \
+  FM_TEST_GH_MERGE_STATE=open run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/85 \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
@@ -4178,6 +4179,25 @@ test_away_record_does_not_bypass_red_or_identity() {
   assert_grep 'is bound to https://github.com/example/repo/pull/99' "$case_dir/stderr" \
     "pr-identity: refusal did not name the recorded URL"
   pass "the away record does not bypass red checks, and a recorded pr= must match the URL"
+}
+
+test_next_pr_rebinds_when_bound_pr_reads_merged_on_the_forge() {
+  local case_dir head
+  head=aeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae
+  case_dir=$(make_case pr-rebind-forge-merged)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  # Bound to PR 99, merged on the forge, with no recorded merge notification.
+  printf '\npr=https://github.com/example/repo/pull/99\n' >> "$case_dir/state/task-x1.meta"
+  write_github_outcome "$case_dir" MERGED true false main
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/85 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "pr-rebind: next PR was refused although the bound PR is merged on the forge"
+  assert_no_grep 'is bound to' "$case_dir/stderr" \
+    "pr-rebind: refusal text appeared"
+  assert_grep 'pr=https://github.com/example/repo/pull/85' "$case_dir/state/task-x1.meta" \
+    "pr-rebind: task was not rebound to the next PR"
+  pass "a task rebinds to its next PR once the bound PR reads merged on the forge"
 }
 
 test_unreadable_away_record_refuses_merge() {
@@ -4996,6 +5016,7 @@ test_away_branch_refuses_when_record_archived_during_preflight
 test_away_posture_refuses_asynchronous_merge_paths
 test_away_plan_gated_403_does_not_block_the_merge
 test_away_record_does_not_bypass_red_or_identity
+test_next_pr_rebinds_when_bound_pr_reads_merged_on_the_forge
 test_unreadable_away_record_refuses_merge
 test_away_record_cannot_change_between_the_authority_read_and_the_merge
 test_a_record_made_unreadable_before_the_merge_refuses_it
