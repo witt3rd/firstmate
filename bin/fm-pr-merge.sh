@@ -1654,6 +1654,14 @@ refuse_github_queue_while_away() {
   return 2
 }
 
+# Reads the PR named by FM_PR_* live; call only inside a subshell.
+bound_pr_reads_merged() {
+  local PR_OWNER=$FM_PR_OWNER PR_REPO=$FM_PR_REPO PR_NUMBER=$FM_PR_NUMBER
+  fm_pr_github_host_export "$FM_PR_HOST" \
+    && { github_read_outcome_with_gh || github_read_outcome_with_gh_axi; } \
+    && [ "$FM_PR_GITHUB_MERGED" = true ]
+}
+
 require_recorded_pr_identity() {
   local existing
   existing=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
@@ -1670,10 +1678,7 @@ require_recorded_pr_identity() {
   # it merged. Unreadable or unmerged state keeps the refusal.
   if ( fm_pr_url_parse "$existing" \
     && [ "$FM_PR_PROVIDER" = github ] \
-    && PR_OWNER=$FM_PR_OWNER PR_REPO=$FM_PR_REPO PR_NUMBER=$FM_PR_NUMBER \
-    && fm_pr_github_host_export "$FM_PR_HOST" \
-    && { github_read_outcome_with_gh || github_read_outcome_with_gh_axi; } \
-    && [ "$FM_PR_GITHUB_MERGED" = true ] ); then
+    && bound_pr_reads_merged ); then
     return 0
   fi
   echo "error: task $ID is bound to $existing, not $URL" >&2
