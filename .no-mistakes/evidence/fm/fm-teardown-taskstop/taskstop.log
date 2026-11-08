@@ -1,0 +1,4 @@
+ok - fm-teardown tmux: fleet-task-stop runs with id and target before the window kill
+ok - fm-teardown tmux: a failing fleet-task-stop never refuses teardown
+ok - fm-teardown tmux: absent fleet-task-stop leaves behaviour unchanged
+ok - fm-teardown non-tmux: fleet-task-stop is not called
