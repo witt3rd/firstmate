@@ -734,6 +734,7 @@ tests/fm-auto-teardown.test.sh 12200
 tests/fm-approval-failover.test.sh 5410
 tests/fm-ask-user-authority.test.sh 171
 tests/fm-ceilings.test.sh 1000
+tests/fm-teardown-taskstop.test.sh 2000
 tests/fm-backend-cmux-smoke.test.sh 34
 tests/fm-backend-cmux.test.sh 3754
 tests/fm-backend-herdr-launch-line.test.sh 242
