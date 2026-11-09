@@ -4106,6 +4106,16 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   fm_treehouse_slot_owner_release "$WT" "$ID"
 fi
 
+# End everything the task left running, on every backend: its cgroups (pane scope on tmux, per-task slices) and its labelled docker objects.
+# The helper is fleet-ops' and best-effort; only tmux has a pane target to pass.
+if command -v fleet-task-stop >/dev/null 2>&1; then
+  if [ "$BACKEND" = tmux ] && [ "$TEARDOWN_WINDOWLESS" != 1 ]; then
+    fleet-task-stop "$ID" "$T" || true
+  else
+    fleet-task-stop "$ID" || true
+  fi
+fi
+
 HERDR_PRESENTATION_JOURNAL="$STATE/$ID.herdr-presentation"
 # teardown_herdr_journal_orphaned: true when the task's own journal names
 # nothing the session-start sweep could still close - a version 1 attempt whose
@@ -4176,10 +4186,6 @@ elif [ "$BACKEND" != orca ] && [ "$BACKEND" != t3code ] && [ "$TEARDOWN_WINDOWLE
   # a stale request. A task with no cached record costs nothing.
   if [ "$BACKEND" = rex ] && { [ -e "$STATE/.rex-mark-$ID" ] || [ -e "$STATE/.rex-progress-$ID" ] || [ -e "$STATE/.rex-tint-$ID" ]; }; then
     FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-rex-marks.sh" clear "$ID" >/dev/null 2>&1 || true
-  fi
-  # Stop the task's cgroups (pane scope + per-task slices) so nothing it detached (setsid, nohup, &) outlives it.
-  if [ "$BACKEND" = tmux ] && command -v fleet-task-stop >/dev/null 2>&1; then
-    fleet-task-stop "$ID" "$T" || true
   fi
   fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" \
     || endpoint_close_refusal "$ID" "$BACKEND" "$T" 1 || exit 1
