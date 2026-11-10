@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fm-teardown stops the task's process group via fleet-task-stop (tmux only) before the window kill.
+# fm-teardown ends the task via fleet-task-stop on every backend (pane target only on tmux), before the window kill.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -82,7 +82,7 @@ test_absent_helper_unchanged() {
   pass "fm-teardown tmux: absent fleet-task-stop leaves behaviour unchanged"
 }
 
-test_non_tmux_backend_skips_helper() {
+test_non_tmux_backend_calls_helper_without_target() {
   local dir id=ts-d rc=0
   dir=$(make_case zellij)
   cat > "$dir/fakebin/zellij" <<'SH'
@@ -90,15 +90,16 @@ test_non_tmux_backend_skips_helper() {
 exit 0
 SH
   chmod +x "$dir/fakebin/zellij"
-  fm_write_meta "$dir/home/state/$id.meta" "window=isolated:fm-$id" "endpoint_task_id=$id" \
+  fm_write_meta "$dir/home/state/$id.meta" "window=lab:7" "endpoint_task_id=$id" \
     "worktree=$dir/worktree" "project=$dir/project" "kind=scout" \
     "backend=zellij" "zellij_session=lab" "zellij_tab_id=3" "zellij_pane_id=7"
   run_case "$dir" "$id" || rc=$?
-  ! grep -q '^fleet-task-stop' "$dir/runtime.log" || fail "helper called on non-tmux backend"
-  pass "fm-teardown non-tmux: fleet-task-stop is not called"
+  [ "$rc" -eq 0 ] || fail "zellij teardown failed rc=$rc: $(cat "$dir/stderr")"
+  grep -q "^fleet-task-stop <$id>$" "$dir/runtime.log" || fail "helper not called with id only: $(cat "$dir/runtime.log")"
+  pass "fm-teardown non-tmux: fleet-task-stop runs with the task id and no pane target"
 }
 
 test_tmux_calls_helper_before_kill
 test_helper_failure_does_not_block
 test_absent_helper_unchanged
-test_non_tmux_backend_skips_helper
+test_non_tmux_backend_calls_helper_without_target
