@@ -7,8 +7,10 @@
 # over a glob under the home directory or /mnt, git clean outside the pane's own
 # worktree, find -delete or -exec rm over a protected location (the home
 # directory, a shared top-level directory, /mnt, /), block-device writes, and
-# btrfs subvolume deletes - in every worker and mate pane that loads it.
-# Docker is the fleet docker shim's job (since 2026-10-18), not this guard's.
+# btrfs subvolume deletes, and docker/podman removals whose targets are not exact
+# literal names carrying the pane's own task label (local or reached over ssh,
+# where the host's docker shim does not run) - in every worker and mate pane
+# that loads it.
 # bin/fm-destructive-command-policy.mjs is the sole owner of the allow/deny
 # decision. This wrapper acquires the harness payload, supplies the pane's
 # identity and own worktree, honors the captain-or-main override, logs every
@@ -264,7 +266,8 @@ case "$CMD" in
   *)
     case "$PREFILTER" in
       *rm*|*find*|*git*|*dd*|*mkfs*|*mke2fs*|*mkswap*|\
-      *wipefs*|*blkdiscard*|*parted*|*fdisk*|*btrfs*|*shred*) ;;
+      *wipefs*|*blkdiscard*|*parted*|*fdisk*|*btrfs*|*shred*|\
+      *docker*|*podman*|*nerdctl*) ;;
       *) exit 0 ;;
     esac
     ;;

@@ -21,6 +21,14 @@ import { fileURLToPath } from "node:url";
 import { Lexer, splitProgram, commandPosition } from "./fm-arm-command-policy.mjs";
 
 const REASONS = {
+  "docker-prune":
+    "a docker or podman prune deletes every matching resource on the host, including shared ones this pane did not create",
+  "docker-bulk-rm":
+    "a docker or podman removal whose targets come from a filter, label, wildcard, variable, command substitution, xargs, or a pipe can delete resources this pane did not create",
+  "docker-rm-unowned":
+    "a docker or podman removal may name only resources that carry this pane's own task label; this name does not, so it may belong to someone else",
+  "docker-compose-down":
+    "a compose down or rm removes every container of a project chosen by directory or file, not by an exact name this pane created; name the project with -p <this pane's task label>-... or remove the exact resources you created",
   "rm-glob-protected":
     "a recursive rm over a wildcard or variable path under the home directory or /mnt can sweep shared state; only this pane's own worktree and /tmp are open to it",
   "rm-protected-root":
@@ -36,10 +44,25 @@ const REASONS = {
   "btrfs-subvolume-delete":
     "deleting a btrfs subvolume is irreversible",
   "unclassifiable-destructive":
-    "the command uses shell syntax this guard cannot classify and mentions a retained destructive command (recursive rm, a device tool, btrfs subvolume delete, git clean)",
+    "the command uses shell syntax this guard cannot classify and mentions a destructive command (docker removal, recursive rm, a device tool, btrfs subvolume delete, git clean)",
 };
 
 const MAX_DEPTH = 8;
+const DOCKER_CLIS = new Set(["docker", "podman", "nerdctl"]);
+const COMPOSE_CLIS = new Set(["docker-compose", "podman-compose"]);
+const DOCKER_GLOBAL_ARG_OPTIONS = new Set([
+  "-H", "--host", "-c", "--context", "--config", "-l", "--log-level",
+  "--tlscacert", "--tlscert", "--tlskey", "--connection", "--url", "--identity",
+  "--root", "--runroot", "--namespace", "-n", "--address", "-a",
+]);
+const COMPOSE_ARG_OPTIONS = new Set([
+  "-f", "--file", "-p", "--project-name", "--project-directory", "--profile",
+  "--env-file", "--ansi", "--parallel", "--progress",
+]);
+const DOCKER_OBJECTS = new Set(["volume", "container", "image", "network", "system", "builder", "buildx", "stack", "service"]);
+// A docker object name this pane may remove is a plain literal: no glob, filter
+// (key=value), variable, or path characters.
+const DOCKER_LITERAL_NAME = /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/;
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
 const SHELL_KEYWORDS = new Set(["do", "then", "else", "elif", "if", "while", "until", "!", "time"]);
 const EXTRA_WRAPPERS = {
@@ -72,13 +95,13 @@ function isPipe(separator) {
 }
 
 // Raw backstop for syntax the shared tokenizer refuses (case arms, unbalanced
-// quoting): fail closed only when a RETAINED destructive verb is visibly
-// present. Since 2026-10-18 docker and systemctl are not patterns here (docker
-// is the fleet docker shim's job; the systemctl rule was dropped), so only the
-// verbs whose rules remain are backstopped.
+// quoting): fail closed only when a destructive verb is visibly present. The
+// fleet docker shim guards docker on its own host only, never docker reached
+// over ssh on another host, so docker removal verbs are backstopped here too.
 function rawLooksDestructive(command) {
   const text = command.replace(/\\\r?\n/g, "");
   return [
+    /\b(?:docker|podman|nerdctl|docker-compose|podman-compose)\b[\s\S]*\b(?:prune|rm|rmi|remove|down)\b/,
     /\brm\b[\s\S]*(?:\s-[A-Za-z]*[rR]|--recursive)/,
     /\bfind\b[\s\S]*(?:-delete|-exec(?:dir)?\s+\S*\b(?:rm|rmdir|unlink|shred)\b)/,
     /\b(?:mkfs(?:\.\w+)?|mke2fs|mkswap|wipefs|blkdiscard|parted|sfdisk|sgdisk)\b/,
@@ -162,6 +185,94 @@ function inSharedTree(location, context) {
 
 // --- per-command classifiers --------------------------------------------------
 
+function ownsName(name, context) {
+  return context.ownLabels.some((label) => label.length >= 3 && (name === label || (name.startsWith(label) && /^[-_.:]/.test(name.slice(label.length)))));
+}
+
+// A removal may name only exact literal objects carrying this pane's own task
+// label. The decision is identical for a local command and for the same text
+// reached through ssh, bash -c, sh -c, eval, xargs, or a command substitution:
+// those sinks all re-enter analyze() with the same context.
+function classifyDockerTargets(words, from, context, fed) {
+  if (fed) return deny("docker-bulk-rm");
+  const targets = [];
+  let optionsEnded = false;
+  for (let i = from; i < words.length; i += 1) {
+    const value = words[i].value;
+    if (!optionsEnded && value === "--") {
+      optionsEnded = true;
+      continue;
+    }
+    if (!optionsEnded && value.startsWith("-")) {
+      if (value === "-a" || value === "--all" || value.startsWith("--filter") || value.startsWith("--label")) return deny("docker-bulk-rm");
+      continue;
+    }
+    targets.push(words[i]);
+  }
+  for (const target of targets) {
+    if (dynamicWord(target) || globWord(target) || !DOCKER_LITERAL_NAME.test(target.value)) return deny("docker-bulk-rm");
+  }
+  for (const target of targets) {
+    if (!ownsName(target.value, context)) return deny("docker-rm-unowned");
+  }
+  return null;
+}
+
+// docker compose down / rm acts on a whole project: allowed only when -p names
+// a literal project this pane owns (the project is otherwise chosen by the
+// directory or compose file, never by an exact name).
+function classifyCompose(words, start, context, fed) {
+  let index = start;
+  let project = null;
+  while (index < words.length && words[index].value.startsWith("-")) {
+    const option = words[index].value;
+    if (option === "-p" || option === "--project-name") {
+      project = words[index + 1] || null;
+      index += 2;
+    } else if (option.startsWith("--project-name=")) {
+      project = { value: option.slice("--project-name=".length), subs: [], literal: words[index].literal, unquotedExpansion: words[index].unquotedExpansion };
+      index += 1;
+    } else {
+      index += COMPOSE_ARG_OPTIONS.has(option) ? 2 : 1;
+    }
+  }
+  const verb = words[index]?.value;
+  if (verb !== "down" && verb !== "rm") return null;
+  if (fed || !project || dynamicWord(project) || globWord(project) || !DOCKER_LITERAL_NAME.test(project.value) || !ownsName(project.value, context)) {
+    return deny("docker-compose-down");
+  }
+  return null;
+}
+
+function classifyDocker(name, words, start, context, fed) {
+  if (COMPOSE_CLIS.has(name)) return classifyCompose(words, start, context, fed);
+  let index = start;
+  while (index < words.length && words[index].value.startsWith("-")) {
+    const option = words[index].value;
+    if (!option.includes("=") && DOCKER_GLOBAL_ARG_OPTIONS.has(option)) index += 2;
+    else index += 1;
+  }
+  const sub = words[index]?.value;
+  if (!sub) return null;
+  if (sub === "compose") return classifyCompose(words, index + 1, context, fed);
+  let objectKind = "container";
+  let verbIndex = index;
+  if (DOCKER_OBJECTS.has(sub)) {
+    objectKind = sub;
+    verbIndex = index + 1;
+    while (verbIndex < words.length && words[verbIndex].value.startsWith("-")) verbIndex += 1;
+  } else if (sub === "rmi") {
+    objectKind = "image";
+  }
+  const verb = words[verbIndex]?.value;
+  if (!verb) return null;
+  if (verb === "prune") return deny("docker-prune");
+  const removal = (verbIndex === index && (verb === "rm" || verb === "rmi")) ||
+    (verbIndex !== index && (verb === "rm" || verb === "remove") && objectKind !== "system");
+  if (!removal) return null;
+  return classifyDockerTargets(words, verbIndex + 1, context, fed);
+}
+
 function classifyRm(words, start, context, fed) {
   let recursive = false;
   const targets = [];
@@ -228,6 +339,11 @@ function classifyFind(words, start, context) {
   let destructive = false;
   for (let i = index; i < words.length; i += 1) {
     const value = words[i].value;
+    if (FIND_EXEC.has(value) && words[i + 1] && (DOCKER_CLIS.has(basename(words[i + 1].value)) || COMPOSE_CLIS.has(basename(words[i + 1].value)))) {
+      // find feeds its matches to the removal: a list nobody reviewed.
+      const verdict = classifyDocker(basename(words[i + 1].value), words, i + 2, context, true);
+      if (verdict) return verdict;
+    }
     if (value === "-delete") destructive = true;
     if (FIND_EXEC.has(value) && words[i + 1] && FIND_EXEC_DELETERS.has(basename(words[i + 1].value))) destructive = true;
   }
@@ -305,14 +421,23 @@ function classifyBtrfs(words, start) {
 
 // --- nested execution sinks --------------------------------------------------
 
+// The tokenizer keeps a double-quoted word's literal text and drops the position
+// of each command substitution in it. A nested sink must still see that the
+// text was assembled from a substitution, so the substitutions are re-appended
+// as dynamic words: `bash -c "docker rm -f $(docker ps -aq)"` then reads the
+// same as the unquoted form and is refused identically.
+function wordText(word) {
+  return word.value + word.subs.map((sub) => ` $(${sub.content})`).join("");
+}
+
 function shellPayload(words, start) {
   for (let i = start; i < words.length; i += 1) {
     const value = words[i].value;
     if (/^-[A-Za-z]*c[A-Za-z]*$/.test(value)) {
       let payload = words[i + 1];
       if (payload?.value === "--") payload = words[i + 2];
-      if (!payload || payload.subs.length > 0) return { kind: "none" };
-      return { kind: "command", payload: payload.value };
+      if (!payload) return { kind: "none" };
+      return { kind: "command", payload: wordText(payload) };
     }
     if (/^[-+]O$/.test(value)) {
       i += 1;
@@ -333,7 +458,7 @@ function sshRemoteCommand(words, start) {
   index += 1; // destination
   const remote = words.slice(index);
   if (remote.length === 0) return "";
-  return remote.map((word) => word.value).join(" ");
+  return remote.map(wordText).join(" ");
 }
 
 function stripExtraWrappers(words, index) {
@@ -404,7 +529,8 @@ function analyze(command, context, depth) {
     const start = stripped.index + 1;
     const fed = stripped.fed || piped;
     let verdict = null;
-    if (name === "rm") verdict = classifyRm(words, start, local, stripped.fed);
+    if (DOCKER_CLIS.has(name) || COMPOSE_CLIS.has(name)) verdict = classifyDocker(name, words, start, local, fed);
+    else if (name === "rm") verdict = classifyRm(words, start, local, stripped.fed);
     else if (name === "find") verdict = classifyFind(words, start, local);
     else if (name === "git") verdict = classifyGit(words, start, local);
     else if (name === "dd" || DEVICE_TOOLS.has(name) || name.startsWith("mkfs.")) verdict = classifyDevice(name.startsWith("mkfs.") ? "mkfs" : name, words, start);
@@ -420,7 +546,7 @@ function analyze(command, context, depth) {
         }
       }
     } else if (name === "eval") {
-      verdict = analyze(words.slice(start).map((word) => word.value).join(" "), local, depth + 1);
+      verdict = analyze(words.slice(start).map(wordText).join(" "), local, depth + 1);
     } else if (name === "ssh") {
       const remote = sshRemoteCommand(words, start);
       if (remote) verdict = analyze(remote, { ...local, cwd: local.home, ownWorktree: null }, depth + 1);
