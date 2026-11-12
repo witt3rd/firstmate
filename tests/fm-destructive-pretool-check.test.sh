@@ -61,33 +61,60 @@ matrix_case() {
   MATRIX_COMMANDS+=("$3")
 }
 
-# 2026-10-18 simplification: docker is the fleet docker shim's job (files/docker-guard/docker-minimal in fleet-ops), and
-# systemctl-disable is gone, so these former denials are ALLOWED by this guard. find-delete stays, narrowed to protected locations.
-# The xwvol incident shapes: a filtered listing fed into a volume removal.
-matrix_case X01 allow 'docker volume ls -q -f name=xwvol- -f name=ws- | xargs docker volume rm'
-matrix_case X02 allow 'docker volume ls -q --filter name=xwvol | xargs -r docker volume rm -f'
-matrix_case X03 allow 'docker volume rm $(docker volume ls -q -f name=xwvol-)'
-matrix_case X04 allow 'docker volume rm `docker volume ls -q -f name=xwvol-`'
-matrix_case X05 allow "ssh x 'docker volume ls -q -f name=xwvol | xargs docker volume rm'"
-matrix_case X06 allow 'for v in $(docker volume ls -q -f name=xwvol); do docker volume rm "$v"; done'
-matrix_case X07 allow 'docker volume ls -q | grep xwvol | xargs -n1 docker volume rm'
-matrix_case X08 allow 'docker volume rm xwvol-ws-123'
-matrix_case X09 allow 'docker volume ls -q -f name=xwvol | while read -r v; do docker volume rm "$v"; done'
-# Docker and podman bulk forms.
-matrix_case D01 allow 'docker volume prune -f'
-matrix_case D02 allow 'docker system prune -af --volumes'
-matrix_case D03 allow 'docker container prune'
-matrix_case D04 allow 'docker image prune -a'
-matrix_case D05 allow 'docker network prune -f'
-matrix_case D06 allow 'docker rm -f $(docker ps -aq)'
-matrix_case D07 allow 'docker rmi xwvol-*'
-matrix_case D08 allow 'sudo docker volume rm $VOL'
-matrix_case D09 allow 'podman volume prune'
-matrix_case D10 allow 'docker rm -f other-stack-web'
-matrix_case D11 allow 'docker -H ssh://x volume prune -f'
-matrix_case D12 allow "bash -c 'docker volume prune -f'"
-matrix_case D13 allow "eval 'docker system prune -f'"
-matrix_case D14 allow 'case x in a) docker volume prune -f;; esac'
+# Docker removal: only exact literal names carrying the pane's own task label may be removed,
+# never by a filter, label, glob, variable, command substitution, pipe, xargs, or name pattern,
+# and the decision is the same run locally or after ssh / bash -c / sh -c / eval. The fleet docker
+# shim guards docker on this host only; it never sees a command run over ssh on another host.
+# The Spire builder incident: ten stacks removed on another host over plain ssh.
+matrix_case S01 deny $'ids=$(docker ps -a --filter label=io.spire.pgmq-test.run-id --format \'{{.Names}}\'); docker rm -f $ids'
+matrix_case S02 deny "ssh mcfeely 'docker network ls --format {{.Name}} | grep ^pgmq-sql-only-startup- | xargs docker network rm'"
+matrix_case S03 deny 'docker volume ls | grep ^pgmq-sql-only-startup | xargs docker volume rm'
+matrix_case S04 deny $'ssh mcfeely "ids=$(docker ps -a --filter label=io.spire.pgmq-test.run-id --format \'{{.Names}}\'); docker rm -f $ids"'
+matrix_case S05 deny 'ssh mcfeely "docker network ls --format {{.Name}} | grep ^pgmq-sql-only-startup- | xargs docker network rm"'
+matrix_case S06 deny 'ssh mcfeely "docker volume ls | grep ^pgmq-sql-only-startup | xargs docker volume rm"'
+matrix_case S07 deny 'ssh mcfeely docker rm -f $(docker ps -aq --filter label=io.spire.pgmq-test.run-id)'
+matrix_case S08 deny 'ssh mcfeely "docker rm -f $(docker ps -aq --filter label=io.spire.pgmq-test.run-id)"'
+matrix_case S09 deny "ssh -o BatchMode=yes mcfeely 'docker ps -aq --filter label=x | xargs docker rm -f'"
+# The same bulk shapes run locally and through every shell sink.
+matrix_case X01 deny 'docker volume ls -q -f name=xwvol- -f name=ws- | xargs docker volume rm'
+matrix_case X02 deny 'docker volume ls -q --filter name=xwvol | xargs -r docker volume rm -f'
+matrix_case X03 deny 'docker volume rm $(docker volume ls -q -f name=xwvol-)'
+matrix_case X04 deny 'docker volume rm `docker volume ls -q -f name=xwvol-`'
+matrix_case X05 deny "ssh x 'docker volume ls -q -f name=xwvol | xargs docker volume rm'"
+matrix_case X06 deny 'for v in $(docker volume ls -q -f name=xwvol); do docker volume rm "$v"; done'
+matrix_case X07 deny 'docker volume ls -q | grep xwvol | xargs -n1 docker volume rm'
+matrix_case X08 deny 'docker volume rm xwvol-ws-123'
+matrix_case X09 deny 'docker volume ls -q -f name=xwvol | while read -r v; do docker volume rm "$v"; done'
+matrix_case X10 deny "bash -c 'docker ps -aq | xargs docker rm -f'"
+matrix_case X11 deny "sh -c 'docker rm -f \$ids'"
+matrix_case X12 deny 'bash -c "docker rm -f $(docker ps -aq)"'
+matrix_case X13 deny "eval 'docker network ls -q | xargs docker network rm'"
+matrix_case X14 deny 'find /var/lib -name x -exec docker rm {} +'
+# Prune, rm, rmi, network rm, volume rm, builder prune, compose down.
+matrix_case D01 deny 'docker volume prune -f'
+matrix_case D02 deny 'docker system prune -af --volumes'
+matrix_case D03 deny 'docker container prune'
+matrix_case D04 deny 'docker image prune -a'
+matrix_case D05 deny 'docker network prune -f'
+matrix_case D06 deny 'docker rm -f $(docker ps -aq)'
+matrix_case D07 deny 'docker rmi xwvol-*'
+matrix_case D08 deny 'sudo docker volume rm $VOL'
+matrix_case D09 deny 'podman volume prune'
+matrix_case D10 deny 'docker rm -f other-stack-web'
+matrix_case D11 deny 'docker -H ssh://x volume prune -f'
+matrix_case D12 deny "bash -c 'docker volume prune -f'"
+matrix_case D13 deny "eval 'docker system prune -f'"
+matrix_case D14 deny 'case x in a) docker volume prune -f;; esac'
+matrix_case D15 deny 'docker builder prune -f'
+matrix_case D16 deny 'docker network rm pgmq-sql-only-startup-1'
+matrix_case D17 deny 'docker compose down'
+matrix_case D18 deny 'docker-compose down -v'
+matrix_case D19 deny 'docker compose -p other-project down'
+matrix_case D20 deny "docker rm -f $FIX_TASK-*"
+matrix_case D21 deny "docker rm --filter label=x $FIX_TASK-web"
+matrix_case D22 deny "ssh mcfeely docker rm -f other-stack-web"
+matrix_case D23 deny "docker rm -f $FIX_TASK-web other-stack-web"
+matrix_case D24 deny "docker rm -f xx$FIX_TASK-web"
 # Recursive rm over a glob or root under the home directory or /mnt.
 matrix_case R01 deny 'rm -rf ~/.treehouse/*'
 matrix_case R02 deny 'rm -rf ~/.local/state/*'
@@ -131,7 +158,6 @@ matrix_case A01 allow 'docker volume ls -q -f name=xwvol'
 matrix_case A02 allow 'docker ps -a'
 matrix_case A03 allow "docker volume rm $FIX_TASK-db"
 matrix_case A04 allow "docker rm -f $FIX_TASK-web"
-matrix_case A05 allow 'docker builder prune -f'
 matrix_case A06 allow 'echo "docker volume prune -f"'
 matrix_case A07 allow 'rm -rf build/*'
 matrix_case A08 allow 'rm -rf ./node_modules'
@@ -149,7 +175,14 @@ matrix_case A19 allow 'mkfs.ext4 ./disk.img'
 matrix_case A20 allow 'ls -la'
 matrix_case A21 allow 'rm -rf "$tmpdir"'
 matrix_case A22 allow "grep -rn 'docker volume prune' docs"
-matrix_case A23 allow 'docker compose down'
+matrix_case A23 allow "docker compose -p $FIX_TASK-stack down -v"
+matrix_case A27 allow "docker network rm $FIX_TASK-net $FIX_TASK-net2"
+matrix_case A28 allow "docker image rm $FIX_TASK-img:latest"
+matrix_case A29 allow "ssh mcfeely docker rm -f $FIX_TASK-web"
+matrix_case A30 allow "ssh mcfeely 'docker volume rm $FIX_TASK-db'"
+matrix_case A31 allow "bash -c 'docker rm -f $FIX_TASK-web'"
+matrix_case A32 allow "sudo docker volume rm $FIX_TASK-db"
+matrix_case A33 allow 'ssh mcfeely docker ps -a --filter label=x'
 matrix_case A24 allow "printf '%s\\n' 'rm -rf ~/*'"
 matrix_case A25 allow $'cat <<\'EOF\'\nrm -rf ~/.treehouse/*\nEOF'
 matrix_case A26 allow "rm -rf $FIX_WT/build/*"
@@ -218,16 +251,40 @@ test_policy_reason_codes() {
   assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	rm-bulk-piped" "the xwvol pipe shape must deny as rm-bulk-piped"
   out=$(node "$POLICY" --command 'rm -rf ~/.treehouse/*' --cwd "$FIX_WT" --home "$FIX_HOME")
   assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	rm-glob-protected" "a prune must deny as rm-glob-protected"
-  # docker is the fleet docker shim's job now (fleet-ops files/docker-guard/docker-minimal): this guard lets every docker shape pass
-  for dcmd in 'docker volume prune -f' "docker volume rm $FIX_TASK-db" 'docker rm -f $(docker ps -aq)' 'ls | xargs docker kill'; do
-    out=$(node "$POLICY" --command "$dcmd" --cwd "$FIX_WT" --home "$FIX_HOME")
-    assert_equals "$out" "allow" "docker is not this guard's business: $dcmd"
-  done
+  # docker removal: policy test mode (classification only, no docker ever runs); a task label comes from --own-label
+  local dcmd code
+  while IFS='|' read -r code dcmd; do
+    out=$(node "$POLICY" --command "$dcmd" --cwd "$FIX_WT" --home "$FIX_HOME" --own-label "$FIX_TASK")
+    case "$code" in
+      allow) assert_equals "$out" "allow" "own exact literal docker name must allow: $dcmd" ;;
+      *) assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	$code" "docker policy code for: $dcmd" ;;
+    esac
+  done <<EOF_DOCKER
+docker-prune|docker volume prune -f
+docker-prune|docker builder prune -f
+docker-prune|ssh mcfeely docker system prune -af
+docker-bulk-rm|docker rm -f \$ids
+docker-bulk-rm|docker volume ls | grep ^pgmq | xargs docker volume rm
+docker-bulk-rm|ssh mcfeely 'docker network ls -q | xargs docker network rm'
+docker-bulk-rm|docker rm --filter label=x $FIX_TASK-web
+docker-bulk-rm|docker rm -f $FIX_TASK-*
+docker-rm-unowned|docker rm -f other-stack-web
+docker-rm-unowned|ssh mcfeely docker rm -f other-stack-web
+docker-compose-down|docker compose down
+docker-compose-down|docker compose -p other down
+allow|docker rm -f $FIX_TASK-web
+allow|ssh mcfeely docker rm -f $FIX_TASK-web
+allow|docker compose -p $FIX_TASK-stack down
+allow|docker ps -a --filter label=x
+EOF_DOCKER
+  out=$(node "$POLICY" --command "docker rm -f $FIX_TASK-web" --cwd "$FIX_WT" --home "$FIX_HOME")
+  assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	docker-rm-unowned" "a pane with no task label owns no docker object"
   for ncmd in 'case y in z) docker volume prune -f;; esac' 'case y in z) systemctl disable foo;; esac' 'cat <<EOF\nnote: docker rm -f x; systemctl disable y\nEOF\ncase a in b) true;; esac' "systemctl --user disable animus" 'echo x; rm -rf ~/a/*; echo y' 'echo x; rm -rf ~/a/*; case y in z) true;; esac' 'case y in z) git clean -fdx;; esac'; do
     out=$(node "$POLICY" --command "$ncmd" --cwd "$FIX_WT" --home "$FIX_HOME")
     case "$ncmd" in
+      *"case y in"*"docker volume prune"*|*"docker rm -f x"*) assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	unclassifiable-destructive" "unparsable syntax that names a docker removal fails closed: $ncmd" ;;
       *"rm -rf"*"case y in"*|*"case y in"*"git clean"*) assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	unclassifiable-destructive" "unparsable syntax that names a RETAINED verb (rm -rf, git clean) still fails closed: $ncmd" ;;
-      *"case y in"*) assert_equals "$out" "allow" "unparsable syntax that only names docker / systemctl is allowed: $ncmd" ;;
+      *"case y in"*) assert_equals "$out" "allow" "unparsable syntax that only names systemctl is allowed: $ncmd" ;;
       *"rm -rf ~/a/*"*) assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	rm-glob-protected" "a retained rule still fires inside a longer command" ;;
       *) assert_equals "$out" "allow" "removed rule (systemctl-disable): $ncmd" ;;
     esac
@@ -244,7 +301,7 @@ test_policy_reason_codes() {
   assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	find-delete" "find -delete with no start path from the home directory must deny"
   out=$(node "$POLICY" --command 'git clean -fdx' --cwd "$FIX_WT" --home "$FIX_HOME")
   assert_equals "$(printf '%s' "$out" | cut -f1,2)" "deny	git-clean" "git clean with no worktree spawned for the caller must deny"
-  pass "policy CLI: stable reason codes for the retained rules; docker, and systemctl are allowed; find-delete denies over protected locations"
+  pass "policy CLI: stable reason codes for the retained rules and the docker removal rules; systemctl is allowed; find-delete denies over protected locations"
 }
 
 # --- log, supervisor note, and override -------------------------------------
