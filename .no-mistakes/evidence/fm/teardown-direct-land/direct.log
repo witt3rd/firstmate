@@ -1,0 +1,3 @@
+ok - directly landed (patch-id on origin/main, no PR) branch is torn down
+ok - direct land plus one unlanded commit still refuses
+ok - directly landed branch with uncommitted changes still refuses
