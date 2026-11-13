@@ -1651,6 +1651,19 @@ test_scaffolds_carry_no_kill_rule() {
   pass "fm-brief.sh: ship, scout, and secondmate briefs carry the process-signal rule"
 }
 
+test_ship_brief_requires_fm_run_for_heavy_work() {
+  local home brief mode
+  home="$TMP_ROOT/fm-run-rule-home"
+  mkdir -p "$home/data"
+  for mode in no-mistakes direct-PR local-only; do
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "brief-fmrun-$mode" alpha --mode "$mode" >/dev/null 2>&1 || fail "fm-brief.sh ship $mode exited non-zero"
+    brief="$home/data/brief-fmrun-$mode/brief.md"
+    assert_grep "bin/fm-run <task-id> -- <command>" "$brief" "$mode brief lacks the fm-run launch rule"
+    assert_grep "not done until CREATED/REMOVED/REMAINING are printed and REMAINING is empty" "$brief" "$mode brief lacks the REMAINING-empty completion rule"
+  done
+  pass "fm-brief.sh: ship briefs tell builders to launch heavy work through fm-run"
+}
+
 test_crewmate_scaffolds_forbid_pool_administration() {
   local home id brief mode ship_rule scout_rule
   home="$TMP_ROOT/pool-admin-home"
@@ -1886,6 +1899,7 @@ test_ship_branch_prefix_empty_override_yields_bare_task_id
 test_branch_prefix_is_refused_where_it_does_not_apply
 test_branch_prefix_value_is_validated
 test_branch_prefix_command_is_shell_safe
+test_ship_brief_requires_fm_run_for_heavy_work
 test_crewmate_scaffolds_forbid_pool_administration
 test_scaffolds_carry_no_kill_rule
 test_secondmate_caretaker_charter

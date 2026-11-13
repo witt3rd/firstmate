@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# fm-created-check - the read-only closing check for work launched through fm-run
+# (docs/fm-run.md).
+#
+#   fm-created-check <task-id>
+#
+# Reads every ledger fm-run kept for the task id on THIS host, verifies each
+# recorded object is gone (docker inspect by exact name, test -e by exact path),
+# and prints:
+#   CLEAN                       every recorded object is gone
+#   REMAINING ... + one command the exact remaining names and the one command, run
+#                               on that host, that removes them
+#   NO-LEDGER                   nothing was launched through fm-run for this task id
+#                               on this host; docker objects or temp dirs made
+#                               outside fm-run are not covered, so this is a flag
+#                               and not a clean bill
+# Exit status: 0 CLEAN, 1 REMAINING, 2 NO-LEDGER or bad usage. It creates and
+# removes nothing.
+
+set -u
+SELF=$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")
+SCRIPT_DIR=$(dirname -- "$SELF")
+# shellcheck source=bin/fm-run-lib.sh
+. "$SCRIPT_DIR/fm-run-lib.sh"
+
+case "${1:-}" in
+  -h | --help)
+    printf 'usage: fm-created-check <task-id>\n'
+    exit 0
+    ;;
+esac
+
+TASK=${1:-}
+fm_run_valid_task "$TASK" && [ "$#" -eq 1 ] || {
+  printf 'usage: fm-created-check <task-id>\n' >&2
+  exit 2
+}
+
+HOST=$(uname -n)
+ALL=''
+LEDGERS=0
+while IFS= read -r dir; do
+  [ -n "$dir" ] || continue
+  [ -f "$dir/ledger" ] || continue
+  LEDGERS=$((LEDGERS + 1))
+  ALL=$ALL$(fm_run_settle "$dir" "$TASK" 0)$'\n'
+done <<EOF
+$(fm_run_rundirs "$TASK")
+EOF
+
+if [ "$LEDGERS" -eq 0 ]; then
+  printf 'NO-LEDGER %s on host %s: nothing was launched through fm-run for this task id here.\n' "$TASK" "$HOST"
+  printf 'Docker objects or temp dirs created outside fm-run, or on a host without fm-run, are not covered by this check.\n'
+  exit 2
+fi
+
+REMAINING=$(printf '%s\n' "$ALL" | awk -F'\t' '$1 == "REMAINING"' | sort -u)
+if [ -z "$REMAINING" ]; then
+  printf 'CLEAN %s on host %s (%s run ledger(s) checked)\n' "$TASK" "$HOST" "$LEDGERS"
+  exit 0
+fi
+printf 'REMAINING on host %s for %s:\n' "$HOST" "$TASK"
+printf '%s\n' "$REMAINING" | awk -F'\t' '{ if ($4 != "") printf "  %s %s  [%s]\n", $2, $3, $4; else printf "  %s %s\n", $2, $3 }'
+printf 'Remove exactly these, by the recorded names, with one command on %s:\n' "$HOST"
+printf '  %s %s -- true\n' "$SCRIPT_DIR/fm-run" "$TASK"
+case "$REMAINING" in
+  *refused* | *"not removed"* | *malformed*) printf 'Entries marked refused, not removed, or malformed are never removed by fm-run: a person must look at them.\n' ;;
+esac
+exit 1
