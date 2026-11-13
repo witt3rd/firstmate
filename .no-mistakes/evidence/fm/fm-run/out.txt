@@ -1,0 +1,33 @@
+fm-run: invalid task id t1 (3-64 characters of A-Za-z0-9._-, starting alphanumeric)
+rc=2
+fm-run: invalid task id t2 (3-64 characters of A-Za-z0-9._-, starting alphanumeric)
+rc=2
+usage: fm-created-check <task-id>
+check=2
+ok - every create through the shim is labelled and recorded; relabelling and unrecorded creates are refused
+ok - the guard allows exact names from the task's own ledger and still refuses patterns, filters, xargs, prunes, and foreign names
+ok - a path outside the run's own scratch root is refused, by name, dot-dot, and symlink parent
+ok - the closing check prints CLEAN, the exact remaining names with the one command, or flags a missing ledger
+ok - the mktemp shim records every temp path it makes, including /tmp templates relocated into the scratch root
+ok - a compose project's containers, network, volume, and built image are recorded and removed
+ok - shellcheck not installed, skipping
+FM_TEST_COMPLETE
+made /tmp/tmp.MXMXvTJBE0/fm-run-task-one-r1794538516-2853498/tmp.GxwZ7sgIUZ
+fm-run: task-one r1794538516-2853498
+CREATED (2):
+  dir /tmp/tmp.MXMXvTJBE0/fm-run-task-one-r1794538516-2853498/tmp.GxwZ7sgIUZ
+  dir /tmp/tmp.MXMXvTJBE0/fm-run-task-one-r1794538516-2853498
+REMOVED (2):
+  dir /tmp/tmp.MXMXvTJBE0/fm-run-task-one-r1794538516-2853498/tmp.GxwZ7sgIUZ  [removed]
+  dir /tmp/tmp.MXMXvTJBE0/fm-run-task-one-r1794538516-2853498  [removed]
+REMAINING (0):
+rc=0
+fm-run: task-two r1794538516-2853648
+CREATED (1):
+  dir /tmp/tmp.MXMXvTJBE0/fm-run-task-two-r1794538516-2853648
+REMOVED (1):
+  dir /tmp/tmp.MXMXvTJBE0/fm-run-task-two-r1794538516-2853648  [removed]
+REMAINING (0):
+rc=7
+CLEAN task-one on host chef (1 run ledger(s) checked)
+check=0
