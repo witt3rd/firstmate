@@ -16,7 +16,7 @@ The ship brief scaffold tells a builder to launch heavy work this way and to tre
 ## Heavy-host refusal
 
 Heavy work never runs on the captain's desktop.
-`bin/fm-run` and the execution modes of `bin/fm-test-run.sh` (not `--list*`, `--check-coverage`, or `--aggregate-json`) exit 75 with `<host> is the captain's desktop: heavy work runs on x, chef, et or mcfeely` when `hostname -s` is listed in the tracked `config/no-heavy-hosts` (roger, prince, king).
+`bin/fm-run` and the execution modes of `bin/fm-test-run.sh` (not `--list*`, `--check-coverage`, or `--aggregate-json`) exit 75 with `<host> is the captain's desktop: heavy work runs on x, chef, et or mcfeely` when `hostname -s` is listed in the tracked `bin/fm-no-heavy-hosts.default` (roger, prince, king).
 A home's own `$FM_HOME/config/no-heavy-hosts` may only add hosts; the tracked default is always read.
 The shared check is `fm_run_heavy_host_guard` in `bin/fm-run-lib.sh`; `FM_HEAVY_HOSTNAME` replaces the hostname for tests.
 
