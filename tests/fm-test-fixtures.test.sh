@@ -14,8 +14,9 @@
 # That helper's header owns the contract and the layers it leaves in force.
 set -u
 
-# shellcheck source=tests/fixtures.sh
 export FM_HEAVY_HOSTNAME=${FM_HEAVY_HOSTNAME:-testhost}
+
+# shellcheck source=tests/fixtures.sh
 . "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-test-fixtures)
