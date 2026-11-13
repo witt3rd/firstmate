@@ -59,6 +59,11 @@
 # accepting unlanded edits to the same paths. Teardown still accepts a merged PR
 # whose head contains the current local work (ancestor or whitespace-exact patch ids),
 # or a clean content-in-default tree match. Anything else refuses.
+# Direct land (no PR, no pushed branch): work also counts as landed when the
+# up-to-date remote default branch already holds every commit above the merge base
+# by patch-id (git cherry shows only '-' lines) OR the branch's tree equals the
+# default branch's for every path the branch touched. One '+' commit, uncommitted
+# changes, or a differing touched path still refuses as before.
 # The PR itself is resolved from the task's recorded pr= when present, or - when
 # no pr= was ever recorded (e.g. a yolo-authorized merge on a repo with no PR CI,
 # where the usual "checks green" fm-pr-check.sh trigger never fires) - by looking
@@ -1844,7 +1849,39 @@ content_in_default() {
 work_is_landed() {
   local branch=$1
   pr_is_merged "$branch" && return 0
-  content_in_default
+  content_in_default && return 0
+  [ -z "${CONTENT_LANDED_PROOF_ERROR:-}" ] || return 1
+  landed_directly_on_default
+}
+
+# Did the work land DIRECTLY on the remote default branch (no PR, no pushed branch)?
+# True when every commit above the merge base is already on the up-to-date default
+# branch by patch-id (git cherry prints only '-' lines), OR the branch's tree differs
+# from the default branch in none of the paths the branch touched. A '+' commit, an
+# empty or failed read, or any touched path that differs refuses. Uncommitted changes
+# never reach here: the dirty check refuses first. The default ref is fetched fresh.
+landed_directly_on_default() {
+  local name=${BASE_BRANCH:-} ref cherry base
+  [ -n "$name" ] || name=$(default_branch) || return 1
+  if git -C "$WT" remote get-url origin >/dev/null 2>&1; then
+    git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
+    ref="refs/remotes/origin/$name"
+  elif git -C "$WT" rev-parse --quiet --verify "refs/heads/$name" >/dev/null 2>&1; then
+    ref="refs/heads/$name"
+  else
+    return 1
+  fi
+  if cherry=$(git -C "$WT" cherry "$ref" HEAD 2>/dev/null) && [ -n "$cherry" ] \
+    && ! printf '%s\n' "$cherry" | grep -qv '^-'; then
+    return 0
+  fi
+  base=$(git -C "$WT" merge-base "$ref" HEAD 2>/dev/null) || return 1
+  local touched
+  touched=$(git -C "$WT" diff --name-only -z "$base" HEAD -- 2>/dev/null | tr '\0' '\n') || return 1
+  [ -n "$touched" ] || return 1
+  # -z keeps odd names intact; diff the touched paths between the branch and default.
+  git -C "$WT" diff --name-only -z "$base" HEAD -- 2>/dev/null \
+    | xargs -0 git -C "$WT" diff --quiet "$ref" HEAD --
 }
 
 # Retire the task's local branch ONLY when it is proven fully landed on the default

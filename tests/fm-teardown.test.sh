@@ -7,6 +7,10 @@
 # and GitHub reports a PR head that contains the current local work, or its content
 # is already in the up-to-date default branch.
 #
+# A direct land (commits applied to the remote default branch with no PR and no
+# pushed branch) also counts: every commit above the merge base is on it by
+# patch-id (git cherry), or the touched paths' tree-diff against it is empty.
+#
 # Covers three fixes:
 #   - local-only fork-remote: a fork IS a remote, so fork-pushed upstream-
 #     contribution PRs are teardown-eligible (the pre-fix code false-refused them).
@@ -1429,6 +1433,66 @@ test_squash_merged_rebased_local_with_unlanded_commit_refuses() {
   grep -q REFUSED "$case_dir/stderr" || fail "squash-rebased-unlanded: no REFUSED line in stderr"
   assert_refusal_retained_task_state "$case_dir" squash-rebased-unlanded "$local_head"
   pass "squash-merged rebased local still refuses a genuinely unlanded follow-up commit"
+}
+
+# Direct land: the branch's commit was applied to origin/main by another path (same
+# patch, new commit id), and main then edited the same file, so the merge-tree
+# content check conflicts. Only the patch-id (git cherry) proof can see the land.
+direct_land_setup() {  # <case-dir> <extra-wt-commit: 1|0>
+  local case_dir=$1 tmp
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  tmp="$case_dir/_land"
+  git clone -q "$case_dir/origin.git" "$tmp"
+  git -C "$tmp" cherry-pick "$(git -C "$case_dir/wt" rev-parse HEAD)" >/dev/null 2>&1 \
+    || { git -C "$tmp" fetch -q "$case_dir/wt" fm/task-x1 && git -C "$tmp" -c user.email=t@t -c user.name=t cherry-pick FETCH_HEAD >/dev/null; }
+  printf '%s\n' hello more > "$tmp/feature.txt"
+  git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -am "main edits feature"
+  git -C "$tmp" push -q origin HEAD:main
+  rm -rf "$tmp"
+  [ "${2:-0}" != 1 ] || wt_commit_file "$case_dir" later.txt unlanded "unlanded follow-up"
+}
+
+test_direct_land_by_patch_id_allows() {
+  local case_dir rc
+  case_dir=$(make_case direct-land)
+  write_meta "$case_dir" no-mistakes ship
+  direct_land_setup "$case_dir" 0
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "direct-land: teardown should succeed"$'\n'"$(cat "$case_dir/stderr")"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "direct-land: REFUSED printed"
+  pass "directly landed (patch-id on origin/main, no PR) branch is torn down"
+}
+
+test_direct_land_with_unlanded_commit_refuses() {
+  local case_dir rc
+  case_dir=$(make_case direct-land-plus)
+  write_meta "$case_dir" no-mistakes ship
+  direct_land_setup "$case_dir" 1
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "direct-land-plus: must refuse"
+  grep -q REFUSED "$case_dir/stderr" || fail "direct-land-plus: no REFUSED line"
+  pass "direct land plus one unlanded commit still refuses"
+}
+
+test_direct_land_with_uncommitted_changes_refuses() {
+  local case_dir rc
+  case_dir=$(make_case direct-land-dirty)
+  write_meta "$case_dir" no-mistakes ship
+  direct_land_setup "$case_dir" 0
+  echo scratch > "$case_dir/wt/untracked.txt"
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "direct-land-dirty: must refuse"
+  grep -q REFUSED "$case_dir/stderr" || fail "direct-land-dirty: no REFUSED line"
+  pass "directly landed branch with uncommitted changes still refuses"
 }
 
 test_squash_merged_stale_local_refuses_when_forge_unreachable() {
@@ -6328,6 +6392,9 @@ test_squash_merged_stale_local_refuses_when_forge_unreachable
 test_pr_check_does_not_refresh_stale_pr_head
 test_pr_check_records_remote_head_when_local_lags
 test_content_in_default_fallback_allows
+test_direct_land_by_patch_id_allows
+test_direct_land_with_unlanded_commit_refuses
+test_direct_land_with_uncommitted_changes_refuses
 test_teardown_returns_the_worktree_lease
 test_content_fallback_uses_recorded_base_branch
 test_content_fallback_refreshes_stale_origin_ref
