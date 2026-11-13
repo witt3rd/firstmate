@@ -21,6 +21,28 @@ FM_RUN_LABEL_KEY=fm.task
 FM_RUN_RUN_KEY=fm.run
 FM_RUN_DOCKER_NAME_RE='^[A-Za-z0-9][A-Za-z0-9_.:/@-]*$'
 
+# fm_run_heavy_host_guard: refuse (exit 75, one line) on a host listed in the
+# tracked bin/fm-no-heavy-hosts.default, plus any hosts a home's own config adds. The
+# tracked default is always read from this checkout, so an override can only add.
+# FM_HEAVY_HOSTNAME replaces `hostname -s` (test hook).
+fm_run_heavy_host_guard() {
+  local code_root host file line
+  code_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P) || return 0
+  host=${FM_HEAVY_HOSTNAME:-$(hostname -s 2>/dev/null)}
+  [ -n "$host" ] || return 0
+  for file in "$code_root/bin/fm-no-heavy-hosts.default" "${FM_HOME:+$FM_HOME/config/no-heavy-hosts}"; do
+    [ -n "$file" ] && [ -r "$file" ] || continue
+    while IFS= read -r line || [ -n "$line" ]; do
+      line=${line%%#*}
+      line=${line//[[:space:]]/}
+      [ "$line" = "$host" ] || continue
+      printf "%s is the captain's desktop: heavy work runs on x, chef, et or mcfeely\n" "$host" >&2
+      exit 75
+    done <"$file"
+  done
+  return 0
+}
+
 fm_run_root() {
   printf '%s' "${FM_RUN_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/fm-run}"
 }

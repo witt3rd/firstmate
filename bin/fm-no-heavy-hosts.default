@@ -1,0 +1,7 @@
+# Hosts where heavy work (builds, tests, image builds) must never run.
+# One short hostname (`hostname -s`) per line; blank lines and # comments allowed.
+# A home's own $FM_HOME/config/no-heavy-hosts may only ADD hosts; this tracked
+# default is always read and cannot be overridden away. Contract: docs/fm-run.md.
+roger
+prince
+king

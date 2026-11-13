@@ -51,6 +51,7 @@ case "${1:-}" in
     ;;
 esac
 
+fm_run_heavy_host_guard
 TASK=${1:-}
 [ "$#" -ge 3 ] && [ "${2:-}" = "--" ] || {
   usage >&2
