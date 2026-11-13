@@ -36,6 +36,10 @@
 # passing its full projects/dotfiles-private path.
 set -eu
 
+# Project clones are read-only and never need real large-file content. A failed LFS
+# smudge mid-checkout would leave a half-applied fast-forward, so skip smudging.
+export GIT_LFS_SKIP_SMUDGE=1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"

@@ -747,6 +747,35 @@ test_non_signature_fetch_failure_is_not_retried() {
   pass "a non-packed-refs.lock fetch failure keeps today's behavior (no retry)"
 }
 
+# A tracked file behind an LFS-style smudge filter whose real fetch cannot succeed:
+# the filter fails unless GIT_LFS_SKIP_SMUDGE is set (as git-lfs itself honors it).
+# Without the skip the fast-forward checkout dies half-applied and leaves tracked
+# local changes; the refresh must complete and leave a clean tree.
+test_lfs_smudge_failure_leaves_clean_tree() {
+  local home clone work filter out
+  home=$(new_home)
+  clone=$(build_pair "$home" lfsproj)
+  work="$home/work-lfsproj"
+  filter="$home/fake-smudge.sh"
+  printf '#!/bin/sh\n[ -n "${GIT_LFS_SKIP_SMUDGE:-}" ] && exec cat\nexit 1\n' > "$filter"
+  chmod +x "$filter"
+  printf 'big.bin filter=fakelfs\n' > "$work/.gitattributes"
+  printf 'pointer-v1\n' > "$work/big.bin"
+  git -C "$work" add .gitattributes big.bin
+  git -C "$work" commit -qm lfs
+  git -C "$work" push -q origin main
+  git -C "$clone" config filter.fakelfs.smudge "$filter"
+  git -C "$clone" config filter.fakelfs.clean cat
+  git -C "$clone" config filter.fakelfs.required true
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "lfsproj: synced" "lfs: refresh completes despite an unfetchable large file"
+  [ "$(head_sha "$clone")" = "$(git -C "$clone" rev-parse origin/main)" ] || fail "lfs: clone was not fast-forwarded"
+  [ -z "$(git -C "$clone" status --porcelain)" ] || fail "lfs: clone tree is not clean after refresh"
+  pass "an LFS smudge failure does not leave a half-applied fast-forward"
+}
+
 test_detached_clean_ancestor_recovers
 test_detached_unique_commit_is_stuck_untouched
 test_detached_clean_ancestor_with_diverged_local_default_is_stuck_untouched
@@ -774,3 +803,4 @@ test_non_clone_dir_never_syncs_the_enclosing_repo
 test_non_clone_dir_named_directly_never_syncs_the_enclosing_repo
 test_symlinked_clone_still_syncs
 test_clone_root_named_by_another_spelling_still_syncs
+test_lfs_smudge_failure_leaves_clean_tree
