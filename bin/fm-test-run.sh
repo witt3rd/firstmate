@@ -2339,6 +2339,9 @@ esac
 # who named no selection mode is told that rather than this.
 if [ -n "${MODE:-}" ] && [ "$LIST_ONLY" -eq 0 ] && [ "$LIST_SCHEDULED" -eq 0 ]; then
   refuse_primary_checkout_for_task
+  # shellcheck source=bin/fm-run-lib.sh
+  . "$ROOT/bin/fm-run-lib.sh"
+  fm_run_heavy_host_guard
 fi
 
 case "${MODE:-}" in

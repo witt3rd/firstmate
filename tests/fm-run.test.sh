@@ -19,6 +19,7 @@ TMP_ROOT=$(fm_test_tmproot fmrun-test)
 FM_RUN="$ROOT/bin/fm-run"
 FM_CHECK="$ROOT/bin/fm-created-check"
 CHECK="$ROOT/bin/fm-destructive-pretool-check.sh"
+export FM_HEAVY_HOSTNAME=${FM_HEAVY_HOSTNAME:-testhost}
 export FM_RUN_ROOT="$TMP_ROOT/run-root"
 export FM_RUN_TMPBASE="$TMP_ROOT/scratch-base"
 mkdir -p "$FM_RUN_ROOT" "$FM_RUN_TMPBASE"
@@ -360,6 +361,25 @@ test_compose_project_objects_are_recorded_and_removed() {
   pass "a compose project's containers, network, volume, and built image are recorded and removed"
 }
 
+test_listed_host_is_refused_and_override_only_adds() {
+  local out rc home="$TMP_ROOT/heavy-home"
+  mkdir -p "$home/config"
+  out=$(FM_HEAVY_HOSTNAME=roger "$FM_RUN" heavyguard -- true 2>&1); rc=$?
+  eq "$rc" 75 "a listed host exits 75"
+  eq "$out" "roger is the captain's desktop: heavy work runs on x, chef, et or mcfeely" "the refusal is the single named line"
+  out=$(FM_HEAVY_HOSTNAME=x "$FM_RUN" heavyguard -- true 2>&1); rc=$?
+  eq "$rc" 0 "an unlisted host runs"
+  printf '# add\nnewbox  # c\n' >"$home/config/no-heavy-hosts"
+  out=$(FM_HOME="$home" FM_HEAVY_HOSTNAME=newbox "$FM_RUN" heavyguard -- true 2>&1); rc=$?
+  eq "$rc" 75 "a host added by the home override is refused"
+  : >"$home/config/no-heavy-hosts"
+  out=$(FM_HOME="$home" FM_HEAVY_HOSTNAME=prince "$FM_RUN" heavyguard -- true 2>&1); rc=$?
+  eq "$rc" 75 "an empty override cannot remove a tracked default host"
+  out=$(FM_HEAVY_HOSTNAME=king "$ROOT/bin/fm-test-run.sh" --all 2>&1); rc=$?
+  eq "$rc" 75 "the test runner shares the guard"
+  pass "no-heavy-hosts refuses listed hosts; overrides only add"
+}
+
 test_scripts_are_lint_clean() {
   local out
   command -v shellcheck >/dev/null 2>&1 || { pass "shellcheck not installed, skipping"; return; }
@@ -378,4 +398,5 @@ fm_test_run \
   test_created_check_reports_clean_remaining_and_no_ledger \
   test_mktemp_shim_records_common_forms \
   test_compose_project_objects_are_recorded_and_removed \
+  test_listed_host_is_refused_and_override_only_adds \
   test_scripts_are_lint_clean
