@@ -493,7 +493,9 @@ test_promotion_persists_the_selected_ship_branch() {
 test_promotion_branch_command_is_shell_safe() {
   local home id prefix marker meta instructions command repo branch
   home="$TMP_ROOT/promote-branch-shell-safe/home"
-  marker="$TMP_ROOT/promote-branch-shell-safe-marker"
+  # The marker path is embedded in a git ref, which cannot hold a "/." component (scratch lives under ~/.t).
+  marker="/tmp/fm-delivery-safe-marker-$$"
+  rm -f "$marker"
   id=promote-branch-safe-e3
   prefix="\$(touch\${IFS}$marker)/"
   meta="$home/state/$id.meta"
