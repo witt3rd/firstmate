@@ -1,0 +1,13 @@
+## default
+tmpdir=/tmp/tmp.fXwdepUW6t/.t/fm-run-task-aaa-r1794583067-3116062
+drwx------ 3 dt dt 60 Nov 13 07:17 /tmp/tmp.fXwdepUW6t/.t
+fm-run: task-aaa r1794583067-3116062
+CREATED (1):
+  dir /tmp/tmp.fXwdepUW6t/.t/fm-run-task-aaa-r1794583067-3116062
+REMOVED (1):
+  dir /tmp/tmp.fXwdepUW6t/.t/fm-run-task-aaa-r1794583067-3116062  [removed]
+REMAINING (0):
+rc=0
+## full
+fm-run: refusing to start: /tmp/tmp.fXwdepUW6t/.t is 61% full in bytes (limit 0%); free disk space first
+rc=75
