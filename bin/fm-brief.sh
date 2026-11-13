@@ -924,6 +924,8 @@ $SHARED_INFRA_RULE
 $SHARED_NO_CD_RULE
 9. $SHARED_NO_KILL_RULE
 
+10. Launch heavy work through \`$FM_ROOT/bin/fm-run <task-id> -- <command>\` (contract: docs/fm-run.md): a builder is not done until CREATED/REMOVED/REMAINING are printed and REMAINING is empty.
+
 $WAIT_BLOCK$INBOX_SECTION
 
 # Project memory

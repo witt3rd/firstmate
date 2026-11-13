@@ -16,7 +16,7 @@
 // and the harness output; this file owns only the allow/deny decision.
 
 import path from "node:path";
-import { realpathSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Lexer, splitProgram, commandPosition } from "./fm-arm-command-policy.mjs";
 
@@ -26,7 +26,7 @@ const REASONS = {
   "docker-bulk-rm":
     "a docker or podman removal whose targets come from a filter, label, wildcard, variable, command substitution, xargs, or a pipe can delete resources this pane did not create",
   "docker-rm-unowned":
-    "a docker or podman removal may name only resources that carry this pane's own task label; this name does not, so it may belong to someone else",
+    "a docker or podman removal may name only resources that carry this pane's own task label or that this task's own fm-run ledger records by exact name; this name is neither, so it may belong to someone else",
   "docker-compose-down":
     "a compose down or rm removes every container of a project chosen by directory or file, not by an exact name this pane created; name the project with -p <this pane's task label>-... or remove the exact resources you created",
   "rm-glob-protected":
@@ -185,7 +185,38 @@ function inSharedTree(location, context) {
 
 // --- per-command classifiers --------------------------------------------------
 
+// bin/fm-run records every docker object it creates for a task, by exact name,
+// in <run root>/<task>/<run id>/ledger (docs/fm-run.md). A literal name in
+// that creator's own record is owned exactly like one that carries the task
+// label: still an exact literal, never a pattern.
+const LEDGER_NAME_KINDS = new Set(["container", "network", "volume", "image", "project"]);
+
+function loadLedgerNames(dir) {
+  const names = new Set();
+  let runs = [];
+  try {
+    runs = readdirSync(dir);
+  } catch {
+    return names;
+  }
+  for (const run of runs) {
+    if (!/^r[0-9]+-[0-9]+$/.test(run)) continue;
+    let text = "";
+    try {
+      text = readFileSync(path.join(dir, run, "ledger"), "utf8");
+    } catch {
+      continue;
+    }
+    for (const line of text.split("\n")) {
+      const [kind, name] = line.split("\t");
+      if (LEDGER_NAME_KINDS.has(kind) && name && DOCKER_LITERAL_NAME.test(name)) names.add(name);
+    }
+  }
+  return names;
+}
+
 function ownsName(name, context) {
+  if (context.ownNames.has(name)) return true;
   return context.ownLabels.some((label) => label.length >= 3 && (name === label || (name.startsWith(label) && /^[-_.:]/.test(name.slice(label.length)))));
 }
 
@@ -479,6 +510,17 @@ function stripExtraWrappers(words, index) {
       next += after.index;
       continue;
     }
+    if (name === "fm-run") {
+      // fm-run <task-id> -- <command...> runs the command with its own docker
+      // shim; the wrapped command is analyzed exactly as if run directly.
+      next += 1;
+      while (words[next] && words[next].value !== "--" && words[next].value.startsWith("-")) next += 1;
+      if (words[next] && words[next].value !== "--") next += 1;
+      if (words[next]?.value === "--") next += 1;
+      const after = commandPosition(words.slice(next));
+      next += after.index;
+      continue;
+    }
     if (Object.hasOwn(EXTRA_WRAPPERS, name)) {
       const takesArgument = EXTRA_WRAPPERS[name];
       next += 1;
@@ -570,14 +612,15 @@ export function decision(command, options = {}) {
     home: options.home ? path.resolve(options.home) : "",
     ownWorktree: options.ownWorktree ? path.resolve(options.ownWorktree) : null,
     ownLabels: (options.ownLabels || []).filter(Boolean),
+    ownNames: options.ownLedgerDir ? loadLedgerNames(options.ownLedgerDir) : new Set(),
   };
   const verdict = analyze(command, context, 0);
   return verdict || { decision: "allow" };
 }
 
 function parseArguments(argv) {
-  const result = { command: "", commandSet: false, cwd: "", home: "", ownWorktree: "", ownLabels: [] };
-  const valued = { "--command": "command", "--cwd": "cwd", "--home": "home", "--own-worktree": "ownWorktree", "--own-label": "ownLabel" };
+  const result = { command: "", commandSet: false, cwd: "", home: "", ownWorktree: "", ownLabels: [], ownLedgerDir: "" };
+  const valued = { "--command": "command", "--cwd": "cwd", "--home": "home", "--own-worktree": "ownWorktree", "--own-label": "ownLabel", "--own-ledger-dir": "ownLedgerDir" };
   for (let i = 0; i < argv.length; i += 1) {
     const name = argv[i];
     const key = valued[name];

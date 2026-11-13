@@ -281,6 +281,15 @@ POLICY_ARGS=(--command "$CMD" --cwd "$(pwd -P 2>/dev/null || pwd)")
 [ -z "${HOME:-}" ] || POLICY_ARGS+=(--home "$HOME")
 [ -z "$WORKTREE" ] || POLICY_ARGS+=(--own-worktree "$WORKTREE")
 [ -z "$TASK" ] || POLICY_ARGS+=(--own-label "$TASK")
+# The task's own fm-run ledgers (docs/fm-run.md) name, by exact name, what that
+# task created through fm-run; the policy treats those names as owned.
+case "$TASK" in
+  ''|*[!A-Za-z0-9._-]*|.*) ;;
+  *)
+    RUN_ROOT=${FM_RUN_ROOT:-${XDG_CACHE_HOME:-${HOME:-}/.cache}/fm-run}
+    case "$RUN_ROOT" in /*) POLICY_ARGS+=(--own-ledger-dir "$RUN_ROOT/$TASK") ;; esac
+    ;;
+esac
 POLICY_OUTPUT=$(node "$POLICY" "${POLICY_ARGS[@]}" 2>/dev/null) || exit 0
 [ -n "$POLICY_OUTPUT" ] || exit 0
 

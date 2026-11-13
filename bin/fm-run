@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# fm-run - launch heavy work so that whatever it creates, it destroys, in the same
+# code path. Contract: docs/fm-run.md.
+#
+#   fm-run <task-id> -- <command> [args...]
+#
+# Runs the command with:
+#   FM_TASK_LABEL   the task id: the label the destructive-command guard names
+#                   (bin/fm-destructive-command-policy.mjs --own-label)
+#   FM_RUN_*        the run id, the run directory, the per-run ledger, and the
+#                   scratch root (TMPDIR points at it)
+#   PATH            a shim directory first: docker and docker-compose stamp every
+#                   container, network, volume, image, and compose project they
+#                   create with the label and record its exact name in the ledger;
+#                   mktemp records every path it makes (bin/fm-run-shim.sh)
+#
+# On exit - normal, error, or SIGTERM/SIGINT/SIGHUP - it removes exactly the
+# ledger's entries (docker rm -f / network rm / volume rm / rmi by exact name,
+# each only while it still carries the run's label; rm -rf only a recorded path
+# inside this run's own scratch root) and prints CREATED, REMOVED, and REMAINING
+# on stderr. Exit status is the command's, or 3 when the command succeeded but
+# REMAINING is not empty.
+#
+# A run killed with SIGKILL (or a host crash) leaves its ledger. The next fm-run
+# of the same task id first removes what that prior ledger names, reports it, and
+# then runs. bin/fm-created-check <task-id> is the read-only closing check.
+#
+# Environment: FM_RUN_ROOT (default ~/.cache/fm-run) holds <task-id>/<run-id>/;
+# FM_RUN_TMPBASE (default /tmp) holds the scratch roots.
+
+set -u
+SELF=$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")
+SCRIPT_DIR=$(dirname -- "$SELF")
+# shellcheck source=bin/fm-run-lib.sh
+. "$SCRIPT_DIR/fm-run-lib.sh"
+
+usage() {
+  cat <<'USAGE'
+usage: fm-run <task-id> -- <command> [args...]
+
+Launch the command with every docker object and temp path it creates recorded
+and removed on exit. Prints CREATED / REMOVED / REMAINING on stderr; exits
+nonzero when REMAINING is not empty. See docs/fm-run.md.
+USAGE
+}
+
+case "${1:-}" in
+  -h | --help)
+    usage
+    exit 0
+    ;;
+esac
+
+TASK=${1:-}
+[ "$#" -ge 3 ] && [ "${2:-}" = "--" ] || {
+  usage >&2
+  exit 2
+}
+shift 2
+fm_run_valid_task "$TASK" || {
+  printf 'fm-run: invalid task id %s (3-64 characters of A-Za-z0-9._-, starting alphanumeric)\n' "$TASK" >&2
+  exit 2
+}
+[ "$#" -gt 0 ] || {
+  usage >&2
+  exit 2
+}
+PATH_REAL=$(fm_run_real_path)
+PATH=$PATH_REAL command -v -- "$1" >/dev/null 2>&1 || [ -x "$1" ] || {
+  printf 'fm-run: cannot find the command %s\n' "$1" >&2
+  exit 127
+}
+
+umask 077
+RUN_BASE=$(fm_run_root)/$TASK
+mkdir -p -- "$RUN_BASE" || exit 1
+
+CHILD=''
+SIGNALS=0
+SETTLED=0
+RUN_DIR=''
+
+# --- this run ------------------------------------------------------------------------
+# The run directory (ledger, pid, shims) is created before anything else, so a
+# prior-run sweep sees this run as live and leaves it alone.
+RUN_ID=r$(date +%s)-$$
+RUN_DIR=$RUN_BASE/$RUN_ID
+SCRATCH=$(fm_run_scratch_for "$TASK" "$RUN_ID")
+mkdir -p -- "$RUN_DIR/shims" || exit 1
+LEDGER=$RUN_DIR/ledger
+: >"$LEDGER"
+printf '%s\n%s\n' "$$" "$(fm_run_pid_token "$$")" >"$RUN_DIR/pid"
+
+# --- prior runs of this task id ------------------------------------------------------
+# A run directory with no live owner and no clean settle marker is a prior run that
+# was killed hard: remove what its own ledger names, by exact name, and say so.
+# settle_dir <run-dir>: settle output in SETTLE_OUT; exit 0 when nothing remains.
+SETTLE_OUT=''
+settle_dir() {
+  SETTLE_OUT=$(fm_run_settle "$1" "$TASK" 1)
+  if [ "$(printf '%s\n' "$SETTLE_OUT" | fm_run_remaining_count)" -eq 0 ]; then
+    : >"$1/settled"
+    return 0
+  fi
+  rm -f -- "$1/settled"
+  return 1
+}
+
+recover_prior() {
+  local dir
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
+    [ "$dir" != "$RUN_DIR" ] || continue
+    [ -f "$dir/ledger" ] || continue
+    [ ! -f "$dir/settled" ] || continue
+    ! fm_run_rundir_live "$dir" || continue
+    settle_dir "$dir" || true
+    printf '%s\n' "$SETTLE_OUT" | fm_run_report "fm-run: recovered prior run $(basename -- "$dir") of $TASK (killed before it could clean up):" >&2
+  done <<EOT
+$(fm_run_rundirs "$TASK")
+EOT
+}
+recover_prior
+
+# The scratch root is itself recorded (before it exists), so it is removed with the rest.
+fm_run_record "$LEDGER" dir "$SCRATCH" -
+mkdir -p -- "$SCRATCH" && chmod 700 "$SCRATCH" || exit 1
+
+: >"$RUN_DIR/shims/.fm-run-shim"
+for tool in docker docker-compose mktemp; do
+  printf '#!/bin/sh\nexec bash %s %s "$@"\n' "'$SCRIPT_DIR/fm-run-shim.sh'" "$tool" >"$RUN_DIR/shims/$tool"
+  chmod 755 "$RUN_DIR/shims/$tool"
+done
+
+# finish: settle this run, then any other unsettled run of this task with no live
+# owner, and print the three lists once. Sets FINISH_REMAINING.
+FINISH_REMAINING=0
+finish() {
+  [ "$SETTLED" -eq 0 ] || return 0
+  SETTLED=1
+  local dir remaining=0 all=''
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
+    [ -f "$dir/ledger" ] || continue
+    if [ "$dir" != "$RUN_DIR" ]; then
+      [ ! -f "$dir/settled" ] || continue
+      ! fm_run_rundir_live "$dir" || continue
+    fi
+    if ! settle_dir "$dir"; then remaining=$((remaining + 1)); fi
+    all=$all$SETTLE_OUT$'\n'
+  done <<EOT
+$(fm_run_rundirs "$TASK")
+EOT
+  printf '%s' "$all" | fm_run_report "fm-run: $TASK $RUN_ID" >&2
+  FINISH_REMAINING=$remaining
+}
+
+LAST_SIGNAL=''
+# shellcheck disable=SC2329  # invoked by the signal traps below
+on_signal() {
+  SIGNALS=$((SIGNALS + 1))
+  if [ -n "$CHILD" ]; then
+    # An asynchronous child of a non-interactive shell ignores SIGINT, so INT is
+    # forwarded as TERM; a second signal of any kind is a KILL.
+    if [ "$SIGNALS" -gt 1 ]; then
+      kill -KILL "$CHILD" 2>/dev/null
+    elif [ "$1" = INT ]; then
+      kill -TERM "$CHILD" 2>/dev/null
+    else
+      kill -"$1" "$CHILD" 2>/dev/null
+    fi
+  fi
+  LAST_SIGNAL=$1
+}
+trap 'on_signal TERM' TERM
+trap 'on_signal INT' INT
+trap 'on_signal HUP' HUP
+trap 'finish' EXIT
+
+export FM_TASK_LABEL=$TASK FM_RUN_ID=$RUN_ID FM_RUN_DIR=$RUN_DIR FM_RUN_LEDGER=$LEDGER FM_RUN_SCRATCH=$SCRATCH
+export TMPDIR=$SCRATCH
+export PATH="$RUN_DIR/shims:$PATH_REAL"
+
+"$@" <&0 &
+CHILD=$!
+RC=0
+wait "$CHILD"
+RC=$?
+while kill -0 "$CHILD" 2>/dev/null; do
+  wait "$CHILD"
+  RC=$?
+done
+CHILD=''
+case "$LAST_SIGNAL" in
+  TERM) [ "$RC" -ne 0 ] || RC=143 ;;
+  INT) [ "$RC" -ne 0 ] || RC=130 ;;
+  HUP) [ "$RC" -ne 0 ] || RC=129 ;;
+esac
+
+finish
+trap - EXIT
+if [ "$FINISH_REMAINING" -gt 0 ] && [ "$RC" -eq 0 ]; then
+  RC=3
+fi
+exit "$RC"
