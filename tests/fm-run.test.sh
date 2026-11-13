@@ -341,6 +341,21 @@ test_mktemp_shim_records_common_forms() {
   pass "the mktemp shim records every temp path it makes, including /tmp templates relocated into the scratch root"
 }
 
+test_scratch_defaults_to_short_disk_path_and_refuses_a_full_disk() {
+  local task out rc home="$TMP_ROOT/home"
+  mkdir -p "$home"
+  new_task; task=$TASK_ID
+  out=$(HOME="$home" env -u FM_RUN_TMPBASE timeout 60 "$FM_RUN" "$task" -- bash -c 'echo "tmpdir=$TMPDIR"' 2>&1)
+  eq "$?" 0 "a default-base run succeeds"
+  assert_contains "$out" "tmpdir=$home/.t/fm-run-$task-" "the default scratch base is ~/.t"
+  eq "$(stat -c %a "$home/.t")" 700 "the default base is mode 700"
+  new_task; task=$TASK_ID
+  out=$(FM_RUN_MAX_USED_PCT=0 timeout 60 "$FM_RUN" "$task" -- true 2>&1); rc=$?
+  eq "$rc" 75 "a nearly full scratch filesystem refuses the run with exit 75"
+  assert_contains "$out" "fm-run: refusing to start" "one plain line names the refusal"
+  pass "scratch defaults to ~/.t and a run refuses to start when that disk is over the limit"
+}
+
 test_compose_project_objects_are_recorded_and_removed() {
   [ "$HAVE_DOCKER" -eq 1 ] || { pass "compose (skip: no docker daemon)"; return; }
   docker compose version >/dev/null 2>&1 || { pass "compose (skip: no docker compose)"; return; }
@@ -397,6 +412,7 @@ fm_test_run \
   test_path_outside_the_scratch_root_is_refused \
   test_created_check_reports_clean_remaining_and_no_ledger \
   test_mktemp_shim_records_common_forms \
+  test_scratch_defaults_to_short_disk_path_and_refuses_a_full_disk \
   test_compose_project_objects_are_recorded_and_removed \
   test_listed_host_is_refused_and_override_only_adds \
   test_scripts_are_lint_clean

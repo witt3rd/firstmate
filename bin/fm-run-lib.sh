@@ -70,7 +70,31 @@ fm_run_valid_runid() {
 # The scratch root is derived from the task id and run id, never read from the
 # ledger, so an edited ledger cannot declare a different root.
 fm_run_scratch_for() {  # <task-id> <run-id>
-  printf '%s/fm-run-%s-%s' "${FM_RUN_TMPBASE:-/tmp}" "$1" "$2"
+  printf '%s/fm-run-%s-%s' "$(fm_run_tmpbase)" "$1" "$2"
+}
+
+# Scratch base: a short on-disk path, never /tmp (RAM-backed tmpfs on worker
+# hosts, and a long path breaks Postgres unix socket paths). See docs/fm-run.md.
+fm_run_tmpbase() {
+  printf '%s' "${FM_RUN_TMPBASE:-$HOME/.t}"
+}
+
+# 0 when the base's filesystem is at or under the limit in bytes and inodes;
+# otherwise prints one plain line and returns 1. A filesystem that reports no
+# inode count (btrfs, 0 or -) is judged on bytes alone.
+fm_run_disk_check() {  # <dir>
+  local dir=$1 max=${FM_RUN_MAX_USED_PCT:-90} flag kind pct
+  for flag in -P -Pi; do
+    pct=$(df "$flag" -- "$dir" 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5}')
+    case "$pct" in '' | *[!0-9]*) continue ;; esac
+    if [ "$pct" -gt "$max" ]; then
+      kind=bytes
+      [ "$flag" = -Pi ] && kind=inodes
+      printf 'fm-run: refusing to start: %s is %s%% full in %s (limit %s%%); free disk space first\n' "$dir" "$pct" "$kind" "$max"
+      return 1
+    fi
+  done
+  return 0
 }
 
 # PATH without any fm-run shim directory (a directory holding .fm-run-shim).

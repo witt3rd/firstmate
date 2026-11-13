@@ -23,7 +23,9 @@ The shared check is `fm_run_heavy_host_guard` in `bin/fm-run-lib.sh`; `FM_HEAVY_
 ## What a run does
 
 - Sets `FM_TASK_LABEL` to the task id, which is the label the guard names (`--own-label`), plus `FM_RUN_ID`, `FM_RUN_LEDGER`, and `FM_RUN_SCRATCH`.
-  `TMPDIR` points at the run's own scratch root, `/tmp/fm-run-<task-id>-<run-id>`.
+  `TMPDIR` points at the run's own scratch root, `~/.t/fm-run-<task-id>-<run-id>` (override the base with `FM_RUN_TMPBASE`).
+  The base is on disk and short on purpose: `/tmp` is RAM-backed tmpfs on worker hosts, where a big build fills it and fails with "No space left on device", and a long path broke the Postgres unix socket path limit.
+  A run refuses to start (exit 75, one line) when the base's filesystem is over 90% full in bytes or inodes (`FM_RUN_MAX_USED_PCT` overrides the limit).
 - Puts a shim directory first on `PATH` (`bin/fm-run-shim.sh`):
   - `docker` and `docker-compose` stamp every container, network, volume, and image build with the labels `fm.task=<task-id>` and `fm.run=<run-id>`, name an unnamed create `<task-id>-<hex>`, and append the exact name to the ledger before the create runs.
     Named volumes a `run` or `create` would make implicitly are created labelled first.

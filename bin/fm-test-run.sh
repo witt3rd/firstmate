@@ -2548,6 +2548,10 @@ if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
   . "$ROOT/bin/fm-timeout-lib.sh"
 fi
 
+# Scratch lives on disk under ~/.t, never in /tmp (RAM-backed tmpfs; docs/fm-run.md).
+if [ -z "${TMPDIR:-}" ]; then
+  mkdir -p -- "$HOME/.t" && chmod 700 "$HOME/.t" && export TMPDIR="$HOME/.t"
+fi
 RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run.XXXXXX")
 RECORDS="$RUN_TMP/records.tsv"
 FAMILIES_TSV="$RUN_TMP/families.tsv"
