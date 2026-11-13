@@ -26,7 +26,7 @@
 # then runs. bin/fm-created-check <task-id> is the read-only closing check.
 #
 # Environment: FM_RUN_ROOT (default ~/.cache/fm-run) holds <task-id>/<run-id>/;
-# FM_RUN_TMPBASE (default /tmp) holds the scratch roots.
+# FM_RUN_TMPBASE (default ~/.t, on disk, never /tmp) holds the scratch roots.
 
 set -u
 SELF=$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")
@@ -75,6 +75,12 @@ PATH=$PATH_REAL command -v -- "$1" >/dev/null 2>&1 || [ -x "$1" ] || {
 umask 077
 RUN_BASE=$(fm_run_root)/$TASK
 mkdir -p -- "$RUN_BASE" || exit 1
+TMPBASE=$(fm_run_tmpbase)
+mkdir -p -- "$TMPBASE" && chmod 700 "$TMPBASE" || exit 1
+if ! DISK_MSG=$(fm_run_disk_check "$TMPBASE"); then
+  printf '%s\n' "$DISK_MSG" >&2
+  exit 75
+fi
 
 CHILD=''
 SIGNALS=0

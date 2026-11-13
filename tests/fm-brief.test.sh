@@ -1602,7 +1602,9 @@ test_branch_prefix_value_is_validated() {
 test_branch_prefix_command_is_shell_safe() {
   local home id prefix marker brief command repo branch
   home="$TMP_ROOT/branch-prefix-shell-safe-home"
-  marker="$TMP_ROOT/branch-prefix-shell-safe-marker"
+  # The marker path is embedded in a git ref, which cannot hold a "/." component (scratch lives under ~/.t).
+  marker="/tmp/fm-brief-safe-marker-$$"
+  rm -f "$marker"
   id='brief-branch-safe-g3'
   prefix="\$(touch\${IFS}$marker)"
   mkdir -p "$home/data"
