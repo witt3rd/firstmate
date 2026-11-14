@@ -470,7 +470,7 @@ ff_target() {
       && divergence_is_redundant "$dir" "$local_rev" "$base_rev"; then
       instr=$(changed_instr "$dir" "$base")
       before=$(git -C "$dir" rev-parse --short HEAD)
-      if git -C "$dir" reset --keep "$base" >/dev/null 2>&1; then
+      if GIT_LFS_SKIP_SMUDGE=1 git -C "$dir" reset --keep "$base" >/dev/null 2>&1; then
         after=$(git -C "$dir" rev-parse --short HEAD)
         FF_STATUS="updated"
         FF_INSTR="$instr"
@@ -500,7 +500,7 @@ ff_target() {
 
   instr=$(changed_instr "$dir" "$base")
   before=$(git -C "$dir" rev-parse --short HEAD)
-  if ! out=$(git -C "$dir" merge --ff-only "$base" 2>&1); then
+  if ! out=$(GIT_LFS_SKIP_SMUDGE=1 git -C "$dir" merge --ff-only "$base" 2>&1); then
     echo "$label: skipped: fast-forward failed: $(first_line "$out")"
     return 0
   fi
