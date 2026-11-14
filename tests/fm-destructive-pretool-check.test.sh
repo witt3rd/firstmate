@@ -245,6 +245,48 @@ test_full_acceptance_matrix() {
 
 # The policy CLI names the incident shapes with the stable reason codes the
 # contract documents, so an adapter or log reader can rely on them.
+# A builder removes objects it created outside fm-run (no ledger, name without the task
+# label): allowed by exact name when the object carries fm.task=<task> or the task's own
+# data/<task>/created.md names it; never for patterns, unrecorded, other-task, or running.
+test_own_created_objects() {
+  local bindir="$TMP_ROOT/own-docker-bin" created="$TMP_ROOT/own-created.md" out cmd
+  mkdir -p "$bindir"
+  cat > "$bindir/docker" <<'EOF_STUB'
+#!/usr/bin/env bash
+[ "$1" = inspect ] || exit 1
+case "${*: -1}" in
+  soak-img:1) echo '[{"Config":{"Labels":{"fm.task":"dg-task-1"}}}]' ;;
+  soak-vol) echo '[{"Labels":{"fm.task":"dg-task-1"}}]' ;;
+  other-img:1) echo '[{"Config":{"Labels":{"fm.task":"someone-else"}}}]' ;;
+  soak-run) echo '[{"State":{"Running":true},"Config":{"Labels":{"fm.task":"dg-task-1"}}}]' ;;
+  plain-img:1) echo '[{"Config":{"Labels":{}}}]' ;;
+  *) echo '[]'; exit 1 ;;
+esac
+EOF_STUB
+  chmod +x "$bindir/docker"
+  printf '# created\n- recorded-img:2\nrecorded-vol\n' > "$created"
+  policy() { PATH="$bindir:$PATH" node "$POLICY" --command "$1" --cwd "$FIX_WT" --home "$FIX_HOME" --own-label "$FIX_TASK" "${@:2}" | cut -f1,2; }
+  for cmd in 'docker rmi soak-img:1' 'docker volume rm soak-vol'; do
+    assert_equals "allow" "$(policy "$cmd")" "an exact object carrying the task's fm.task label must allow: $cmd"
+  done
+  for cmd in 'docker rmi recorded-img:2' 'docker volume rm recorded-vol' 'docker rmi recorded-img:2 recorded-vol'; do
+    assert_equals "allow" "$(policy "$cmd" --own-created-file "$created")" "an exact name in the task's created record must allow: $cmd"
+  done
+  assert_equals "deny	docker-rm-unowned" "$(policy 'docker rmi recorded-img:2')" "a created record the guard was not given grants nothing"
+  assert_equals "deny	docker-rm-unowned" "$(policy 'docker rmi other-img:1' --own-created-file "$created")" "another task's labelled object is refused"
+  assert_equals "deny	docker-rm-unowned" "$(policy 'docker rmi plain-img:1' --own-created-file "$created")" "an unlabelled, unrecorded object is refused"
+  assert_equals "deny	docker-rm-unowned" "$(policy 'docker rmi nothing:1' --own-created-file "$created")" "an absent object is refused"
+  assert_equals "deny	docker-rm-running" "$(policy 'docker rm -f soak-run')" "a running object is refused even when labelled"
+  assert_equals "deny	docker-rm-unowned" "$(policy 'ssh mcfeely docker rmi soak-img:1')" "a local label proves nothing about a remote host"
+  assert_equals "deny	docker-bulk-rm" "$(policy 'docker rmi soak-*')" "a glob is refused"
+  assert_equals "deny	docker-bulk-rm" "$(policy 'docker rmi $IMG')" "a variable is refused"
+  assert_equals "deny	docker-bulk-rm" "$(policy 'docker rmi $(docker images -q --filter label=fm.task=dg-task-1)')" "a label filter selector is refused"
+  assert_equals "deny	docker-bulk-rm" "$(policy 'docker images -q | xargs docker rmi')" "a pipe is refused"
+  assert_equals "deny	docker-prune" "$(policy 'docker image prune -a')" "a prune is refused"
+  out=$(printf '%s' '{"tool_input":{"command":"docker rmi recorded-img:2"}}' | { mkdir -p "$FIX_PARENT/data/$FIX_TASK"; cp "$created" "$FIX_PARENT/data/$FIX_TASK/created.md"; (cd "$FIX_WT" && PATH="$bindir:$PATH" HOME="$FIX_HOME" FM_HOME="$FIX_PARENT" "$CHECK" "${WORKER_ARGS[@]}" --claude 2>&1); echo "rc=$?"; })
+  assert_contains "$out" "rc=0" "the transport must read data/<task>/created.md from the owning home"
+}
+
 test_policy_reason_codes() {
   local out
   out=$(node "$POLICY" --command 'ls ~/.treehouse | xargs rm -rf' --cwd "$FIX_WT" --home "$FIX_HOME")
@@ -756,6 +798,7 @@ test_scripts_are_lint_clean() {
 
 test_full_acceptance_matrix
 test_policy_reason_codes
+test_own_created_objects
 test_denial_is_logged_and_noted
 test_override_from_process_environment
 test_grant_validates_and_logs
