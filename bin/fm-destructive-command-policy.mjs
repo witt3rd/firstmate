@@ -259,7 +259,7 @@ function inspectOwnership(name, context) {
   return running ? "running" : "owned";
 }
 
-// "owned", "running", or null (not owned).
+// Whether any object this name matches is a running container; a failed inspect counts as not running.
 function isRunning(name, context) {
   if (context.remote) return false;
   try {
@@ -271,6 +271,7 @@ function isRunning(name, context) {
   }
 }
 
+// "owned", "running", or null (not owned). Running is checked for every owned name.
 function ownership(name, context) {
   if (ownsName(name, context)) return isRunning(name, context) ? "running" : "owned";
   return inspectOwnership(name, context);
