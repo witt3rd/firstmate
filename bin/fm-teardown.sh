@@ -449,6 +449,8 @@ unset _teardown_source
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-lock-lib.sh
 . "$SCRIPT_DIR/fm-lock-lib.sh"
+# shellcheck source=bin/fm-pool-lib.sh
+. "$SCRIPT_DIR/fm-pool-lib.sh"
 # shellcheck source=bin/fm-gate-refuse-lib.sh
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
@@ -2151,32 +2153,6 @@ teardown_herdr_release_pane_cwd() {  # <worktree> <project>
     sleep 0.5
   done
   echo "warning: task $ID's Herdr endpoint shell did not leave its worktree before the return; the return may end it" >&2
-  return 0
-}
-
-# Best-effort `cargo clean` in a worktree about to be released to the pool.
-# Callers invoke it only after the safety checks passed; it never fails the teardown.
-teardown_cargo_clean_released() {  # <worktree> <project>
-  local wt=$1 proj=$2 wt_abs proj_abs
-  [ "${FM_TEARDOWN_CARGO_CLEAN:-1}" != 0 ] || return 0
-  [ "$FORCE" != "--force" ] || return 0
-  [ -f "$wt/Cargo.toml" ] || return 0
-  command -v cargo >/dev/null 2>&1 || return 0
-  wt_abs=$(CDPATH='' cd -- "$wt" 2>/dev/null && pwd -P) || return 0
-  proj_abs=$(CDPATH='' cd -- "$proj" 2>/dev/null && pwd -P) || return 0
-  [ "$wt_abs" != "$proj_abs" ] || return 0
-  # The worktree is untrusted: a symlinked target would send cargo's delete
-  # outside it, so leave such a tree alone.
-  [ ! -L "$wt_abs/target" ] || return 0
-  local -a runner=()
-  if command -v timeout >/dev/null 2>&1; then
-    runner+=(timeout "${FM_TEARDOWN_CARGO_CLEAN_TIMEOUT_SECS:-300}")
-  fi
-  if command -v nice >/dev/null 2>&1; then
-    runner+=(nice)
-  fi
-  ( cd "$wt_abs" && env -u CARGO_TARGET_DIR -u CARGO_BUILD_TARGET_DIR \
-      "${runner[@]+"${runner[@]}"}" cargo clean -q --target-dir "$wt_abs/target" ) >/dev/null 2>&1 || true
   return 0
 }
 
@@ -4125,7 +4101,7 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
     post_lock_cleanup_check=validate_worktree_teardown_safety
   fi
   teardown_herdr_release_pane_cwd "$WT" "$PROJ"
-  teardown_cargo_clean_released "$WT" "$PROJ"
+  fm_pool_cargo_clean_released "$WT" "$PROJ"
   if [ "$KIND" = scout ] || [ "$FORCE" = "--force" ]; then
     teardown_scrub_scratch_copy "$WT" || exit 1
   fi

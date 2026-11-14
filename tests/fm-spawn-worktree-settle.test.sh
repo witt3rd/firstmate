@@ -257,6 +257,29 @@ test_pane_that_never_reaches_the_worktree_refuses_and_returns_the_lease() {
   pass "a pane outside the worktree refuses at the launch boundary and the lease is returned"
 }
 
+# Whoever creates build output destroys it: a spawn that aborts and hands its
+# lease back runs the same guarded cargo clean teardown does.
+test_aborted_spawn_cleans_cargo_output_before_returning_lease() {
+  local rec id out status wt
+  id=lease-cargo-z7
+  rec=$(make_settle_case lease-cargo "$id" 100000)
+  read_settle_record "$rec"
+  printf '%s\n' '[package]' 'name = "t"' > "$WT_DIR/Cargo.toml"
+  cat > "$FAKEBIN_DIR/cargo" <<SH
+#!/usr/bin/env bash
+printf '%s %s\\n' "\$(pwd -P)" "\$*" >> "$CASE_DIR/cargo.log"
+SH
+  chmod +x "$FAKEBIN_DIR/cargo"
+  wt=$(cd "$WT_DIR" && pwd -P)
+
+  out=$(run_settle_spawn "$id")
+  status=$?
+  [ "$status" -ne 0 ] || fail "spawn launched a worker from a pane outside its worktree"$'\n'"$out"
+  assert_grep "return --force --if-lease-holder $id $WT_DIR" "$TREEHOUSE_LOG" "a failed spawn did not return its lease"
+  assert_grep "$wt clean -q --target-dir $wt/target" "$CASE_DIR/cargo.log" "a returned spawn lease kept its cargo build output"
+  pass "an aborted spawn cleans cargo output before returning its lease"
+}
+
 test_unborn_head_project_is_refused_at_once() {
   local rec id out status started elapsed
   id=settle-unborn-head-z5
@@ -376,6 +399,7 @@ test_other_lease_failure_refuses_with_the_tools_message
 test_primary_checkout_lease_is_refused_and_returned
 test_transient_stale_cwd_at_the_launch_boundary_is_retried
 test_pane_that_never_reaches_the_worktree_refuses_and_returns_the_lease
+test_aborted_spawn_cleans_cargo_output_before_returning_lease
 test_unborn_head_project_is_refused_at_once
 
 echo "# all fm-spawn-worktree-settle tests passed"
