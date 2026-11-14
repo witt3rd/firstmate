@@ -757,7 +757,11 @@ test_lfs_smudge_failure_leaves_clean_tree() {
   clone=$(build_pair "$home" lfsproj)
   work="$home/work-lfsproj"
   filter="$home/fake-smudge.sh"
-  printf '#!/bin/sh\n[ -n "${GIT_LFS_SKIP_SMUDGE:-}" ] && exec cat\nexit 1\n' > "$filter"
+  cat > "$filter" <<'FILTER'
+#!/bin/sh
+[ -n "${GIT_LFS_SKIP_SMUDGE:-}" ] && exec cat
+exit 1
+FILTER
   chmod +x "$filter"
   printf 'big.bin filter=fakelfs\n' > "$work/.gitattributes"
   printf 'pointer-v1\n' > "$work/big.bin"
