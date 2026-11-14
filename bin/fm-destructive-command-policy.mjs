@@ -260,9 +260,19 @@ function inspectOwnership(name, context) {
 }
 
 // "owned", "running", or null (not owned).
+function isRunning(name, context) {
+  if (context.remote) return false;
+  try {
+    const out = execFileSync("docker", ["inspect", "--", name], { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "ignore"] });
+    const items = JSON.parse(out);
+    return Array.isArray(items) && items.some((item) => item?.State?.Running === true);
+  } catch {
+    return false;
+  }
+}
+
 function ownership(name, context) {
-  if (context.ownNames.has(name)) return "owned";
-  if (context.ownLabels.some((label) => label.length >= 3 && (name === label || (name.startsWith(label) && /^[-_.:]/.test(name.slice(label.length)))))) return "owned";
+  if (ownsName(name, context)) return isRunning(name, context) ? "running" : "owned";
   return inspectOwnership(name, context);
 }
 
