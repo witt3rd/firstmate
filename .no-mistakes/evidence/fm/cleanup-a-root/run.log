@@ -1,0 +1,22 @@
+ok - the command's exit status passes through
+ok - a TERM-killed run removes its container, volume, network, image, and temp dir
+ok - a hard-killed run is cleaned by the next run of the same task id, and only by its own ledger
+ok - every create through the shim is labelled and recorded; relabelling and unrecorded creates are refused
+ok - the guard allows exact names from the task's own ledger and still refuses patterns, filters, xargs, prunes, and foreign names
+ok - a path outside the run's own scratch root is refused, by name, dot-dot, and symlink parent
+ok - the closing check prints CLEAN, the exact remaining names with the one command, or flags a missing ledger
+ok - the mktemp shim records every temp path it makes, including /tmp templates relocated into the scratch root
+ok - a run keeps tmp, ledger, logs, and expires in one directory under <root>/<task>/<run>
+ok - a prior run left in the old ledger and scratch locations is recovered by the next run
+ok - scratch defaults to ~/.t and a run refuses to start when that disk is over the limit
+ok - a compose project's containers, network, volume, and built image are recorded and removed
+ok - no-heavy-hosts refuses listed hosts; overrides only add
+ok - the fm-run scripts are lint-clean
+FM_TEST_COMPLETE
+rc=0
+ok - fm-teardown tmux: fleet-task-stop runs with id and target before the window kill
+ok - fm-teardown removes the whole task root after fleet-task-stop, and only that task's
+ok - fm-teardown tmux: a failing fleet-task-stop never refuses teardown
+ok - fm-teardown tmux: absent fleet-task-stop leaves behaviour unchanged
+ok - fm-teardown non-tmux: fleet-task-stop runs with the task id and no pane target
+rc=0
