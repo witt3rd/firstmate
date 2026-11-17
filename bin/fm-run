@@ -11,8 +11,9 @@
 #                   scratch root (TMPDIR points at it)
 #   PATH            a shim directory first: docker and docker-compose stamp every
 #                   container, network, volume, image, and compose project they
-#                   create with the label and record its exact name in the ledger;
-#                   mktemp records every path it makes (bin/fm-run-shim.sh)
+#                   create with the label and record its exact name in the ledger
+#                   (bin/fm-run-shim.sh); mktemp is the system tool, and TMPDIR
+#                   points at the scratch root, which is removed whole
 #
 # On exit - normal, error, or SIGTERM/SIGINT/SIGHUP - it removes exactly the
 # ledger's entries (docker rm -f / network rm / volume rm / rmi by exact name,
@@ -134,7 +135,7 @@ fm_run_record "$LEDGER" dir "$SCRATCH" -
 mkdir -p -- "$SCRATCH" && chmod 700 "$SCRATCH" || exit 1
 
 : >"$RUN_DIR/shims/.fm-run-shim"
-for tool in docker docker-compose mktemp; do
+for tool in docker docker-compose; do
   printf '#!/bin/sh\nexec bash %s %s "$@"\n' "'$SCRIPT_DIR/fm-run-shim.sh'" "$tool" >"$RUN_DIR/shims/$tool"
   chmod 755 "$RUN_DIR/shims/$tool"
 done
