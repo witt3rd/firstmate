@@ -430,6 +430,7 @@ for _teardown_source in \
   fm-cursor-lib.sh \
   fm-branch-retire-lib.sh \
   fm-nm-run-lib.sh \
+  fm-run-lib.sh \
   fm-wake-lib.sh \
   fm-path-lib.sh \
   fm-lease-lib.sh
@@ -463,6 +464,8 @@ unset _teardown_source
 . "$SCRIPT_DIR/fm-branch-retire-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-run-lib.sh
+. "$SCRIPT_DIR/fm-run-lib.sh"
 # Archive paths live only in teardown; presentation/wake readers stay unaware.
 teardown_archive_directory() {  # <directory>
   if [ -L "$1" ] || { [ -e "$1" ] && [ ! -d "$1" ]; }; then
@@ -1346,6 +1349,8 @@ PR_URL=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
 # tasktmp is recorded by fm-spawn for tasks that set up a per-task temp root
 # (/tmp/fm-<id>/); absent for tasks spawned before that change, so tolerate empty.
 TASK_TMP=$(grep '^tasktmp=' "$META" | cut -d= -f2- || true)
+# The task's own root under ~/.t (docs/fm-run.md): every run's temp, ledger, and logs.
+TASK_ROOT=$(fm_run_task_root "$ID" 2>/dev/null || true)
 BUSY_GEN=$(fm_meta_get "$META" busy_gen)
 if [ -z "$BUSY_GEN" ]; then
   BUSY_GEN=$(cat "$STATE/$ID.busy-gen" 2>/dev/null || true)
@@ -4039,9 +4044,9 @@ if [ "$BACKEND" = herdr ] && [ -n "$TEARDOWN_HERDR_PANE" ]; then
 fi
 if [ "$KIND" != secondmate ] && teardown_owns_worktree; then
   conclude_task_no_mistakes_run "$WT"
-  reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
+  reap_task_worktree_processes worktree "$WT" "$TASK_TMP" "$TASK_ROOT"
 elif [ "$KIND" != secondmate ]; then
-  reap_task_worktree_processes tasktmp "$TASK_TMP"
+  reap_task_worktree_processes tasktmp "$TASK_TMP" "$TASK_ROOT"
 fi
 if [ "$KIND" = ship ] && teardown_owns_worktree && [ -e "$CONFIG/pipeline-spend" ]; then
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
@@ -4295,6 +4300,12 @@ if [ -n "$TASK_TMP" ] && [ -e "$TASK_TMP" ]; then
   chmod -R u+rwX -- "$TASK_TMP" 2>/dev/null || true
   rm -rf -- "$TASK_TMP"
   [ ! -e "$TASK_TMP" ] || echo "warning: could not fully remove task temp root $TASK_TMP; remove it manually" >&2
+fi
+# Remove the task's root under ~/.t after fleet-task-stop has ended what ran in it.
+if [ -n "$TASK_ROOT" ] && [ -d "$TASK_ROOT" ] && [ ! -L "$TASK_ROOT" ]; then
+  chmod -R u+rwX -- "$TASK_ROOT" 2>/dev/null || true
+  rm -rf -- "$TASK_ROOT"
+  [ ! -e "$TASK_ROOT" ] || echo "warning: could not fully remove task root $TASK_ROOT; remove it manually" >&2
 fi
 # Retire only this Firstmate home's launch namespace. Its never-reused per-spawn
 # files leave the equal task-id namespace of every other home untouched.

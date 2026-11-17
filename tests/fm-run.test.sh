@@ -20,9 +20,8 @@ FM_RUN="$ROOT/bin/fm-run"
 FM_CHECK="$ROOT/bin/fm-created-check"
 CHECK="$ROOT/bin/fm-destructive-pretool-check.sh"
 export FM_HEAVY_HOSTNAME=${FM_HEAVY_HOSTNAME:-testhost}
-export FM_RUN_ROOT="$TMP_ROOT/run-root"
-export FM_RUN_TMPBASE="$TMP_ROOT/scratch-base"
-mkdir -p "$FM_RUN_ROOT" "$FM_RUN_TMPBASE"
+export FM_RUN_ROOT="$TMP_ROOT/t"
+mkdir -p "$FM_RUN_ROOT"
 
 HAVE_DOCKER=0
 if command -v docker >/dev/null 2>&1 && timeout 20 docker info >/dev/null 2>&1; then HAVE_DOCKER=1; fi
@@ -282,7 +281,7 @@ test_path_outside_the_scratch_root_is_refused() {
   local task run_dir scratch victim out rc outside_link
   new_task; task=$TASK_ID
   run_dir="$FM_RUN_ROOT/$task/r1-1"
-  scratch="$FM_RUN_TMPBASE/fm-run-$task-r1-1"
+  scratch="$run_dir/tmp"
   victim="$TMP_ROOT/victim-$task"
   outside_link="$scratch/escape"
   mkdir -p "$run_dir" "$scratch" "$victim/keep"
@@ -292,13 +291,13 @@ test_path_outside_the_scratch_root_is_refused() {
   # A ledger that names: an unrelated dir, a dot-dot escape, a symlink-parent escape, and one legitimate path.
   printf 'dir\t%s\t-\ndir\t%s\t-\ndir\t%s\t-\ndir\t%s\t-\n' \
     "$victim" "$scratch/../victim-$task" "$outside_link/keep" "$scratch/inside" >"$run_dir/ledger"
-  mkdir -p "$FM_RUN_TMPBASE/victim-$task"
+  mkdir -p "$run_dir/victim-$task"
   out=$(timeout 60 "$FM_RUN" "$task" -- bash -c 'echo body' 2>&1)
   rc=$?
   eq "$rc" 3 "a run whose settle leaves REMAINING exits nonzero even though its command succeeded"
   [ -e "$victim/keep/file" ] || fail "a path outside the scratch root was removed"
   [ -d "$victim" ] || fail "an unrelated directory named in a ledger was removed"
-  [ -d "$FM_RUN_TMPBASE/victim-$task" ] || fail "a dot-dot path out of the scratch root was followed and removed"
+  [ -d "$run_dir/victim-$task" ] || fail "a dot-dot path out of the scratch root was followed and removed"
   [ ! -e "$scratch/inside" ] || fail "the legitimate path inside the scratch root was not removed"
   assert_contains "$out" "REMAINING (3):" "the three refused paths are REMAINING"
   assert_contains "$out" "outside this run's scratch root" "the refusal names its reason"
@@ -318,7 +317,8 @@ test_created_check_reports_clean_remaining_and_no_ledger() {
   eq "$?" 0 "a settled ledger is CLEAN"
   assert_contains "$out" "CLEAN" "CLEAN prints"
   # A recorded path that still exists is reported with the one command per host.
-  local run_dir="$FM_RUN_ROOT/$task/r1-1" scratch="$FM_RUN_TMPBASE/fm-run-$task-r1-1"
+  local run_dir="$FM_RUN_ROOT/$task/r1-1" scratch
+  scratch="$run_dir/tmp"
   mkdir -p "$run_dir" "$scratch/left"
   printf 'dir\t%s\t-\n' "$scratch/left" >"$run_dir/ledger"
   out=$("$FM_CHECK" "$task" 2>&1)
@@ -341,7 +341,7 @@ test_mktemp_is_native_and_lands_in_the_scratch_root() {
   eq "$?" 0 "the mktemp forms run clean"
   assert_not_contains "$out" "OUTSIDE" "a bare, a file, and a -t mktemp land in the scratch root through TMPDIR"
   assert_not_contains "$out" "/shims/mktemp" "mktemp is the system tool, not a shim"
-  assert_contains "$out" "tmpdir=$FM_RUN_TMPBASE/fm-run-$task-" "TMPDIR points at the run's scratch root"
+  assert_contains "$out" "tmpdir=$FM_RUN_ROOT/$task/r" "TMPDIR points at the run's tmp directory in its task root"
   assert_contains "$out" "CREATED (1):" "the scratch root is the one recorded path"
   assert_contains "$out" "REMAINING (0):" "it is removed whole, with everything the command put in it"
   pass "mktemp is the native tool and the scratch root removed whole is the record of every temp path"
@@ -397,13 +397,50 @@ test_command_runs_in_the_task_slice_and_its_children_die_with_the_scope() {
   pass "a command runs in fm-task-<id>.slice, a builder's systemd-run joins it, and a detached child dies with the run's scope"
 }
 
+test_one_task_root_holds_the_whole_run() {
+  local task out root run
+  new_task; task=$TASK_ID
+  root="$FM_RUN_ROOT/$task"
+  out=$(timeout 60 "$FM_RUN" "$task" -- bash -c '
+    echo "tmpdir=$TMPDIR logs=$FM_RUN_LOGS ledger=$FM_RUN_LEDGER"
+    d=$(mktemp -d); echo "$d" >"$FM_RUN_LOGS/note"
+    cat "$FM_RUN_DIR/expires"' 2>&1)
+  eq "$?" 0 "the run exits clean"
+  run=$(find "$root" -mindepth 1 -maxdepth 1 -type d | head -1)
+  [ -n "$run" ] || fail "no run directory under the task root $root"
+  assert_contains "$out" "tmpdir=$run/tmp logs=$run/logs ledger=$run/ledger" "tmp, logs, and ledger are all inside <task root>/<run>"
+  [ -f "$run/ledger" ] && [ -d "$run/logs" ] && [ -f "$run/expires" ] || fail "the run directory lacks ledger, logs, or expires"
+  [ ! -e "$run/tmp" ] || fail "the tmp directory survived the run"
+  case "$(cat "$run/expires")" in ''|*[!0-9]*) fail "expires is not an epoch: $(cat "$run/expires")" ;; esac
+  [ "$(cat "$run/expires")" -gt "$(date +%s)" ] || fail "expires is not in the future"
+  # Nothing of this run lives outside the task root.
+  [ -z "$(find "$FM_RUN_ROOT" -maxdepth 1 -name "fm-run-$task-*")" ] || fail "a scratch root was made outside the task root"
+  assert_contains "$out" "REMAINING (0):" "everything the run made is removed"
+  pass "a run keeps tmp, ledger, logs, and expires in one directory under <root>/<task>/<run>"
+}
+
+test_a_prior_run_in_the_old_locations_is_still_recovered() {
+  local task home="$TMP_ROOT/legacy-home" old_ledger old_scratch out
+  new_task; task=$TASK_ID
+  old_ledger="$home/.cache/fm-run/$task/r1-1"
+  old_scratch="$home/.t/fm-run-$task-r1-1"
+  mkdir -p "$old_ledger" "$old_scratch/left"
+  printf 'dir\t%s\t-\n' "$old_scratch/left" >"$old_ledger/ledger"
+  out=$(HOME="$home" env -u FM_RUN_ROOT -u XDG_CACHE_HOME timeout 60 "$FM_RUN" "$task" -- true 2>&1)
+  eq "$?" 0 "the run exits clean"
+  assert_contains "$out" "recovered prior run r1-1" "the prior run in the old cache location is recovered"
+  [ ! -e "$old_scratch/left" ] || fail "the old scratch path named by the old ledger survived"
+  pass "a prior run left in the old ledger and scratch locations is recovered by the next run"
+}
+
 test_scratch_defaults_to_short_disk_path_and_refuses_a_full_disk() {
   local task out rc home="$TMP_ROOT/home"
   mkdir -p "$home"
   new_task; task=$TASK_ID
-  out=$(HOME="$home" env -u FM_RUN_TMPBASE timeout 60 "$FM_RUN" "$task" -- bash -c 'echo "tmpdir=$TMPDIR"' 2>&1)
+  out=$(HOME="$home" env -u FM_RUN_ROOT timeout 60 "$FM_RUN" "$task" -- bash -c 'echo "tmpdir=$TMPDIR"' 2>&1)
   eq "$?" 0 "a default-base run succeeds"
-  assert_contains "$out" "tmpdir=$home/.t/fm-run-$task-" "the default scratch base is ~/.t"
+  assert_contains "$out" "tmpdir=$home/.t/$task/r" "the default task root is ~/.t/<task>"
+  case "$out" in *"tmpdir=$home/.t/$task/r"*-*/tmp*) ;; *) fail "TMPDIR is not the run's tmp subdirectory: $out" ;; esac
   eq "$(stat -c %a "$home/.t")" 700 "the default base is mode 700"
   new_task; task=$TASK_ID
   out=$(FM_RUN_MAX_USED_PCT=0 timeout 60 "$FM_RUN" "$task" -- true 2>&1); rc=$?
@@ -470,6 +507,8 @@ fm_test_run \
   test_mktemp_is_native_and_lands_in_the_scratch_root \
   test_many_mktemp_calls_do_not_crawl \
   test_command_runs_in_the_task_slice_and_its_children_die_with_the_scope \
+  test_one_task_root_holds_the_whole_run \
+  test_a_prior_run_in_the_old_locations_is_still_recovered \
   test_scratch_defaults_to_short_disk_path_and_refuses_a_full_disk \
   test_compose_project_objects_are_recorded_and_removed \
   test_listed_host_is_refused_and_override_only_adds \

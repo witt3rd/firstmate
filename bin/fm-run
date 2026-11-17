@@ -9,8 +9,8 @@
 # there is no user manager), with:
 #   FM_TASK_LABEL   the task id: the label the destructive-command guard names
 #                   (bin/fm-destructive-command-policy.mjs --own-label)
-#   FM_RUN_*        the run id, the run directory, the per-run ledger, and the
-#                   scratch root (TMPDIR points at it)
+#   FM_RUN_*        the run id, the run directory, the per-run ledger, the
+#                   logs directory, and the scratch root (TMPDIR points at it)
 #   PATH            a shim directory first: docker and docker-compose stamp every
 #                   container, network, volume, image, and compose project they
 #                   create with the label and record its exact name in the ledger
@@ -29,8 +29,10 @@
 # of the same task id first removes what that prior ledger names, reports it, and
 # then runs. bin/fm-created-check <task-id> is the read-only closing check.
 #
-# Environment: FM_RUN_ROOT (default ~/.cache/fm-run) holds <task-id>/<run-id>/;
-# FM_RUN_TMPBASE (default ~/.t, on disk, never /tmp) holds the scratch roots.
+# Environment: FM_RUN_ROOT (default ~/.t, on disk, never /tmp) holds one task root
+# <task-id>/ per task and, in it, one directory per run, <run-id>/, with tmp/ (the
+# command's TMPDIR), ledger, logs/, expires, pid, and shims/. fm-teardown removes
+# the whole task root when the task ends.
 
 set -u
 SELF=$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")
@@ -77,11 +79,10 @@ PATH=$PATH_REAL command -v -- "$1" >/dev/null 2>&1 || [ -x "$1" ] || {
 }
 
 umask 077
-RUN_BASE=$(fm_run_root)/$TASK
-mkdir -p -- "$RUN_BASE" || exit 1
-TMPBASE=$(fm_run_tmpbase)
-mkdir -p -- "$TMPBASE" && chmod 700 "$TMPBASE" || exit 1
-if ! DISK_MSG=$(fm_run_disk_check "$TMPBASE"); then
+RUN_ROOT=$(fm_run_root)
+RUN_BASE=$RUN_ROOT/$TASK
+mkdir -p -- "$RUN_BASE" && chmod 700 "$RUN_ROOT" "$RUN_BASE" || exit 1
+if ! DISK_MSG=$(fm_run_disk_check "$RUN_ROOT"); then
   printf '%s\n' "$DISK_MSG" >&2
   exit 75
 fi
@@ -96,8 +97,10 @@ RUN_DIR=''
 # prior-run sweep sees this run as live and leaves it alone.
 RUN_ID=r$(date +%s)-$$
 RUN_DIR=$RUN_BASE/$RUN_ID
-SCRATCH=$(fm_run_scratch_for "$TASK" "$RUN_ID")
-mkdir -p -- "$RUN_DIR/shims" || exit 1
+SCRATCH=$RUN_DIR/tmp
+mkdir -p -- "$RUN_DIR/shims" "$RUN_DIR/logs" || exit 1
+# The epoch after which this run's root is abandoned work (read by later cleanup steps; nothing here acts on it).
+printf '%s\n' "$(($(date +%s) + 7 * 86400))" >"$RUN_DIR/expires"
 LEDGER=$RUN_DIR/ledger
 : >"$LEDGER"
 printf '%s\n%s\n' "$$" "$(fm_run_pid_token "$$")" >"$RUN_DIR/pid"
@@ -190,7 +193,7 @@ trap 'on_signal INT' INT
 trap 'on_signal HUP' HUP
 trap 'finish' EXIT
 
-export FM_TASK_LABEL=$TASK FM_RUN_ID=$RUN_ID FM_RUN_DIR=$RUN_DIR FM_RUN_LEDGER=$LEDGER FM_RUN_SCRATCH=$SCRATCH
+export FM_TASK_LABEL=$TASK FM_RUN_ID=$RUN_ID FM_RUN_DIR=$RUN_DIR FM_RUN_LEDGER=$LEDGER FM_RUN_SCRATCH=$SCRATCH FM_RUN_LOGS=$RUN_DIR/logs
 export TMPDIR=$SCRATCH
 export PATH="$RUN_DIR/shims:$PATH_REAL"
 

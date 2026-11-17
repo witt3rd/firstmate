@@ -286,7 +286,7 @@ POLICY_ARGS=(--command "$CMD" --cwd "$(pwd -P 2>/dev/null || pwd)")
 case "$TASK" in
   ''|*[!A-Za-z0-9._-]*|.*) ;;
   *)
-    RUN_ROOT=${FM_RUN_ROOT:-${XDG_CACHE_HOME:-${HOME:-}/.cache}/fm-run}
+    RUN_ROOT=${FM_RUN_ROOT:-${HOME:-}/.t}
     case "$RUN_ROOT" in /*) POLICY_ARGS+=(--own-ledger-dir "$RUN_ROOT/$TASK") ;; esac
     ;;
 esac

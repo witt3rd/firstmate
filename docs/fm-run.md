@@ -23,7 +23,8 @@ The shared check is `fm_run_heavy_host_guard` in `bin/fm-run-lib.sh`; `FM_HEAVY_
 ## What a run does
 
 - Sets `FM_TASK_LABEL` to the task id, which is the label the guard names (`--own-label`), plus `FM_RUN_ID`, `FM_RUN_LEDGER`, and `FM_RUN_SCRATCH`.
-  `TMPDIR` points at the run's own scratch root, `~/.t/fm-run-<task-id>-<run-id>` (override the base with `FM_RUN_TMPBASE`).
+  Each run has one directory in its task's root, `~/.t/<task-id>/<run-id>/` (override the base with `FM_RUN_ROOT`), holding `tmp/` (what `TMPDIR` points at), `ledger`, `logs/` (`FM_RUN_LOGS`, for a builder's own logs), and `expires`, an epoch a week after the start that a later cleanup step can read and that nothing here acts on.
+  `fm-teardown` removes the whole task root `~/.t/<task-id>/` after `fleet-task-stop`, and reaps the processes whose working directory is under it with the task's other roots.
   The base is on disk and short on purpose: `/tmp` is RAM-backed tmpfs on worker hosts, where a big build fills it and fails with "No space left on device", and a long path broke the Postgres unix socket path limit.
   A run refuses to start (exit 75, one line) when the base's filesystem is over 90% full in bytes or inodes (`FM_RUN_MAX_USED_PCT` overrides the limit).
 - Launches the command in its own systemd scope inside the task's slice, `fm-task-<escaped task id>.slice` (`systemd-run --user --scope`; the id is `systemd-escape`d because a bare dash in a slice name is nesting).
@@ -46,7 +47,8 @@ The shared check is `fm_run_heavy_host_guard` in `bin/fm-run-lib.sh`; `FM_HEAVY_
 
 ## A hard kill or a host crash
 
-SIGKILL or a crash leaves the ledger under `${FM_RUN_ROOT:-~/.cache/fm-run}/<task-id>/<run-id>/`.
+SIGKILL or a crash leaves the run directory, ledger included, under `${FM_RUN_ROOT:-~/.t}/<task-id>/<run-id>/`.
+A prior run left in the previous locations (`~/.cache/fm-run/<task-id>/<run-id>/` and `~/.t/fm-run-<task-id>-<run-id>`) is recovered the same way.
 The next `fm-run` of the same task id first removes what that prior ledger names (exact names from the creator's own record, no sweep), reports it as a recovered run, and then runs.
 A run directory with a live owner is never touched.
 

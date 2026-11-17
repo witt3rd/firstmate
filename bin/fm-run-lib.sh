@@ -43,8 +43,24 @@ fm_run_heavy_host_guard() {
   return 0
 }
 
+# The base of every task root: a short on-disk path, never /tmp (RAM-backed tmpfs
+# on worker hosts, and a long path breaks Postgres unix socket paths). A task's
+# root is <base>/<task-id>/ and each run's directory is <base>/<task-id>/<run-id>/
+# holding tmp/ (TMPDIR), ledger, logs/, expires, pid, and shims/. See docs/fm-run.md.
 fm_run_root() {
-  printf '%s' "${FM_RUN_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/fm-run}"
+  printf '%s' "${FM_RUN_ROOT:-$HOME/.t}"
+}
+
+# fm_run_task_root <task-id>: the task's root, or nothing for an id that is not a plain task id.
+fm_run_task_root() {
+  fm_run_valid_task "$1" || return 1
+  printf '%s/%s' "$(fm_run_root)" "$1"
+}
+
+# Where one release of fm-run kept ledgers before the task root, still read so a
+# run killed before the move is recovered by the next run of its task id.
+fm_run_legacy_root() {
+  printf '%s' "${XDG_CACHE_HOME:-$HOME/.cache}/fm-run"
 }
 
 # A task id is also the guard's label (bin/fm-destructive-command-policy.mjs
@@ -67,16 +83,15 @@ fm_run_valid_runid() {
   return 0
 }
 
-# The scratch root is derived from the task id and run id, never read from the
-# ledger, so an edited ledger cannot declare a different root.
-fm_run_scratch_for() {  # <task-id> <run-id>
-  printf '%s/fm-run-%s-%s' "$(fm_run_tmpbase)" "$1" "$2"
-}
-
-# Scratch base: a short on-disk path, never /tmp (RAM-backed tmpfs on worker
-# hosts, and a long path breaks Postgres unix socket paths). See docs/fm-run.md.
-fm_run_tmpbase() {
-  printf '%s' "${FM_RUN_TMPBASE:-$HOME/.t}"
+# The scratch root is derived from the run directory, never read from the ledger,
+# so an edited ledger cannot declare a different root. A run directory in the old
+# ledger location has its scratch root in the old place beside the task roots.
+fm_run_scratch_for() {  # <run-dir> <task-id>
+  if [ "$(dirname -- "$1")" = "$(fm_run_legacy_root)/$2" ]; then
+    printf '%s/fm-run-%s-%s' "$HOME/.t" "$2" "$(basename -- "$1")"
+  else
+    printf '%s/tmp' "$1"
+  fi
 }
 
 # 0 when the base's filesystem is at or under the limit in bytes and inodes;
@@ -298,10 +313,9 @@ fm_run_ordered_entries() {  # reads ledger-format lines on stdin
 #   REMOVED<TAB>kind<TAB>name<TAB>note        (gone: removed now or already gone)
 #   REMAINING<TAB>kind<TAB>name<TAB>reason
 fm_run_settle() {
-  local rundir=$1 task=$2 remove=$3 ledger extra='' runid scratch tab line kind name proof members mkind mname state entries
+  local rundir=$1 task=$2 remove=$3 ledger extra='' scratch tab line kind name proof members mkind mname state entries
   ledger=$rundir/ledger
-  runid=$(basename -- "$rundir")
-  scratch=$(fm_run_scratch_for "$task" "$runid")
+  scratch=$(fm_run_scratch_for "$rundir" "$task")
   tab=$(printf '\t')
   [ -f "$ledger" ] || return 0
 
@@ -394,15 +408,16 @@ fm_run_remaining_count() {  # reads fm_run_settle output on stdin
   awk -F'\t' '$1 == "REMAINING"' | wc -l | tr -d ' '
 }
 
-# Run directories of one task, oldest first.
+# Run directories of one task, oldest first, those in the old ledger location first.
 fm_run_rundirs() {  # <task-id>
   local base entry
-  base=$(fm_run_root)/$1
-  [ -d "$base" ] || return 0
-  for entry in "$base"/r*-*; do
-    [ -d "$entry" ] || continue
-    fm_run_valid_runid "$(basename -- "$entry")" || continue
-    printf '%s\n' "$entry"
+  for base in "$(fm_run_legacy_root)/$1" "$(fm_run_root)/$1"; do
+    [ -d "$base" ] || continue
+    for entry in "$base"/r*-*; do
+      [ -d "$entry" ] || continue
+      fm_run_valid_runid "$(basename -- "$entry")" || continue
+      printf '%s\n' "$entry"
+    done
   done
 }
 

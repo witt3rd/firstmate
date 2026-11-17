@@ -48,7 +48,7 @@ Quoted text, comments, heredoc bodies, and later argument words are data, so `ec
 
 - A docker removal of explicitly named literal resources that carry the pane's own task label, such as `docker volume rm <task-id>-db`, `ssh host docker rm -f <task-id>-web`, or `docker compose -p <task-id>-stack down`.
   A worker names the containers, volumes, networks, and compose projects it creates with its task id so it can remove them; the same literal is allowed locally and after `ssh`.
-- A docker removal of an exact literal name that the task's own `fm-run` ledger records (`${FM_RUN_ROOT:-~/.cache/fm-run}/<task-id>/*/ledger`, read by the policy through `--own-ledger-dir`), and `fm-run <task-id> -- <command>`, which is judged as the wrapped command.
+- A docker removal of an exact literal name that the task's own `fm-run` ledger records (`${FM_RUN_ROOT:-~/.t}/<task-id>/*/ledger`, read by the policy through `--own-ledger-dir`), and `fm-run <task-id> -- <command>`, which is judged as the wrapped command.
   `fm-run` itself removes by the same exact names; [`fm-run.md`](fm-run.md) owns that contract.
 - A docker removal of an exact literal name that the task created outside `fm-run`, proved either by the object carrying the label `fm.task=<task-id>` (the policy runs a fixed, read-only `docker inspect -- <name>`; every object that name matches must carry it, and it is skipped after `ssh`, where a local label proves nothing) or by the name appearing in `data/<task-id>/created.md` in the owning home.
   The record is one exact name per line, optionally after `- `; `#` lines are notes.
