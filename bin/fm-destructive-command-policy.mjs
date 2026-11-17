@@ -17,6 +17,7 @@
 
 import path from "node:path";
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Lexer, splitProgram, commandPosition } from "./fm-arm-command-policy.mjs";
 
@@ -26,7 +27,9 @@ const REASONS = {
   "docker-bulk-rm":
     "a docker or podman removal whose targets come from a filter, label, wildcard, variable, command substitution, xargs, or a pipe can delete resources this pane did not create",
   "docker-rm-unowned":
-    "a docker or podman removal may name only resources that carry this pane's own task label or that this task's own fm-run ledger records by exact name; this name is neither, so it may belong to someone else",
+    "a docker or podman removal may name only resources that carry this pane's own task label or that this task's own fm-run ledger or data/<task>/created.md records by exact name, or an existing object that carries this task's fm.task label; this name is none of these, so it may belong to someone else",
+  "docker-rm-running":
+    "a docker or podman removal of a running container would stop work; stop it by its own means first, then remove it",
   "docker-compose-down":
     "a compose down or rm removes every container of a project chosen by directory or file, not by an exact name this pane created; name the project with -p <this pane's task label>-... or remove the exact resources you created",
   "rm-glob-protected":
@@ -215,6 +218,65 @@ function loadLedgerNames(dir) {
   return names;
 }
 
+// data/<task>/created.md is the creator's own record for objects made outside
+// fm-run: one exact name per line, optionally after "- "; "#" lines are notes.
+function loadCreatedNames(file) {
+  const names = new Set();
+  let text = "";
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return names;
+  }
+  for (const raw of text.split("\n")) {
+    const line = raw.trim().replace(/^[-*]\s+/, "");
+    if (!line || line.startsWith("#")) continue;
+    const name = line.split(/\s+/)[0];
+    if (DOCKER_LITERAL_NAME.test(name)) names.add(name);
+  }
+  return names;
+}
+
+// Read-only proof from the daemon itself: every object this exact name matches
+// carries fm.task=<one of this pane's task labels>. Fixed argv, no shell, and
+// never the submitted text. Returns "owned", "running", or null.
+function inspectOwnership(name, context) {
+  if (context.remote || context.ownLabels.length === 0) return null;
+  let items;
+  try {
+    const out = execFileSync("docker", ["inspect", "--", name], { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "ignore"] });
+    items = JSON.parse(out);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(items) || items.length === 0) return null;
+  let running = false;
+  for (const item of items) {
+    const labels = (item && (item.Config?.Labels || item.Labels)) || {};
+    if (!context.ownLabels.includes(labels["fm.task"])) return null;
+    if (item.State?.Running === true) running = true;
+  }
+  return running ? "running" : "owned";
+}
+
+// Whether any object this name matches is a running container; a failed inspect counts as not running.
+function isRunning(name, context) {
+  if (context.remote) return false;
+  try {
+    const out = execFileSync("docker", ["inspect", "--", name], { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "ignore"] });
+    const items = JSON.parse(out);
+    return Array.isArray(items) && items.some((item) => item?.State?.Running === true);
+  } catch {
+    return false;
+  }
+}
+
+// "owned", "running", or null (not owned). Running is checked for every owned name.
+function ownership(name, context) {
+  if (ownsName(name, context)) return isRunning(name, context) ? "running" : "owned";
+  return inspectOwnership(name, context);
+}
+
 function ownsName(name, context) {
   if (context.ownNames.has(name)) return true;
   return context.ownLabels.some((label) => label.length >= 3 && (name === label || (name.startsWith(label) && /^[-_.:]/.test(name.slice(label.length)))));
@@ -243,10 +305,13 @@ function classifyDockerTargets(words, from, context, fed) {
   for (const target of targets) {
     if (dynamicWord(target) || globWord(target) || !DOCKER_LITERAL_NAME.test(target.value)) return deny("docker-bulk-rm");
   }
+  let running = false;
   for (const target of targets) {
-    if (!ownsName(target.value, context)) return deny("docker-rm-unowned");
+    const owner = ownership(target.value, context);
+    if (!owner) return deny("docker-rm-unowned");
+    if (owner === "running") running = true;
   }
-  return null;
+  return running ? deny("docker-rm-running") : null;
 }
 
 // docker compose down / rm acts on a whole project: allowed only when -p names
@@ -591,7 +656,7 @@ function analyze(command, context, depth) {
       verdict = analyze(words.slice(start).map(wordText).join(" "), local, depth + 1);
     } else if (name === "ssh") {
       const remote = sshRemoteCommand(words, start);
-      if (remote) verdict = analyze(remote, { ...local, cwd: local.home, ownWorktree: null }, depth + 1);
+      if (remote) verdict = analyze(remote, { ...local, cwd: local.home, ownWorktree: null, remote: true }, depth + 1);
     } else if (name === "cd" && !piped && separators[index] !== "&") {
       const target = words[start];
       if (!target) local = { ...local, cwd: local.home };
@@ -612,15 +677,19 @@ export function decision(command, options = {}) {
     home: options.home ? path.resolve(options.home) : "",
     ownWorktree: options.ownWorktree ? path.resolve(options.ownWorktree) : null,
     ownLabels: (options.ownLabels || []).filter(Boolean),
-    ownNames: options.ownLedgerDir ? loadLedgerNames(options.ownLedgerDir) : new Set(),
+    ownNames: new Set([
+      ...(options.ownLedgerDir ? loadLedgerNames(options.ownLedgerDir) : []),
+      ...(options.ownCreatedFile ? loadCreatedNames(options.ownCreatedFile) : []),
+    ]),
+    remote: false,
   };
   const verdict = analyze(command, context, 0);
   return verdict || { decision: "allow" };
 }
 
 function parseArguments(argv) {
-  const result = { command: "", commandSet: false, cwd: "", home: "", ownWorktree: "", ownLabels: [], ownLedgerDir: "" };
-  const valued = { "--command": "command", "--cwd": "cwd", "--home": "home", "--own-worktree": "ownWorktree", "--own-label": "ownLabel", "--own-ledger-dir": "ownLedgerDir" };
+  const result = { command: "", commandSet: false, cwd: "", home: "", ownWorktree: "", ownLabels: [], ownLedgerDir: "", ownCreatedFile: "" };
+  const valued = { "--command": "command", "--cwd": "cwd", "--home": "home", "--own-worktree": "ownWorktree", "--own-label": "ownLabel", "--own-ledger-dir": "ownLedgerDir", "--own-created-file": "ownCreatedFile" };
   for (let i = 0; i < argv.length; i += 1) {
     const name = argv[i];
     const key = valued[name];

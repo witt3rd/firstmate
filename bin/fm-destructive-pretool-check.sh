@@ -290,6 +290,11 @@ case "$TASK" in
     case "$RUN_ROOT" in /*) POLICY_ARGS+=(--own-ledger-dir "$RUN_ROOT/$TASK") ;; esac
     ;;
 esac
+# The task's own created record for objects made outside fm-run (docs/destructive-guard.md).
+case "$TASK" in
+  ''|*[!A-Za-z0-9._-]*|.*) ;;
+  *) POLICY_ARGS+=(--own-created-file "$(log_home)/data/$TASK/created.md") ;;
+esac
 POLICY_OUTPUT=$(node "$POLICY" "${POLICY_ARGS[@]}" 2>/dev/null) || exit 0
 [ -n "$POLICY_OUTPUT" ] || exit 0
 

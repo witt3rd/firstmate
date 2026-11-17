@@ -35,7 +35,8 @@ Each denial carries one stable code in square brackets before its prose reason.
 | `find-delete` | `find` with `-delete` or `-exec`/`-execdir`/`-ok` running `rm`, `rmdir`, `unlink`, or `shred`, when a start path (or the cwd when none is given) is a protected location: the home directory itself, a shared top-level directory listed under `rm-protected-root`, `/mnt` and anything under it, `/media`, `/srv`, `/home`, or `/`. Inside the pane's own worktree, `/tmp`, and `~/.cache/fm/<task>/` it is allowed. |
 | `docker-prune` | Any `prune` on `docker`, `podman`, or `nerdctl` (`system`, `container`, `image`, `network`, `volume`, `builder`, `buildx`), including after `ssh`. |
 | `docker-bulk-rm` | `docker rm`, `rmi`, `container/image/network/volume rm`, `buildx rm`, `stack rm`, or `service rm` whose targets come from a filter or label (`--filter`, `--label`, `-a`), a glob, a variable, a command substitution, `xargs`, `parallel`, `find -exec`, or a pipe. Every target must be a plain literal name. |
-| `docker-rm-unowned` | The same removals naming a plain literal that neither starts with the pane's own task label (followed by `-`, `_`, `.`, or `:`) nor appears by exact name in the task's own `fm-run` ledger ([`fm-run.md`](fm-run.md)), or from a pane with no task label. |
+| `docker-rm-unowned` | The same removals naming a plain literal that neither starts with the pane's own task label (followed by `-`, `_`, `.`, or `:`) nor appears by exact name in the task's own `fm-run` ledger ([`fm-run.md`](fm-run.md)) or created record (`data/<task>/created.md`), nor names an existing local object carrying `fm.task=<task>`, or from a pane with no task label. |
+| `docker-rm-running` | A removal of a running container, even one the pane owns. |
 | `docker-compose-down` | `docker compose` / `docker-compose` `down` or `rm` unless `-p`/`--project-name` names a literal project that starts with the pane's own task label. |
 | `git-clean` | A forced `git clean` (not `-n`/`-i`) whose repository is not inside the worktree spawned for this pane. |
 | `device-write` | `dd of=/dev/...`, `mkfs*`, `mke2fs`, `mkswap`, `wipefs`, `blkdiscard`, `shred`, or a partitioner (`parted`, `fdisk`, `sfdisk`, `sgdisk`, `gdisk`) naming a block device; listing (`-l`, `print`) and `wipefs -n` are allowed. |
@@ -49,6 +50,10 @@ Quoted text, comments, heredoc bodies, and later argument words are data, so `ec
   A worker names the containers, volumes, networks, and compose projects it creates with its task id so it can remove them; the same literal is allowed locally and after `ssh`.
 - A docker removal of an exact literal name that the task's own `fm-run` ledger records (`${FM_RUN_ROOT:-~/.cache/fm-run}/<task-id>/*/ledger`, read by the policy through `--own-ledger-dir`), and `fm-run <task-id> -- <command>`, which is judged as the wrapped command.
   `fm-run` itself removes by the same exact names; [`fm-run.md`](fm-run.md) owns that contract.
+- A docker removal of an exact literal name that the task created outside `fm-run`, proved either by the object carrying the label `fm.task=<task-id>` (the policy runs a fixed, read-only `docker inspect -- <name>`; every object that name matches must carry it, and it is skipped after `ssh`, where a local label proves nothing) or by the name appearing in `data/<task-id>/created.md` in the owning home.
+  The record is one exact name per line, optionally after `- `; `#` lines are notes.
+  A builder appends a name to it right after creating the object, e.g. `echo soak-img:1 >> data/<task-id>/created.md`.
+  A running container is still refused.
 - Any recursive `rm`, `git clean`, or wildcard removal inside the worktree spawned for this pane, and wildcard removals under `/tmp`.
 - `find ... -delete` under `/tmp/fm-*`.
 - Every read-only form: `docker ps`, `docker volume ls -f ...` (also over `ssh`), `parted -l`, `systemctl status`, `git clean -n`.
