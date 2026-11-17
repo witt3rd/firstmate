@@ -52,7 +52,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-ensure-agents-md.sh` | Manually initialize project agent-memory files (see the helper's header and help) |
 | `fm-capacity.sh`         | Report of open lanes against the optional `config/lane-capacity` target and host headroom for queued-work dispatch; `--publish` writes this home's `state/lane-capacity.json` |
 | [`fm-run`](../bin/fm-run) | Launch builder work with a docker shim that records every object it creates and removes exactly those entries, and its scratch root whole, on exit ([contract](fm-run.md)) |
-| `fm-run-lib.sh`, `fm-run-shim.sh` | The ledger, probe, and removal primitives and the docker and docker-compose shims behind `fm-run` |
+| `fm-run-lib.sh`, `fm-run-shim.sh` | The ledger, probe, and removal primitives and the docker, docker-compose, and systemd-run shims behind `fm-run` |
 | [`fm-created-check`](../bin/fm-created-check) | Read-only closing check that every object a task's `fm-run` ledgers recorded is gone, with the one command that removes any that remain |
 | `fm-guard.sh`            | Warn on primary-checkout tangles, main-session pending wakes, and unhealthy supervision |
 | `fm-primary-scope-lib.sh` | Shared marker-or-plain-checkout primary-home predicate for tracked hooks             |

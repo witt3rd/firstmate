@@ -480,8 +480,27 @@ docker_main() {
   esac
 }
 
+# --- systemd-run ----------------------------------------------------------------------
+# A builder's own `systemd-run --user` joins the task's slice (so ending the task stops
+# it) unless the caller named a slice. The added --slice comes first, so a --slice the
+# caller passed later wins.
+systemd_run_main() {
+  local a user=0 slice
+  for a in "$@"; do
+    case "$a" in
+      --user) user=1 ;;
+      --slice | --slice=* | --slice-inherit) pass_through systemd-run "$@" ;;
+    esac
+  done
+  if [ "$user" -eq 1 ] && [ -n "${FM_TASK_LABEL:-}" ] && slice=$(fm_run_slice "$FM_TASK_LABEL"); then
+    pass_through systemd-run --slice="$slice" "$@"
+  fi
+  pass_through systemd-run "$@"
+}
+
 case "$TOOL" in
   docker) docker_main "$@" ;;
+  systemd-run) systemd_run_main "$@" ;;
   docker-compose) compose_main docker-compose 0 "$@" ;;
   *) die "unknown shim tool '$TOOL'" ;;
 esac

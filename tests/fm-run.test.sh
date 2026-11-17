@@ -42,9 +42,13 @@ new_task() {  # sets TASK_ID: unique to this process and case (never call it in 
 # Anything a failed case left behind is removed by fm-run's own recovery of the
 # task's ledger: exact names the creator recorded, nothing else.
 cleanup_leftovers() {
-  local id
+  local id u
   for id in ${TASKS[@]+"${TASKS[@]}"}; do
     timeout 120 "$FM_RUN" "$id" -- true >/dev/null 2>&1 || true
+    # units the scope test names, by exact name (a failed case may leave them)
+    for u in "fmrtsvc$id.service" "fmrtsvc$id-own.service" "fmrtown$id.slice" "fm-task-$id.slice"; do
+      systemctl --user stop "$u" >/dev/null 2>&1 || true
+    done
   done
   fm_test_cleanup
 }
@@ -362,6 +366,37 @@ test_many_mktemp_calls_do_not_crawl() {
   pass "1000 mktemp calls under fm-run finish in ${elapsed}s, not the shim's 18s"
 }
 
+have_user_manager() {
+  command -v systemd-run >/dev/null 2>&1 && command -v systemd-escape >/dev/null 2>&1 &&
+    [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus" ] && timeout 10 systemctl --user show-environment >/dev/null 2>&1
+}
+
+test_command_runs_in_the_task_slice_and_its_children_die_with_the_scope() {
+  have_user_manager || { pass "task scope (skip: no systemd user manager)"; return; }
+  local task esc slice out detached unit i
+  new_task; task=$TASK_ID
+  esc=$(systemd-escape -- "$task")
+  slice="fm-task-$esc.slice"
+  unit="fmrtsvc$esc"
+  detached="$TMP_ROOT/detached-$task"
+  out=$(timeout 60 "$FM_RUN" "$task" -- bash -c '
+    echo "own=$(cat /proc/self/cgroup)"
+    setsid nohup sleep 300 >/dev/null 2>&1 &
+    echo $! >"'"$detached"'"
+    systemd-run --user --quiet --collect --unit="'"$unit"'" sleep 301
+    echo "svc-slice=$(systemctl --user show -p Slice --value "'"$unit"'.service")"
+    systemd-run --user --quiet --collect --slice=fmrtown'"$esc"'.slice --unit="'"$unit"'-own" sleep 302
+    echo "own-slice=$(systemctl --user show -p Slice --value "'"$unit"'-own.service")"' 2>&1)
+  eq "$?" 0 "the run exits clean"
+  assert_contains "$out" "own=0::/"  "the command reports its cgroup"
+  assert_contains "$out" "/$slice/" "the command runs in the task's slice"
+  assert_contains "$out" "svc-slice=$slice" "a builder's own systemd-run joins the task's slice"
+  assert_contains "$out" "own-slice=fmrtown$esc.slice" "a slice the caller names is kept"
+  for i in $(seq 1 50); do kill -0 "$(cat "$detached")" 2>/dev/null || break; sleep 0.2; done
+  kill -0 "$(cat "$detached")" 2>/dev/null && { kill "$(cat "$detached")" 2>/dev/null; fail "a setsid nohup child outlived the run's scope"; }
+  pass "a command runs in fm-task-<id>.slice, a builder's systemd-run joins it, and a detached child dies with the run's scope"
+}
+
 test_scratch_defaults_to_short_disk_path_and_refuses_a_full_disk() {
   local task out rc home="$TMP_ROOT/home"
   mkdir -p "$home"
@@ -434,6 +469,7 @@ fm_test_run \
   test_created_check_reports_clean_remaining_and_no_ledger \
   test_mktemp_is_native_and_lands_in_the_scratch_root \
   test_many_mktemp_calls_do_not_crawl \
+  test_command_runs_in_the_task_slice_and_its_children_die_with_the_scope \
   test_scratch_defaults_to_short_disk_path_and_refuses_a_full_disk \
   test_compose_project_objects_are_recorded_and_removed \
   test_listed_host_is_refused_and_override_only_adds \

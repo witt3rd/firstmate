@@ -26,7 +26,11 @@ The shared check is `fm_run_heavy_host_guard` in `bin/fm-run-lib.sh`; `FM_HEAVY_
   `TMPDIR` points at the run's own scratch root, `~/.t/fm-run-<task-id>-<run-id>` (override the base with `FM_RUN_TMPBASE`).
   The base is on disk and short on purpose: `/tmp` is RAM-backed tmpfs on worker hosts, where a big build fills it and fails with "No space left on device", and a long path broke the Postgres unix socket path limit.
   A run refuses to start (exit 75, one line) when the base's filesystem is over 90% full in bytes or inodes (`FM_RUN_MAX_USED_PCT` overrides the limit).
+- Launches the command in its own systemd scope inside the task's slice, `fm-task-<escaped task id>.slice` (`systemd-run --user --scope`; the id is `systemd-escape`d because a bare dash in a slice name is nesting).
+  The slice is the one `fleet-task-stop` stops when the task ends, so nothing the command detaches with `setsid`, `nohup`, or `&` can outlive the task, and settling the run (normal exit, a signal, or the next run's recovery of a hard-killed one) stops the run's own scope first.
+  A host with no systemd user manager launches the command plainly.
 - Puts a shim directory first on `PATH` (`bin/fm-run-shim.sh`):
+  - `systemd-run` adds the same `--slice` to a builder's own `systemd-run --user`, unless the caller passed a `--slice`, so its transient services end with the task too.
   - `docker` and `docker-compose` stamp every container, network, volume, and image build with the labels `fm.task=<task-id>` and `fm.run=<run-id>`, name an unnamed create `<task-id>-<hex>`, and append the exact name to the ledger before the create runs.
     Named volumes a `run` or `create` would make implicitly are created labelled first.
     A compose project is forced to the `<task-id>-` prefix, and what `up`, `create`, `run`, or `build` adds to it is recorded by exact name.
