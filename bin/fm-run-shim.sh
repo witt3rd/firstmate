@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# fm-run-shim.sh - the docker, docker-compose, and mktemp shims bin/fm-run puts
-# first on the PATH of the command it launches (docs/fm-run.md). Each wrapper in
-# the run's shim directory execs this script with the tool name first:
-#   fm-run-shim.sh docker|docker-compose|mktemp <args...>
+# fm-run-shim.sh - the docker and docker-compose shims bin/fm-run puts first on
+# the PATH of the command it launches (docs/fm-run.md). Each wrapper in the run's
+# shim directory execs this script with the tool name first:
+#   fm-run-shim.sh docker|docker-compose <args...>
 #
 # Every docker object the launched command creates (container, network, volume,
 # image, compose project) is stamped with the run's label (fm.task=<task-id>,
 # fm.run=<run-id>) and its exact name is appended to the run's ledger BEFORE the
-# create runs, so a kill between the two leaves the name on record. Every temp
-# path mktemp makes is recorded by exact path. Reads, removals, and everything
-# else pass straight through to the next docker on the PATH, whose own guard
-# (the fleet docker shim) still applies; this shim adds no refusal of removals.
+# create runs, so a kill between the two leaves the name on record. Reads,
+# removals, and everything else pass straight through to the next docker on the
+# PATH, whose own guard (the fleet docker shim) still applies; this shim adds no
+# refusal of removals.
 #
 # Environment (set by bin/fm-run): FM_TASK_LABEL FM_RUN_ID FM_RUN_LEDGER
 # FM_RUN_SCRATCH. Outside fm-run the shim refuses a create rather than let an
@@ -480,60 +480,8 @@ docker_main() {
   esac
 }
 
-# --- mktemp ------------------------------------------------------------------------
-
-mktemp_main() {
-  local -a args=("$@")
-  local i=0 n=$# a tmpl='' tmpl_index=-1 has_dir=0 dry=0 path out rc dir
-  while [ "$i" -lt "$n" ]; do
-    a=${args[$i]}
-    case "$a" in
-      -p)
-        has_dir=1
-        i=$((i + 1))
-        ;;
-      -p?* | --tmpdir | --tmpdir=*) has_dir=1 ;;
-      --dry-run) dry=1 ;;
-      --*) ;;
-      -*) case "$a" in *u*) dry=1 ;; esac ;;
-      *)
-        tmpl=$a
-        tmpl_index=$i
-        ;;
-    esac
-    i=$((i + 1))
-  done
-  if [ "$dry" -eq 1 ] || [ -z "${FM_RUN_LEDGER:-}" ] || [ -z "${FM_RUN_SCRATCH:-}" ]; then
-    pass_through mktemp "$@"
-  fi
-  if [ "$tmpl_index" -ge 0 ] && [ "$has_dir" -eq 0 ]; then
-    case "$tmpl" in
-      */*)
-        dir=$(dirname -- "$tmpl")
-        case "$dir" in
-          /tmp | /var/tmp | "${TMPDIR:-/nonexistent}" | "$FM_RUN_SCRATCH")
-            args[tmpl_index]=$(basename -- "$tmpl")
-            args=(-p "$FM_RUN_SCRATCH" "${args[@]}")
-            ;;
-        esac
-        ;;
-    esac
-  fi
-  out=$(TMPDIR=$FM_RUN_SCRATCH PATH=$REAL_PATH mktemp "${args[@]}")
-  rc=$?
-  [ "$rc" -eq 0 ] || exit "$rc"
-  path=$out
-  case "$path" in
-    /*) ;;
-    *) path=$PWD/$path ;;
-  esac
-  fm_run_record "$FM_RUN_LEDGER" dir "$path" - || true
-  printf '%s\n' "$out"
-}
-
 case "$TOOL" in
   docker) docker_main "$@" ;;
   docker-compose) compose_main docker-compose 0 "$@" ;;
-  mktemp) mktemp_main "$@" ;;
   *) die "unknown shim tool '$TOOL'" ;;
 esac

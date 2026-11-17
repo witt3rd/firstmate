@@ -80,11 +80,10 @@ test_normal_run_prints_three_lists_and_leaves_nothing() {
   rc=$?
   eq "$rc" 0 "a clean run exits 0"
   assert_contains "$out" "output-of-the-command" "the command's own output passes through"
-  assert_contains "$out" "CREATED (2):" "CREATED list prints with its count (the scratch root and the mktemp dir)"
-  assert_contains "$out" "REMOVED (2):" "REMOVED list prints with its count"
+  assert_contains "$out" "CREATED (1):" "CREATED list prints with its count (the scratch root, which holds the mktemp dir)"
+  assert_contains "$out" "REMOVED (1):" "REMOVED list prints with its count"
   assert_contains "$out" "REMAINING (0):" "REMAINING list prints, empty"
   [ ! -e "$(cat "$dir_made")" ] || fail "the mktemp dir the command made is still on disk"
-  assert_contains "$out" "$(cat "$dir_made")" "the exact recorded path is named in the lists"
   pass "a normal run prints CREATED / REMOVED / REMAINING and leaves no temp dir"
 }
 
@@ -161,7 +160,7 @@ test_hard_killed_run_is_cleaned_by_the_next_run_of_the_same_task() {
   eq "$?" 1 "the closing check fails while objects remain"
   assert_contains "$check_out" "container $task-c1" "the check names the exact container"
   assert_contains "$check_out" "volume $task-vol" "the check names the exact volume"
-  assert_contains "$check_out" "$scratch_dir" "the check names the exact temp dir"
+  assert_contains "$check_out" "$(dirname -- "$scratch_dir")" "the check names the exact scratch root that holds the temp dir"
   assert_contains "$check_out" "fm-run $task -- true" "the check prints the one command that removes them"
   docker_has container "$task-c1" || fail "the read-only check removed something"
   # The next run of the same task id cleans first, by the prior ledger's exact names.
@@ -327,18 +326,40 @@ test_created_check_reports_clean_remaining_and_no_ledger() {
   pass "the closing check prints CLEAN, the exact remaining names with the one command, or flags a missing ledger"
 }
 
-test_mktemp_shim_records_common_forms() {
+test_mktemp_is_native_and_lands_in_the_scratch_root() {
   local task out
   new_task; task=$TASK_ID
   out=$(timeout 60 "$FM_RUN" "$task" -- bash -c '
-    mktemp -d >/dev/null; mktemp >/dev/null; mktemp -d /tmp/fmrt.XXXXXX >/dev/null; mktemp -d -t fmrt2.XXXXXX >/dev/null
-    mktemp -u >/dev/null
+    echo "mktemp=$(command -v mktemp)"
+    d=$(mktemp -d); f=$(mktemp); t=$(mktemp -d -t fmrt2.XXXXXX)
+    for p in "$d" "$f" "$t"; do case "$p" in "$TMPDIR"/*) echo "inside" ;; *) echo "OUTSIDE $p" ;; esac; done
     echo "tmpdir=$TMPDIR"' 2>&1)
   eq "$?" 0 "the mktemp forms run clean"
-  assert_contains "$out" "CREATED (5):" "four mktemp paths and the scratch root are recorded (a dry-run -u is not)"
-  assert_contains "$out" "REMAINING (0):" "all are removed"
+  assert_not_contains "$out" "OUTSIDE" "a bare, a file, and a -t mktemp land in the scratch root through TMPDIR"
+  assert_not_contains "$out" "/shims/mktemp" "mktemp is the system tool, not a shim"
   assert_contains "$out" "tmpdir=$FM_RUN_TMPBASE/fm-run-$task-" "TMPDIR points at the run's scratch root"
-  pass "the mktemp shim records every temp path it makes, including /tmp templates relocated into the scratch root"
+  assert_contains "$out" "CREATED (1):" "the scratch root is the one recorded path"
+  assert_contains "$out" "REMAINING (0):" "it is removed whole, with everything the command put in it"
+  pass "mktemp is the native tool and the scratch root removed whole is the record of every temp path"
+}
+
+test_many_mktemp_calls_do_not_crawl() {
+  local task out start elapsed
+  new_task; task=$TASK_ID
+  start=$SECONDS
+  out=$(timeout 120 "$FM_RUN" "$task" -- bash -c '
+    for i in $(seq 1 1000); do mktemp -d >/dev/null || exit 1; done
+    for i in $(seq 1 100); do
+      lane=$(mktemp -d) || exit 1
+      mktemp -p "$lane" stack.XXXXXX >/dev/null || exit 1
+      rm -rf "$lane"
+    done
+    echo loops-done' 2>&1)
+  eq "$?" 0 "1000 mktemp -d calls and a lane-stack style create/remove loop finish"
+  elapsed=$((SECONDS - start))
+  assert_contains "$out" "loops-done" "the loops ran to the end"
+  [ "$elapsed" -lt 10 ] || fail "1100 mktemp calls plus the run's own settle took ${elapsed}s (bound 10s; shimmed it was 20s+)"
+  pass "1000 mktemp calls under fm-run finish in ${elapsed}s, not the shim's 18s"
 }
 
 test_scratch_defaults_to_short_disk_path_and_refuses_a_full_disk() {
@@ -411,7 +432,8 @@ fm_test_run \
   test_guard_allows_fm_run_removals_and_still_refuses_everything_else \
   test_path_outside_the_scratch_root_is_refused \
   test_created_check_reports_clean_remaining_and_no_ledger \
-  test_mktemp_shim_records_common_forms \
+  test_mktemp_is_native_and_lands_in_the_scratch_root \
+  test_many_mktemp_calls_do_not_crawl \
   test_scratch_defaults_to_short_disk_path_and_refuses_a_full_disk \
   test_compose_project_objects_are_recorded_and_removed \
   test_listed_host_is_refused_and_override_only_adds \

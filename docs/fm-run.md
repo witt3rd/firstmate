@@ -1,6 +1,6 @@
 # fm-run: whatever creates a thing destroys it
 
-`bin/fm-run` launches a builder's heavy work so that every docker object and temp directory it creates is recorded as it is created and removed by exact name in the same code path.
+`bin/fm-run` launches a builder's heavy work so that every docker object it creates is recorded as it is created, and its temp directory is removed whole, in the same code path.
 `bin/fm-created-check` is the read-only closing check.
 The destructive-command guard ([`destructive-guard.md`](destructive-guard.md)) refuses a removal the pane cannot show it owns, so a builder that creates a thing cannot otherwise remove it, and the cleanup fell on a person.
 
@@ -32,7 +32,8 @@ The shared check is `fm_run_heavy_host_guard` in `bin/fm-run-lib.sh`; `FM_HEAVY_
     A compose project is forced to the `<task-id>-` prefix, and what `up`, `create`, `run`, or `build` adds to it is recorded by exact name.
     A caller-supplied `fm.task` or `fm.run` label, a `-H`/`--context` create, and any create outside a run are refused.
     Reads, removals, and everything else pass through to the next `docker`, whose own guard still applies.
-  - `mktemp` records every path it makes; a bare or `-t` call lands in the scratch root through `TMPDIR`, and a `/tmp` template is relocated into it.
+- `mktemp` is the system tool, not a shim: a bare or `-t` call lands in the scratch root through `TMPDIR`, and the scratch root is recorded and removed whole, so every path under it goes with it.
+  A call that names an explicit directory, such as a `/tmp` template, is the caller's own and is not recorded.
 - On exit (normal, error, SIGTERM, SIGINT, SIGHUP) it removes exactly the ledger entries and prints three lists on stderr.
   `docker rm -f -v`, `network rm`, `volume rm`, and `rmi` act on one exact name each, and only while the object still carries the recorded label.
   `rm -rf` acts only on a recorded path inside this run's own scratch root, derived from the task id and run id and never read from the ledger; a path outside it, a dot-dot path, or a path under a symlink that leaves the root is refused and listed under `REMAINING`.
