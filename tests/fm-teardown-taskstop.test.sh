@@ -29,6 +29,7 @@ SH
     cat > "$dir/fakebin/fleet-task-stop" <<'SH'
 #!/usr/bin/env bash
 printf 'fleet-task-stop' >> "${FM_RUNTIME_LOG:?}"
+[ ! -d "${FM_RUN_ROOT:-/nonexistent}/$1" ] || printf ' [task-root-present]' >> "${FM_RUNTIME_LOG:?}"
 printf ' <%s>' "$@" >> "${FM_RUNTIME_LOG:?}"
 printf '\n' >> "${FM_RUNTIME_LOG:?}"
 exit "${FAKE_STOP_RC:-0}"
@@ -40,7 +41,7 @@ SH
 
 run_case() {  # <dir> <id>
   local dir=$1 id=$2
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_RUNTIME_LOG="$dir/runtime.log" \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_RUNTIME_LOG="$dir/runtime.log" FM_RUN_ROOT="$dir/t" \
     PATH="$dir/fakebin:$PATH" "$TEARDOWN" "$id" --force >"$dir/stdout" 2>"$dir/stderr"
 }
 
@@ -99,7 +100,25 @@ SH
   pass "fm-teardown non-tmux: fleet-task-stop runs with the task id and no pane target"
 }
 
+test_task_root_is_removed_after_the_stop() {
+  local dir id=ts-e rc=0
+  dir=$(make_case taskroot)
+  mkdir -p "$dir/t/$id/r1-1/tmp/deep" "$dir/t/$id-other/r1-1/tmp" "$dir/t/keep-me"
+  chmod 500 "$dir/t/$id/r1-1/tmp/deep"
+  : >"$dir/t/$id/r1-1/ledger"
+  fm_write_meta "$dir/home/state/$id.meta" "window=isolated:fm-$id" "endpoint_task_id=$id" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  run_case "$dir" "$id" || rc=$?
+  [ "$rc" -eq 0 ] || fail "teardown failed rc=$rc: $(cat "$dir/stderr")"
+  grep -q '^fleet-task-stop \[task-root-present\] <'"$id"'> <isolated:fm-'"$id"'>$' "$dir/runtime.log" \
+    || fail "the task root must still exist when fleet-task-stop runs: $(cat "$dir/runtime.log")"
+  [ ! -e "$dir/t/$id" ] || fail "teardown left the task root $dir/t/$id"
+  [ -d "$dir/t/$id-other" ] && [ -d "$dir/t/keep-me" ] || fail "teardown removed another task's root"
+  pass "fm-teardown removes the whole task root after fleet-task-stop, and only that task's"
+}
+
 test_tmux_calls_helper_before_kill
+test_task_root_is_removed_after_the_stop
 test_helper_failure_does_not_block
 test_absent_helper_unchanged
 test_non_tmux_backend_calls_helper_without_target
