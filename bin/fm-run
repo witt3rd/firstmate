@@ -4,7 +4,9 @@
 #
 #   fm-run <task-id> -- <command> [args...]
 #
-# Runs the command with:
+# Runs the command, inside its own systemd scope in the task's slice
+# fm-task-<escaped id>.slice (the slice fleet-task-stop stops; a plain launch when
+# there is no user manager), with:
 #   FM_TASK_LABEL   the task id: the label the destructive-command guard names
 #                   (bin/fm-destructive-command-policy.mjs --own-label)
 #   FM_RUN_*        the run id, the run directory, the per-run ledger, and the
@@ -12,8 +14,9 @@
 #   PATH            a shim directory first: docker and docker-compose stamp every
 #                   container, network, volume, image, and compose project they
 #                   create with the label and record its exact name in the ledger
-#                   (bin/fm-run-shim.sh); mktemp is the system tool, and TMPDIR
-#                   points at the scratch root, which is removed whole
+#                   (bin/fm-run-shim.sh); a builder's own systemd-run --user joins
+#                   the task's slice; mktemp is the system tool, and TMPDIR points
+#                   at the scratch root, which is removed whole
 #
 # On exit - normal, error, or SIGTERM/SIGINT/SIGHUP - it removes exactly the
 # ledger's entries (docker rm -f / network rm / volume rm / rmi by exact name,
@@ -105,6 +108,8 @@ printf '%s\n%s\n' "$$" "$(fm_run_pid_token "$$")" >"$RUN_DIR/pid"
 # settle_dir <run-dir>: settle output in SETTLE_OUT; exit 0 when nothing remains.
 SETTLE_OUT=''
 settle_dir() {
+  # A run's scope is stopped first, so nothing it detached is still running while its objects are removed.
+  fm_run_stop_scope "$TASK" "$(basename -- "$1")"
   SETTLE_OUT=$(fm_run_settle "$1" "$TASK" 1)
   if [ "$(printf '%s\n' "$SETTLE_OUT" | fm_run_remaining_count)" -eq 0 ]; then
     : >"$1/settled"
@@ -135,7 +140,7 @@ fm_run_record "$LEDGER" dir "$SCRATCH" -
 mkdir -p -- "$SCRATCH" && chmod 700 "$SCRATCH" || exit 1
 
 : >"$RUN_DIR/shims/.fm-run-shim"
-for tool in docker docker-compose; do
+for tool in docker docker-compose systemd-run; do
   printf '#!/bin/sh\nexec bash %s %s "$@"\n' "'$SCRIPT_DIR/fm-run-shim.sh'" "$tool" >"$RUN_DIR/shims/$tool"
   chmod 755 "$RUN_DIR/shims/$tool"
 done
@@ -189,7 +194,14 @@ export FM_TASK_LABEL=$TASK FM_RUN_ID=$RUN_ID FM_RUN_DIR=$RUN_DIR FM_RUN_LEDGER=$
 export TMPDIR=$SCRATCH
 export PATH="$RUN_DIR/shims:$PATH_REAL"
 
-"$@" <&0 &
+# The command runs in its own systemd scope inside the task's slice (fm-task-<id>.slice,
+# the slice fleet-task-stop stops), so nothing it detaches can outlive the run: settling
+# the run stops its scope, which ends every process still in it. No user manager: a plain launch.
+if fm_run_have_user_manager && SLICE=$(fm_run_slice "$TASK") && SYSTEMD_RUN=$(PATH=$PATH_REAL command -v systemd-run); then
+  "$SYSTEMD_RUN" --user --scope --quiet --collect --slice="$SLICE" --unit="$(fm_run_scope_name "$TASK" "$RUN_ID")" -p TimeoutStopSec=5 -- "$@" <&0 &
+else
+  "$@" <&0 &
+fi
 CHILD=$!
 RC=0
 wait "$CHILD"

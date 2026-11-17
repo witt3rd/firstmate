@@ -97,6 +97,32 @@ fm_run_disk_check() {  # <dir>
   return 0
 }
 
+# The systemd user manager can start a scope here: systemd-run and systemd-escape
+# exist and the user bus answers. Without one, fm-run launches the command plainly.
+fm_run_have_user_manager() {
+  command -v systemd-run >/dev/null 2>&1 && command -v systemd-escape >/dev/null 2>&1 || return 1
+  [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus" ]
+}
+
+# fm_run_slice <task-id>: the task's slice, the one fleet-task-stop stops. The id is
+# systemd-escaped because a bare dash in a slice name is nesting.
+fm_run_slice() {
+  local esc
+  esc=$(systemd-escape -- "$1" 2>/dev/null) && [ -n "$esc" ] || return 1
+  printf 'fm-task-%s.slice' "$esc"
+}
+
+# fm_run_scope_name <task-id> <run-id>: the run's own scope unit, inside the task's slice.
+fm_run_scope_name() {
+  printf 'fm-run-%s-%s.scope' "$(systemd-escape -- "$1")" "$2"
+}
+
+# fm_run_stop_scope <task-id> <run-id>: stop that run's scope (a no-op once it has ended or without a user manager).
+fm_run_stop_scope() {
+  fm_run_have_user_manager || return 0
+  timeout 15 systemctl --user stop "$(fm_run_scope_name "$1" "$2")" >/dev/null 2>&1 || true
+}
+
 # PATH without any fm-run shim directory (a directory holding .fm-run-shim).
 fm_run_real_path() {
   local entry out='' rest=${PATH:-}
