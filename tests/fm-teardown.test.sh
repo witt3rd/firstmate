@@ -770,17 +770,18 @@ test_cargo_clean_can_be_turned_off() {
   pass "FM_TEARDOWN_CARGO_CLEAN=0 turns the cargo clean off"
 }
 
-test_forced_teardown_never_cleans_cargo_output() {
-  local case_dir rc
+test_forced_teardown_still_cleans_cargo_output() {
+  local case_dir rc wt
   case_dir=$(make_cargo_clean_case cargo-forced 1)
   add_cargo_stub "$case_dir" 0
+  wt=$(cd "$case_dir/wt" && pwd -P)
   set +e
   run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
   expect_code 0 "$rc" "cargo-forced: forced teardown should succeed"
-  assert_absent "$case_dir/cargo.log" "cargo-forced: forced teardown ran cargo"
-  pass "forced teardown never runs cargo clean"
+  assert_grep "$wt clean -q --target-dir $wt/target env=unset" "$case_dir/cargo.log" "cargo-forced: forced teardown did not clean the target dir"
+  pass "forced teardown still runs cargo clean"
 }
 
 # The tree is untrusted: a project config, the teardown environment, or a
@@ -6403,7 +6404,7 @@ test_landed_teardown_cleans_cargo_output
 test_refused_teardown_never_cleans_cargo_output
 test_teardown_without_cargo_toml_never_cleans
 test_cargo_clean_can_be_turned_off
-test_forced_teardown_never_cleans_cargo_output
+test_forced_teardown_still_cleans_cargo_output
 test_cargo_clean_ignores_project_config_target_dir
 test_cargo_clean_unsets_env_target_dir
 test_cargo_clean_skips_symlinked_target

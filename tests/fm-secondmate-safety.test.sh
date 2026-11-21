@@ -332,6 +332,36 @@ test_home_seed_returns_treehouse_acquired_home_on_assignment_failure() {
   pass "home seeding returns rejected acquired homes through treehouse"
 }
 
+test_home_seed_rollback_cleans_cargo_output_before_return() {
+  local home acquired acquired_abs fakebin log err
+  home="$TMP_ROOT/dash-cargo-home"
+  acquired="$TMP_ROOT/dash-cargo-acquired-home"
+  err="$TMP_ROOT/dash-cargo.err"
+  mkdir -p "$home/projects" "$home/data" "$home/state"
+  fm_git_init_commit "$home/projects/alpha"
+  fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/dash-cargo-alpha.git"
+  printf '%s\n' '- alpha [direct-PR] - alpha project (added 2026-06-22)' > "$home/data/projects.md"
+  git clone --quiet "$ROOT" "$acquired"
+  acquired_abs=$(cd "$acquired" && pwd -P)
+  printf 'other\n' > "$acquired/.fm-secondmate-home"
+  printf '%s\n' '[package]' 'name = "t"' > "$acquired/Cargo.toml"
+  fakebin=$(make_fake_tmux "$TMP_ROOT/dash-cargo-fake")
+  log="$TMP_ROOT/dash-cargo-fake/tmux.log"
+  cat > "$fakebin/cargo" <<SH
+#!/usr/bin/env bash
+printf '%s %s\\n' "\$(pwd -P)" "\$*" >> "$TMP_ROOT/dash-cargo-fake/cargo.log"
+SH
+  chmod +x "$fakebin/cargo"
+
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TREEHOUSE_HOME="$acquired" FM_FAKE_TMUX_LOG="$log" \
+    FM_SECONDMATE_CHARTER='dash acquired scope' FM_SECONDMATE_SCOPE='dash acquired scope' \
+    "$ROOT/bin/fm-home-seed.sh" dash - alpha >/dev/null 2>"$err" && fail "seed reused an acquired home marked for another secondmate"
+  grep -F "treehouse return --force $acquired_abs" "$log" >/dev/null || fail "failed acquired seed did not return the home"
+  grep -F "$acquired_abs clean -q --target-dir $acquired_abs/target" "$TMP_ROOT/dash-cargo-fake/cargo.log" >/dev/null \
+    || fail "seed rollback returned the home without cleaning its cargo build output"
+  pass "home seed rollback cleans cargo output before returning an acquired home"
+}
+
 test_home_seed_warns_when_acquired_home_return_fails() {
   local home acquired acquired_abs fakebin log err lease
   home="$TMP_ROOT/dash-return-fail-home"
@@ -3125,6 +3155,7 @@ test_home_seed_validate_rejects_duplicate_ids
 test_home_seed_validate_rejects_nested_homes
 test_home_seed_uses_treehouse_acquired_home
 test_home_seed_returns_treehouse_acquired_home_on_assignment_failure
+test_home_seed_rollback_cleans_cargo_output_before_return
 test_home_seed_warns_when_acquired_home_return_fails
 test_home_seed_does_not_return_unsafe_acquired_home
 test_home_seed_rolls_back_failed_clone

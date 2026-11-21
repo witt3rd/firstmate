@@ -140,3 +140,32 @@ fm_pool_demote_records() {  # <worktree> <claimant-id> <state-dir>...
     done
   done
 }
+
+# Best-effort `cargo clean` in a worktree about to be released to the pool.
+# Every path that returns a worktree to the pool (teardown, spawn and seed rollbacks)
+# calls it after its safety checks passed; it never fails the caller. It also runs on a
+# forced return: build output is never work.
+fm_pool_cargo_clean_released() {  # <worktree> <project>
+  local wt=$1 proj=$2 wt_abs proj_abs
+  [ "${FM_TEARDOWN_CARGO_CLEAN:-1}" != 0 ] || return 0
+  # Build output is never work: a --force teardown discards the worktree anyway, so it cleans too
+  # (the --force skip left rung pool slots holding 42-66 GB of target/ on chef, 2026-11).
+  [ -f "$wt/Cargo.toml" ] || return 0
+  command -v cargo >/dev/null 2>&1 || return 0
+  wt_abs=$(CDPATH='' cd -- "$wt" 2>/dev/null && pwd -P) || return 0
+  proj_abs=$(CDPATH='' cd -- "$proj" 2>/dev/null && pwd -P) || return 0
+  [ "$wt_abs" != "$proj_abs" ] || return 0
+  # The worktree is untrusted: a symlinked target would send cargo's delete
+  # outside it, so leave such a tree alone.
+  [ ! -L "$wt_abs/target" ] || return 0
+  local -a runner=()
+  if command -v timeout >/dev/null 2>&1; then
+    runner+=(timeout "${FM_TEARDOWN_CARGO_CLEAN_TIMEOUT_SECS:-300}")
+  fi
+  if command -v nice >/dev/null 2>&1; then
+    runner+=(nice)
+  fi
+  ( cd "$wt_abs" && env -u CARGO_TARGET_DIR -u CARGO_BUILD_TARGET_DIR \
+      "${runner[@]+"${runner[@]}"}" cargo clean -q --target-dir "$wt_abs/target" ) >/dev/null 2>&1 || true
+  return 0
+}
