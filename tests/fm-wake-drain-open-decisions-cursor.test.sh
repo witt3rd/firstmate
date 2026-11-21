@@ -431,6 +431,104 @@ test_open_decisions_over_former_byte_cap_all_surface() {
   pass "open decisions beyond the former byte cap all surface"
 }
 
+# The cursor fold must be linear in the log: thousands of open keys over a
+# half-megabyte log finish within a generous bound (the per-line rewrite of the
+# whole open set took minutes), and the whole drain's digest stays small.
+test_thousands_of_open_keys_fold_in_bounded_time_and_digest_stays_small() {
+  local dir state out status rows bytes
+  dir=$(make_case many-keys)
+  state="$dir/state"
+  out="$dir/drain.out"
+  status="$state/task1.status"
+  awk 'BEGIN { for (i = 1; i <= 3000; i++) {
+    printf "needs-decision [key=k%d] [at=1700000000]: decision %d %0100d\n", i, i, 0
+    if (i % 5 == 0) printf "resolved [key=k%d]: ok\n", i - 1
+    printf "working: filler %d\n", i } }' > "$status"
+
+  timeout 120 env FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "drain over 3000 open keys did not finish inside its bound"
+  rows=$(grep -c 'decision ' "$state/.task1.open-decisions-cursor")
+  [ "$rows" -eq 2400 ] || fail "the cursor holds $rows open decisions, expected 2400"
+  grep -F 'task1 [key=k3000] needs-decision: decision 3000' "$out" >/dev/null || fail "the newest open decision was not presented"
+  grep -F '2360 older open decision(s) not shown for task1' "$out" >/dev/null || fail "the older decisions were not counted exactly"
+  bytes=$(wc -c < "$out" | tr -d ' ')
+  [ "$bytes" -lt 30000 ] || fail "the digest grew to $bytes bytes"
+
+  pass "thousands of open keys fold in bounded time and the OPEN DECISIONS digest stays small"
+}
+
+# The batched fold is the same rule as folding one line at a time: reopened keys
+# move to the end, closes drop their key, a terminal line clears a ship's set,
+# and both the plain and timed views agree with the whole-file fold.
+test_batched_fold_matches_the_one_line_at_a_time_fold() {
+  local dir state status kind view want got
+  dir=$(make_case fold-equivalence)
+  state="$dir/state"
+  status="$state/task1.status"
+  awk 'BEGIN { srand(7); n = split("needs-decision blocked resolved captain-held working note done", v, " ")
+    for (i = 0; i < 1500; i++) {
+      k = "k" int(rand() * 40); verb = v[1 + int(rand() * n)]
+      if (verb == "done" && rand() < 0.97) verb = "working"
+      f = int(rand() * 4)
+      if (f == 0) printf "%s [at=17000%05d] [key=%s]: text %d\n", verb, i, k, i
+      else if (f == 1) printf "%s: [key=%s] note %d\n", verb, k, i
+      else if (f == 2) printf "%s: unkeyed %d\n", verb, i
+      else printf "%s corr=0123456789abcdef [key=%s]: n %d\n", verb, k, i } }' > "$status"
+  for kind in ship secondmate; do
+    printf 'kind=%s\n' "$kind" > "$state/task1.meta"
+    rm -f "$state"/.task1.open-decisions-cursor*
+    want=$(bash -c '. "$1"; status_open_decisions "$2"' _ "$ROOT/bin/fm-classify-lib.sh" "$status")
+    got=$(bash -c '. "$1"; status_open_decisions_incremental "$2"' _ "$ROOT/bin/fm-classify-lib.sh" "$status")
+    [ "$want" = "$got" ] || fail "the batched $kind fold differs from the whole-file fold"
+    [ "$kind" != secondmate ] || [ -n "$got" ] || fail "the equivalence fixture left nothing open, so it proves nothing"
+  done
+  view=$(bash -c '. "$1"; status_open_decisions_incremental "$2" "" timed' _ "$ROOT/bin/fm-classify-lib.sh" "$status")
+  case "$view" in *"$(printf '\t')17000"*) ;; *) fail "the timed view lost its emission-time column" ;; esac
+
+  pass "the batched cursor fold equals the whole-file fold in both views"
+}
+
+# A copy of a status span is megabytes on a big log: a run stopped by a timeout
+# (TERM to its whole process group) must not leave it behind, and a later run
+# removes what a killed run could not.
+test_scratch_copies_do_not_leak_on_timeout_and_stale_ones_are_swept() {
+  local dir state slow dead live f
+  dir=$(make_case scratch-leak)
+  state="$dir/state"
+  slow="$dir/slow-reader"
+  printf 'needs-decision [key=a]: pick\n' > "$state/task1.status"
+  printf '#!/usr/bin/env bash\nexec sleep 60\n' > "$slow"
+  chmod +x "$slow"
+
+  # shellcheck disable=SC2016
+  bash -c '. "$1"; fm_run_timed 3 env FM_STATE_OVERRIDE="$2" FM_STATUS_SPAN_READER="$3" "$4" >/dev/null 2>&1' \
+    _ "$ROOT/bin/fm-timeout-lib.sh" "$state" "$slow" "$DRAIN" || true
+  if compgen -G "$state/.*.read.*" >/dev/null; then
+    fail "a timed-out drain left a status copy behind: $(ls -a "$state")"
+  fi
+
+  dead=$(bash -c 'printf %s $$')
+  printf 'x\n' > "$state/.task1.open-decisions-cursor.read.$dead"
+  printf 'x\n' > "$state/.task1.open-decisions-cursor.timed.unread.$dead"
+  printf 'x\n' > "$state/.task1.open-decisions-cursor.span.$dead.latest"
+  printf 'x\n' > "$state/.status-presentation-cursor.tmp.$dead"
+  printf 'x\n' > "$state/.status-presentation.prepared.abc123"
+  sleep 30 &
+  live=$!
+  printf 'x\n' > "$state/.task1.open-decisions-cursor.read.$live"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null || { kill "$live"; fail "drain failed with stale scratch files present"; }
+  kill "$live"
+  for f in ".task1.open-decisions-cursor.read.$dead" ".task1.open-decisions-cursor.timed.unread.$dead" \
+    ".task1.open-decisions-cursor.span.$dead.latest" ".status-presentation-cursor.tmp.$dead" \
+    ".status-presentation.prepared.abc123"; do
+    [ ! -e "$state/$f" ] || fail "the sweep left the stale scratch file $f"
+  done
+  [ -e "$state/.task1.open-decisions-cursor.read.$live" ] || fail "the sweep removed a scratch file whose process is still running"
+  [ -f "$state/.task1.open-decisions-cursor" ] || fail "the sweep removed the live cursor"
+
+  pass "timed-out drains leave no status copy behind and stale scratch files are swept"
+}
+
 test_terminal_supersession_reaches_cached_drains
 test_kind_changes_invalidate_folded_decisions
 test_truncated_log_falls_back_to_a_full_refold_not_a_dropped_decision
@@ -441,3 +539,6 @@ test_pre_fix_cursor_refolds_corr_tagged_decision
 test_previous_fold_cache_is_refolded_under_current_semantics
 test_buried_decision_survives_many_growing_drains_and_resolution_clears_it
 test_open_decisions_over_former_byte_cap_all_surface
+test_thousands_of_open_keys_fold_in_bounded_time_and_digest_stays_small
+test_batched_fold_matches_the_one_line_at_a_time_fold
+test_scratch_copies_do_not_leak_on_timeout_and_stale_ones_are_swept

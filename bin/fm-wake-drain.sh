@@ -48,6 +48,11 @@ ACK_REMOVED=0
 PRESENTED_MAX=0
 ACK_FINGERPRINTS=
 ACK_NOTICE_FINGERPRINTS=
+# OPEN DECISIONS bounds (print_open_decisions_section): newest open decisions per
+# task, and total bytes of listed rows, so the digest stays far below the harness limit.
+OPEN_DECISIONS_PER_TASK=40
+OPEN_DECISIONS_BYTES=200000
+OMIT_MARK=$(printf '\036omitted ')
 PRESENTATION_LOCK_TIMEOUT=${FM_STATUS_PRESENTATION_LOCK_TIMEOUT:-10}
 BRANCH_OUTCOMES_RC=0
 case "$PRESENTATION_LOCK_TIMEOUT" in ''|*[!0-9]*|0) PRESENTATION_LOCK_TIMEOUT=10 ;; esac
@@ -479,7 +484,7 @@ EOF
 # common case.
 print_open_decisions_section() {
   local snapshot=${1:-} open task key verb note line
-  local output='' shown=0
+  local output='' shown=0 used=0 capped=0
 
   if [ -n "$snapshot" ]; then
     open=$(scan_open_decisions_snapshot "$STATE" "$snapshot") || return 1
@@ -488,17 +493,46 @@ print_open_decisions_section() {
   fi
   [ -n "$open" ] || return 0
 
+  # Bounded: at most OPEN_DECISIONS_PER_TASK newest open decisions per task and
+  # OPEN_DECISIONS_BYTES of rows in all, so a task holding thousands of open keys
+  # can never push the digest past the harness's output limit. Older decisions
+  # stay open and complete in the task's cursor file; each omission is counted
+  # exactly and named, never silent. Whole items are folded, never cut.
+  open=$(printf '%s\n' "$open" | LC_ALL=C awk -F'\t' -v n="$OPEN_DECISIONS_PER_TASK" -v mark="$OMIT_MARK" '
+    { t[NR] = $1; l[NR] = $0; c[$1]++ }
+    END {
+      for (i = 1; i <= NR; i++) {
+        s[t[i]]++
+        if (c[t[i]] - s[t[i]] >= n) continue
+        if (!(t[i] in said) && c[t[i]] > n) { said[t[i]] = 1; print mark (c[t[i]] - n) "\t" t[i] }
+        print l[i]
+      }
+    }') || return 1
+
   while IFS=$(printf '\t') read -r task key verb note; do
     [ -n "$task" ] || continue
+    case "$task" in
+      "$OMIT_MARK"*)
+        line="OPEN DECISIONS: ${task#"$OMIT_MARK"} older open decision(s) not shown for $key (newest $OPEN_DECISIONS_PER_TASK listed); all still open, current state: bin/fm-crew-state.sh $key"
+        fm_fold_line_var "$line"
+        output="$output$FM_FOLD_LINE
+OPEN DECISIONS: every open decision of $key: $STATE/.$key.open-decisions-cursor
+"
+        continue
+        ;;
+    esac
+    if [ "$used" -ge "$OPEN_DECISIONS_BYTES" ]; then
+      capped=$((capped + 1))
+      continue
+    fi
     line="$task"
     [ "$key" = default ] || line="$line [key=$key]"
     line="$line $verb: $note"
-    # An item is folded across lines, never cut, and every open decision is
-    # shown: a decision the captain owes must not vanish behind a byte budget.
     fm_fold_line_var "$line"
     line=$FM_FOLD_LINE
     output="$output$line
 "
+    used=$((used + ${#line} + 1))
     shown=$((shown + 1))
   done <<EOF
 $open
@@ -507,6 +541,7 @@ EOF
   [ "$shown" -gt 0 ] || return 0
   printf 'OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):\n' || return 1
   printf '%s' "$output" || return 1
+  [ "$capped" -eq 0 ] || printf "OPEN DECISIONS: %s more open decision(s) not shown (size cap); each task's cursor file lists every open one: %s/.<task>.open-decisions-cursor\n" "$capped" "$STATE" || return 1
   # Answerer-closes hint, printed at exactly the moment an answer gets written:
   # the send that answers a listed decision also closes it, so closure never
   # depends on the busy worker writing a matching resolved line (contract:
@@ -777,6 +812,13 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     fi
     return 1
   fi
+  # Always a subshell (see the call sites), so these traps are its own: a TERM
+  # from a timeout must not strand the lock or this run's scratch copies, and the
+  # sweep also removes what runs killed outright left behind (their pid is gone).
+  trap 'fm_status_scratch_sweep "$STATE" "$$"' EXIT
+  trap 'fm_lock_release "$lock"; exit 143' TERM INT
+  fm_status_scratch_sweep "$STATE"
+  rm -f -- "$STATE"/.status-presentation.prepared.*
   snapshot=$(status_presentation_snapshot "$STATE") || {
     printf 'STATUS PRESENTATION INCOMPLETE: status snapshot could not be read.\n'
     rc=1
@@ -798,6 +840,7 @@ cleanup() {
   local status=$?
   [ -z "$DRAIN_TMP" ] || rm -f -- "$DRAIN_TMP" 2>/dev/null || true
   [ -z "$DRAIN_VIEW_TMP" ] || rm -f -- "$DRAIN_VIEW_TMP" 2>/dev/null || true
+  fm_status_scratch_sweep "$STATE" "$$"
   if [ "$DRAIN_LOCK_HELD" = true ]; then
     fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   fi

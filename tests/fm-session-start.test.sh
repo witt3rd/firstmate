@@ -2407,6 +2407,34 @@ EOF
   pass "a session start inside its budget prints no truncation banner"
 }
 
+test_slow_wake_queue_is_reported_and_the_later_stages_still_run() {
+  local rec root home fakebin out status=0
+  rec=$(new_world slow-wake-queue)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  # A status span read that never returns stands in for a presentation that
+  # cannot finish inside its stage budget.
+  printf 'needs-decision [key=slow]: pick one\n' > "$home/state/task-slow.status"
+  printf '#!/usr/bin/env bash\nexec sleep 60\n' > "$fakebin/slow-span-reader"
+  chmod +x "$fakebin/slow-span-reader"
+
+  out=$(FM_STATUS_SPAN_READER="$fakebin/slow-span-reader" FM_SESSION_START_TIMEOUT=9 \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+
+  expect_code 0 "$status" "a slow wake queue must not fail session start"
+  assert_contains "$out" "WAKE QUEUE SLOW: the wake-queue stage exceeded its 3s budget" \
+    "the slow stage was not reported"
+  assert_not_contains "$out" "STARTUP TRUNCATED - SESSION START HIT ITS" \
+    "one slow stage ended the whole startup"
+  assert_contains "$out" "NEXT STEP" "the stages after the slow one did not run"
+  assert_not_contains "$out" "(no queued wakes)" "a stopped presentation was reported as an empty queue"
+
+  pass "a slow wake-queue stage is reported by name and startup continues to the next stage"
+}
+
 test_runtime_bound_leaves_harness_ancestry_headroom() {
   local rec root home fakebin nest out
   rec=$(new_world runtime-bound-ancestry)
@@ -3223,6 +3251,7 @@ test_pi_diagnostic_rejects_previous_session_loaded_marker
 test_runtime_bound_truncates_loudly_and_exits_zero
 test_portable_timeout_escalates_term_resistant_process
 test_runtime_bound_leaves_a_healthy_digest_untouched
+test_slow_wake_queue_is_reported_and_the_later_stages_still_run
 test_runtime_bound_leaves_harness_ancestry_headroom
 test_reemit_skips_startup_sweeps_but_keeps_the_wake_drain
 test_reemit_cue_survives_the_hook_output_preview

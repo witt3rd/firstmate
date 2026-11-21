@@ -178,6 +178,38 @@ test_status_symlink_is_not_followed() {
   pass "the fleet-wide decision scan does not follow status symlinks"
 }
 
+# A task holding thousands of open keys must not push the digest past the
+# harness's output limit: the newest 40 per task are listed, the rest are counted
+# exactly and pointed at the cursor, which keeps every one of them open.
+test_open_decisions_are_bounded_per_task_with_an_exact_count_and_pointer() {
+  local dir state out i bytes
+  dir=$(make_case bounded)
+  state="$dir/state"
+  out="$dir/drain.out"
+  i=1
+  while [ "$i" -le 100 ]; do
+    printf 'needs-decision [key=k%03d]: question-%03d\n' "$i" "$i"
+    i=$((i + 1))
+  done > "$state/task-big.status"
+  printf 'blocked [key=solo]: only-one\n' > "$state/task-small.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on a task with many open decisions"
+
+  grep -F 'task-big [key=k100] needs-decision: question-100' "$out" >/dev/null || fail "the newest open decision was not listed"
+  grep -F 'task-big [key=k061] needs-decision: question-061' "$out" >/dev/null || fail "the 40th newest open decision was not listed"
+  if grep -F 'question-060' "$out" >/dev/null; then fail "an older decision beyond the 40 newest was listed"; fi
+  grep -F 'task-small [key=solo] blocked: only-one' "$out" >/dev/null || fail "a small task's decision was dropped by the bound"
+  grep -F 'OPEN DECISIONS: 60 older open decision(s) not shown for task-big' "$out" >/dev/null \
+    || fail "the omission was not counted exactly: $(cat "$out")"
+  grep -F ".task-big.open-decisions-cursor" "$out" >/dev/null || fail "the omission did not point at the cursor holding the full set"
+  [ "$(grep -c 'question-' "$state/.task-big.open-decisions-cursor")" -eq 100 ] \
+    || fail "the cursor no longer holds every open decision"
+  bytes=$(wc -c < "$out" | tr -d ' ')
+  [ "$bytes" -lt 20000 ] || fail "the bounded section still printed $bytes bytes"
+
+  pass "OPEN DECISIONS lists the 40 newest per task, counts the rest exactly, and keeps the full set in the cursor"
+}
+
 # Text written for diagnosis is never clipped: an over-long decision note is
 # folded across lines by bin/fm-line-cap-lib.sh and rejoins to the original.
 test_over_long_decision_note_is_folded_not_clipped() {
@@ -212,3 +244,4 @@ test_no_open_decisions_prints_nothing
 test_open_decision_surfaces_even_with_an_unrelated_queued_wake
 test_buried_decision_surfaces_on_the_empty_queue_fast_path
 test_status_symlink_is_not_followed
+test_open_decisions_are_bounded_per_task_with_an_exact_count_and_pointer

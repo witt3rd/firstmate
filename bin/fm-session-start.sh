@@ -50,6 +50,9 @@
 #                       First, on every harness and away posture, it seeds the
 #                       outcome store's display tail copy when that is absent
 #                       (bin/fm-branch-outcome.sh seed-tail).
+#                       The drain itself is bounded to a third of the digest's
+#                       runtime bound: past it the stage is reported as WAKE
+#                       QUEUE SLOW and the later stages still run.
 #   4. supervision-instructions - the one emitted operating block for the
 #                       detected primary harness.
 #   5. read-once contract - the do-not-re-read contract covering every source
@@ -906,11 +909,23 @@ else
       printf '%s\n' "$BRANCH_REPLAY_OUT"
     fi
   fi
-  DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
+  # A third of the digest's bound at most: a slow presentation is reported and
+  # the later stages still run, instead of the one runtime bound ending them all.
+  # The drain only presents - nothing is acknowledged - so every wake it did not
+  # reach stays queued for the next drain.
+  DRAIN_BUDGET=${FM_SESSION_START_TIMEOUT:-120}
+  case "$DRAIN_BUDGET" in ''|*[!0-9]*) DRAIN_BUDGET=120 ;; esac
+  DRAIN_BUDGET=$((DRAIN_BUDGET / 3))
+  [ "$DRAIN_BUDGET" -gt 0 ] || DRAIN_BUDGET=1
+  DRAIN_OUT=$(fm_run_timed "$DRAIN_BUDGET" "$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
+  DRAIN_RC=$?
   if [ -n "$DRAIN_OUT" ]; then
     printf '%s\n' "$DRAIN_OUT"
-  else
+  elif [ "$DRAIN_RC" -ne 124 ]; then
     printf '(no queued wakes)\n'
+  fi
+  if [ "$DRAIN_RC" -eq 124 ]; then
+    printf 'WAKE QUEUE SLOW: the wake-queue stage exceeded its %ss budget and was stopped; the wakes and status sections above may be incomplete and nothing was acknowledged, so they stay queued. Startup continues with the next stage; run bin/fm-wake-drain.sh once it is done to finish presenting them.\n' "$DRAIN_BUDGET"
   fi
 fi
 
